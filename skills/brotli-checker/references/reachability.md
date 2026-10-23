@@ -13,6 +13,52 @@ needs the call path and active configuration, including attacker influence and
 authentication before decoding. A benign controlled request can establish a
 decoding path when authorized; do not send malformed or exploit payloads.
 
+## Trailmark source discovery
+
+Use the packaged helper to find relevant callsites and callers before tracing
+the actual input path:
+
+```sh
+uv run --script scripts/brotli_source_discovery.py /absolute/source > discovery.json
+```
+
+Run from the installed skill directory with trusted uv. This pins Trailmark
+0.7.0; first use can download its dependencies and parser grammars. It reads
+source without executing the target. Select a focused source subtree because
+initial parsing and indexing are not bounded by the output limits.
+
+Review `candidates[].call` for Brotli decoder calls (including zlib's Brotli
+APIs), or fetch/Undici. The `neighborhood` joins callers by full node IDs and
+records source spans, unresolved proxy targets, confidence, deferred edges, and relevant
+entrypoint tags. Use those locations to prioritize source review, then check:
+
+1. Resolve the actual binding. A fetch name can refer to a browser API, local
+   function, or parameter. Review import aliases and wrappers; `--symbol NAME`
+   adds an exact search target without asserting what it calls.
+2. Follow callers to the input owner. Deferred callback edges do not prove the
+   callback runs. Entry tags are heuristic or repository configured, not proof
+   of attacker control or active routing.
+3. Verify build selection, shipped artifact, runtime, and configuration using
+   the same evidence required for a manual trace.
+
+Keep `configured_by` on edges: `.trailmark/links.toml` can add calls with no
+extracted callsite. `.trailmark/entrypoints.toml` can supply entrypoint tags.
+Treat both as target-supplied declarations and independently verify them.
+
+Trailmark's directory parser skips `vendor`, `node_modules`, `build`, `dist`,
+hidden directories, common environment/cache directories, and directory
+symlinks; it can follow file symlinks. The broader inventory covers different
+inputs and must still run. Top-level JavaScript/TypeScript calls, ESM aliases,
+dynamic calls, unsupported frameworks, and missing dependencies can be absent
+without a parser diagnostic. No paths, no tags, or no diagnostics never prove
+complete coverage or unreachability.
+
+The helper bounds candidates, caller nodes/edges, traversal depth, and reported
+diagnostics. Exit 3 marks parsing errors, empty source, and truncation as
+incomplete. Exit 0 means collection completed within those limits. Neither exit
+is a patch verdict or a runtime reachability conclusion. When tooling or source
+is unavailable, state that gap and continue with direct source inspection.
+
 ## Node.js and HTTP services/clients
 
 Search for `fetch`, `globalThis.fetch`, `undici`, `brotliDecompress`,
@@ -53,7 +99,7 @@ reachability unknown until reviewed. Browser/custom bindings and literal templat
 text can produce extra leads. Computed names, dynamic loading, bundler rewrites,
 and unavailable source can hide calls; the heuristic is not a JavaScript parser.
 
-The helper does not resolve bindings, trace URL ownership, or discover the running
+The inventory does not resolve bindings, trace URL ownership, or discover the running
 Node version. Its `--node-version` option assesses only a separately obtained
 version, and does not associate that version with an unresolved source lead.
 Identify the real binary/build and follow the call path through wrappers and

@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "skills/brotli-checker/scripts"
 MINIMUM_SCORE = 80
-MAX_CLI_PARDONS = 3
+MAX_CLI_PARDONS = 4
 STATUSES = ("zapped", "survived", "timeout", "error", "pardoned")
 
 
@@ -22,6 +22,7 @@ def cli_guard_pardon(row: dict) -> bool:
         SOURCE / "brotli_inventory.py",
         SOURCE / "brotli_binary_inventory.py",
         SOURCE / "brotli_binary_triage.py",
+        SOURCE / "brotli_source_discovery.py",
     }:
         return False
     lines = path.read_text(encoding="utf-8").splitlines()

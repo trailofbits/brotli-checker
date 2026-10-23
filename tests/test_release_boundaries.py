@@ -104,9 +104,15 @@ def test_stream_expansion_respects_remaining_total_budget():
 
 
 @pytest.mark.parametrize(
-    "script", ["brotli_inventory.py", "brotli_binary_inventory.py", "brotli_binary_triage.py"]
+    ("script", "option"),
+    [
+        ("brotli_inventory.py", "--code-references"),
+        ("brotli_binary_inventory.py", "--code-references"),
+        ("brotli_binary_triage.py", "--max-range-bytes"),
+        ("brotli_source_discovery.py", "--max-caller-nodes"),
+    ],
 )
-def test_standalone_cli_bootstrap_displays_help(script):
+def test_standalone_cli_bootstrap_displays_help(script, option):
     path = Path(scanner.__file__).parent / script
     result = subprocess.run(  # noqa: S603 -- Trusted maintainer CLI, never target artifacts.
         [sys.executable, str(path), "--help"],
@@ -116,5 +122,4 @@ def test_standalone_cli_bootstrap_displays_help(script):
     )
     assert result.returncode == 0
     assert "usage:" in result.stdout
-    expected = "--max-range-bytes" if script == "brotli_binary_triage.py" else "--code-references"
-    assert expected in result.stdout
+    assert option in result.stdout

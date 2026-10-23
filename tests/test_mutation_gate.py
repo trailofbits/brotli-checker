@@ -57,7 +57,13 @@ def test_empty_skipped_missing_and_inflated_reports_fail_closed(report, tmp_path
 
 
 @pytest.mark.parametrize(
-    "script", ["brotli_inventory.py", "brotli_binary_inventory.py", "brotli_binary_triage.py"]
+    "script",
+    [
+        "brotli_inventory.py",
+        "brotli_binary_inventory.py",
+        "brotli_binary_triage.py",
+        "brotli_source_discovery.py",
+    ],
 )
 def test_only_documented_cli_guard_pardons_are_accepted(report, tmp_path, script):
     path = gate.SOURCE / script
@@ -80,3 +86,36 @@ def test_only_documented_cli_guard_pardons_are_accepted(report, tmp_path, script
     report_path.write_text(json.dumps(report))
     # A valid score cannot hide all the other missing scanner modules.
     assert gate.main([str(report_path)]) == 1
+
+
+def test_duplicate_cli_pardons_cannot_hide_mutants(report):
+    path = gate.SOURCE / "brotli_inventory.py"
+    line = path.read_text().splitlines().index('if __name__ == "__main__":') + 1
+    pardon = {
+        "file_path": str(path),
+        "line_number": line,
+        "operator": "comparison",
+        "description": "== to !=",
+        "status": "pardoned",
+    }
+    report["results"].extend([pardon, copy.deepcopy(pardon)])
+    report["summary"].update(total=7, pardoned=2)
+    with pytest.raises(ValueError, match="unapproved pardons"):
+        gate.check_report(report, set())
+
+
+def test_unapproved_cli_guard_operator_is_rejected(report):
+    path = gate.SOURCE / "brotli_inventory.py"
+    line = path.read_text().splitlines().index('if __name__ == "__main__":') + 1
+    report["results"].append(
+        {
+            "file_path": str(path),
+            "line_number": line,
+            "operator": "comparison",
+            "description": "== to <=",
+            "status": "pardoned",
+        }
+    )
+    report["summary"].update(total=6, pardoned=1)
+    with pytest.raises(ValueError, match="unapproved pardons"):
+        gate.check_report(report, set())
