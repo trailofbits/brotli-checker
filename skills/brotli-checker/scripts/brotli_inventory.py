@@ -2,6 +2,8 @@
 # /// script
 # requires-python = ">=3.12,<3.16"
 # dependencies = []
+# [tool.ty.environment]
+# extra-paths = ["."]
 # ///
 
 """Offline, non-executing evidence collection for CVE-2026-111497."""
@@ -26,6 +28,8 @@ import zlib
 from itertools import islice
 from pathlib import Path
 from typing import Protocol
+
+from brotli_binary_match import REFERENCES, CodeReference, load_references, match_code
 
 REGISTRY = Path(__file__).resolve().parent.parent / "references" / "fingerprints.json"
 SOURCE_SUFFIXES = {"", ".c", ".cc", ".cpp", ".cxx", ".h", ".inc", ".inl", ".unbr"}
@@ -134,7 +138,12 @@ NEW_CALL = re.compile(r"\bBROTLI_SAFE_WITH_STATUS\s*\(\s*(" + SWITCH_CALL + r")"
 BAD_GUARD = re.compile(r"if\s*\(\s*max_block_type\s*<=\s*1\s*\)\s*\{\s*return\s+BROTLI_FALSE\s*;")
 COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 GOOD = {"fixed_source", "upstream_fixed_version"}
-WARNING = {"vulnerable_source", "potentially_vulnerable"}
+WARNING = {
+    "vulnerable_source",
+    "potentially_vulnerable",
+    "vulnerable_code_match",
+    "mixed_code_matches",
+}
 MAX_RECORDED_GAPS = 200
 MAX_DISPLAY_COPIES = 10
 MAX_DISPLAY_GAPS = 5
@@ -351,13 +360,15 @@ def version_finding(path: str, minimum: str, evidence: dict, *, fixed: bool) -> 
 
 
 class Inventory:
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- Traversal limits plus optional code references.
         self,
         registry: dict,
         max_file_bytes: int,
         max_total_bytes: int,
         max_files: int,
         archive_depth: int,
+        *,
+        code_references: list[CodeReference] | None = None,
     ) -> None:
         self.fingerprints = {entry["sha256"]: entry for entry in registry["fingerprints"]}
         self.max_file_bytes = max_file_bytes
@@ -372,6 +383,7 @@ class Inventory:
         self.bytes_read = 0
         self.archives_attempted = 0
         self.archives_opened = 0
+        self.code_references = code_references
         self.checked_paths: set[Path] = set()
         self.pending_symlinks: list[Path] = []
         self.covered_symlinks = 0
@@ -420,6 +432,12 @@ class Inventory:
         self.inspect(data, label, depth)
 
     def inspect(self, data: bytes, label: str, depth: int) -> None:
+        if data.startswith(b"\x7fELF") and self.code_references is not None:
+            self._inspect_elf(data, label, self.code_references)
+            kind = archive_kind(data, label)
+            if kind is not None:
+                self._inspect_container(data, label, depth, kind)
+            return
         digest = hashlib.sha256(data).hexdigest()
         if digest in self.fingerprints:
             entry = self.fingerprints[digest]
@@ -451,6 +469,22 @@ class Inventory:
             self._inspect_manifest(text, label)
         elif not python_bytecode(data, name):
             self._inspect_symbols(data, text, label, digest)
+
+    def _inspect_elf(self, data: bytes, label: str, references: list[CodeReference]) -> None:
+        assessment = match_code(data, references)
+        if assessment.limited:
+            self.gap(label, assessment.reason)
+        self.findings.append(
+            finding(
+                label,
+                "decoder_code_match" if assessment.matches else "binary_candidate",
+                assessment.patch_status,
+                assessment.reason,
+                sha256=hashlib.sha256(data).hexdigest(),
+                code_matches=assessment.matches,
+                linkage="embedded_code" if assessment.matches else "unknown",
+            )
+        )
 
     def _inspect_source(self, text: str, label: str, digest: str) -> bool:
         if not text or Path(leaf_name(label)).suffix not in SOURCE_SUFFIXES:
@@ -770,8 +804,19 @@ def positive(value: str) -> int:
     return number
 
 
-def explain_finding(item: dict) -> dict:
+def explain_finding(item: dict) -> dict:  # noqa: PLR0911 -- Explicit per-evidence guidance.
     status = item["patch_status"]
+    if status in {"vulnerable_code_match", "mixed_code_matches", "fixed_code_match"}:
+        return {
+            "result": "Affected decoder code matched in this binary"
+            if status != "fixed_code_match"
+            else "Fixed decoder code matched in this binary",
+            "next_action": (
+                "Review the matched build evidence and rebuild affected embedded copies. "
+                "Confirm runtime use and check other copies; a fixed match does not clear "
+                "the whole binary."
+            ),
+        }
     if status == "vulnerable_source":
         return {
             "result": "Vulnerable Brotli source found",
@@ -945,6 +990,22 @@ def end_of_life_summary() -> dict:
 
 
 def attention_summary(statuses: set[str]) -> dict:
+    if statuses & {"vulnerable_code_match", "mixed_code_matches"}:
+        return {
+            "status": "needs_attention",
+            "title": "Affected Brotli decoder code matched in a binary",
+            "meaning": (
+                "Executable code matches an affected decoder reference. This is code "
+                "identity evidence, not proof of runtime use or exploitability."
+            ),
+            "next_steps": [
+                (
+                    "Review the reference build evidence, update affected copies, "
+                    "rebuild and redeploy."
+                ),
+                "Check all other copies, source findings, and scan gaps separately.",
+            ],
+        }
     if "vulnerable_source" in statuses:
         return {
             "status": "needs_attention",
@@ -1073,6 +1134,9 @@ def summarize(report: dict) -> dict:
 def display_copies(findings: list[dict]) -> list[dict]:
     # Merge evidence about the same file for display; full evidence stays in JSON.
     priorities = {
+        "vulnerable_code_match": 0,
+        "mixed_code_matches": 0,
+        "fixed_code_match": 2,
         "vulnerable_source": 0,
         "potentially_vulnerable": 1,
         "unknown": 2,
@@ -1196,6 +1260,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="upstream Node.js version obtained separately; repeat for multiple copies",
     )
     parser.add_argument(
+        "--code-references",
+        type=Path,
+        default=REFERENCES,
+        help="compiled ELF decoder references; unmatched binaries remain unknown",
+    )
+    parser.add_argument(
         "--max-file-bytes",
         type=positive,
         default=16 * 1024 * 1024,
@@ -1227,12 +1297,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     roots = args.roots or ([] if args.brotli_version or args.node_version else [Path.cwd()])
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    try:
+        code_references = load_references(args.code_references)
+    except (OSError, ValueError) as error:
+        print(f"Invalid code references: {error}", file=sys.stderr)
+        return 2
     inventory = Inventory(
         registry,
         args.max_file_bytes,
         args.max_total_bytes,
         args.max_files,
         args.archive_depth,
+        code_references=code_references,
     )
     inventory.scan_roots([root.expanduser().absolute() for root in roots])
     for component, versions in (
@@ -1295,6 +1371,10 @@ def make_report(
             },
             "limitations": [
                 "No absence-of-Brotli guarantee.",
+                (
+                    "Compiled code matches exclude relocation targets/data "
+                    "and do not clear other copies."
+                ),
                 "Unrecognized or signature-free container/compression formats can be missed.",
                 "Container layers are inspected without reconstructing the final image filesystem.",
                 (

@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts/brotli_inventory.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("inventory", SCRIPT)
 if spec is None or spec.loader is None:
     message = f"Cannot load the inventory helper at {SCRIPT}"
@@ -735,7 +736,7 @@ class TestInventory:
         assert len(report["findings"]) == 2
         assert {row["kind"] for row in report["findings"]} == {
             "artifact_name_candidate",
-            "decoder_symbol_candidate",
+            "binary_candidate",
         }
         assert all(
             row["path"].endswith("provider.jar!native/libbrotli.so") for row in report["findings"]
