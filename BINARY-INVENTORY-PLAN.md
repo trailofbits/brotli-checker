@@ -89,3 +89,81 @@ PR publication blocked by repository permissions:
   lookup returned 404. No remote changes or PR were created.
 - Prepared PR body: artifacts/pr-body.txt. Publish after upstream write access or
   an allowed fork becomes available. No unrelated evaluation artifacts committed.
+
+## Independent binary scanner review (2026-10-23)
+
+Outcome: review binary matching and integration, and identify useful real binary
+test inputs. User explicitly requested independent agents. This is a focused
+direct review, not a formal Vivisect assurance run.
+Acceptance: source-grounded findings checked by the primary reviewer; baseline
+tests/static checks; real local binary corpus with provenance, hashes, results,
+and explicit unknowns. No target execution, production edits, or publication.
+Ownership: independent matcher reviewer, integration reviewer, and corpus tester;
+primary reviewer verifies evidence and records the consolidated outcome here.
+Review artifacts: artifacts/review-20261023/. Existing evaluation/ is untouched.
+Review findings verified by primary reviewer:
+- Text rendering hides a fixed-code match when an earlier Brotli filename hint
+  has the same display priority. Reproduced using the real 1.2.1 stripped binary
+  under label libbrotli.so; JSON retains the match and exit remains conservative.
+- Normal ELF matching returns before existing decoder-symbol collection. Verified
+  on /usr/lib64/libbrotlidec.so.1.2.0: without matching it has a decoder-symbol
+  candidate, with matching only a generic binary candidate. This loses triage
+  evidence, not a false-safe verdict.
+- Reference builder accepts repeated source inputs and emits duplicate IDs that
+  its consumer rejects. Independently built the same 1.2.1 tree twice: two
+  entries, one unique ID. Low-severity maintainer-path defect.
+- Additional integration observations: named files have heterogeneous duplicate
+  finding rows, and binary reports omit applied limits. These are output-design
+  improvements, not demonstrated incorrect patch classifications.
+
+Verification: 89 standard tests passed (90.70% coverage), all 12 optional
+real-build cases passed, Ruff check/format and ty passed. No production edits.
+Independent matcher review also regenerated all 12 packaged entries identically.
+Primary reviewer checked corpus output and all 11 initial file hashes: six local
+stripped controls match expected states; Fedora decoder, Node, libwoff2dec,
+encoder-only library, and Python remain unassessed with no read gaps under the
+selected limits. Same-source -O3 coverage control is recorded by corpus reviewer.
+
+Design recommendation: preserve one per-artifact evidence owner combining name,
+format, symbols, code matches and read status; render by evidence specificity
+without downgrading affected evidence. Validate generated reference catalogs
+with the consumer's validator. Keep unknown distinct from clean. This review
+does not establish independent-package recognition or runtime patch status.
+
+Status: complete. Three independent agents delivered matcher/integration notes
+and an 11-target corpus manifest with raw output, provenance, and a rerun command
+under artifacts/review-20261023/. Artifacts are local and gitignored. Production
+files and existing evaluation artifacts were not modified. No fixes or commits
+were made as part of this review.
+
+PR publication completed after user confirmed access:
+- Pushed committed implementation c7fc248 on codex/elf-brotli-code-matching.
+- Opened https://github.com/trailofbits/brotli-checker/pull/6 against main.
+- Left concurrent uncommitted independent-review notes and evaluation/ untouched;
+  they were not included in the push.
+
+## Review fixes for PR 6
+
+User authorized fixes and patches into the PR. Preserve unknown/affected exit
+semantics and bounded reads. Consolidate name hints into content findings, retain
+symbols on ELF misses, use a consistent binary schema for unread named files,
+record applied budgets, and reject invalid generated catalogs before output.
+Use shared 128 MiB file / 1 GiB total defaults so the tested Node build fits;
+larger inputs still require explicit budgets. No target execution or fuzzy match
+changes. Verify regression failures first, full tests including local real builds,
+lint/types, real corpus, then commit and push to existing PR 6. Existing evaluation/
+remains untouched. Status: implementation in progress.
+
+Scope expanded by user: diagnose excessive unknowns, and provide bounded objdump
+evidence for skill-driven model inspection of unresolved cases. Root cause probes:
+whole-object profiles miss O3 and LTO; the Fedora-like LTO link misses even its
+own pre-link reference. Safe immediate changes: O3 references; parse defined vs
+imported ELF decoder APIs and exact constant-return BrotliDecoderVersion forms.
+Old reported versions warn potentially_vulnerable (never definite affected from
+version); reported fixed versions never clear binaries. Preserve source/runtime
+uncertainty and mixed-copy caution. Bounded disassembly is a separate opt-in
+triage helper, not target execution or an automatic semantic patch verdict.
+Ownership: primary implements shared metadata assessment and CLI integration;
+matcher reviewer owns pure metadata tests; corpus agent owns O3 generator/defaults,
+packaged corpus and real-build matrix; integration agent owns triage helper/tests
+and skill/reachability guidance. All production patches go into existing PR 6.

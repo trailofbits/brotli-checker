@@ -10,11 +10,14 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts/brotli_inventory.py"
 sys.path.insert(0, str(SCRIPT.parent))
+from brotli_binary_match import CodeAssessment  # noqa: E402
+
 spec = importlib.util.spec_from_file_location("inventory", SCRIPT)
 if spec is None or spec.loader is None:
     message = f"Cannot load the inventory helper at {SCRIPT}"
@@ -188,6 +191,32 @@ class TestInventory:
         assert code == 3
         assert result["findings"][0]["patch_status"] == "unknown"
 
+    def test_unmatched_elf_retains_decoder_symbol_evidence(self):
+        target = self.root / "application"
+        target.write_bytes(b"\x7fELF\0BrotliDecoderDecompress\0")
+        with patch.object(
+            inventory,
+            "match_code",
+            return_value=CodeAssessment([], "No supported reference matched"),
+        ):
+            code, report = self.run_cli(target)
+        assert code == 3
+        assert len(report["findings"]) == 1
+        finding = report["findings"][0]
+        assert finding["kind"] == "decoder_symbol_candidate"
+        assert finding["evidence"]["indicators"] == ["BrotliDecoderDecompress"]
+
+    def test_named_fixed_code_match_is_single_and_visible(self):
+        target = self.root / "libbrotli.so"
+        target.write_bytes(b"\x7fELF fixed decoder fixture")
+        assessment = CodeAssessment([{"state": "fixed", "id": "fixture"}], "Fixed fixture")
+        with patch.object(inventory, "match_code", return_value=assessment):
+            code, report = self.run_cli(target)
+        assert code == 3
+        assert len(report["findings"]) == 1
+        assert report["findings"][0]["patch_status"] == "fixed_code_match"
+        assert "Fixed decoder code matched in this binary" in inventory.render_text(report)
+
     def test_cli_version_exit_codes_and_result_scope(self):
         code, result = self.run_cli("--brotli-version", "1.1.1")
         assert code == 0
@@ -198,6 +227,15 @@ class TestInventory:
         assert result["result"] == "affected_evidence_found"
         code, result = self.run_cli("--brotli-version", "1.0.9-vendor-fix")
         assert code == 3
+
+    def test_cli_records_aligned_read_limits(self):
+        _, report = self.run_cli(self.root)
+        assert report["coverage"]["limits"] == {
+            "max_file_bytes": 128 * 1024 * 1024,
+            "max_total_bytes": 1024 * 1024 * 1024,
+            "max_files": 50000,
+            "archive_depth": 2,
+        }
 
     def test_byte_budget_and_count_gaps(self):
         for name in ("a", "b", "c"):

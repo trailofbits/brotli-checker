@@ -34,15 +34,37 @@ RELEASES = [
     ("1.2.0", "vulnerable"),
     ("1.2.1", "fixed"),
 ]
+PACKAGED_REFERENCES = matcher.load_references(matcher.REFERENCES)
 
 
 def invoke(command):
     subprocess.run(command, check=True, capture_output=True)  # noqa: S603 -- Local compiler tools, no targets executed.
 
 
+def assert_packaged_match_if_compatible(data, reference, state):
+    compatible = any(
+        packaged.metadata["compiler"] == reference.metadata["compiler"]
+        and packaged.metadata["machine"] == reference.metadata["machine"]
+        for packaged in PACKAGED_REFERENCES
+    )
+    if not compatible:
+        return
+    assessment = matcher.match_code(data, PACKAGED_REFERENCES)
+    assert not assessment.limited
+    assert assessment.matches
+    assert {match["state"] for match in assessment.matches} == {state}
+    assert any(
+        match["source_sha256"] == reference.metadata["source_sha256"]
+        and match["compiler"] == reference.metadata["compiler"]
+        and match["flags"] == reference.metadata["flags"]
+        for match in assessment.matches
+    )
+
+
 @pytest.mark.parametrize(("release", "state"), RELEASES)
+@pytest.mark.parametrize("optimization", ["-O2", "-O3"])
 @pytest.mark.parametrize("pic", [False, True])
-def test_real_static_decoder(tmp_path, release, state, pic):  # noqa: PLR0915 -- End-to-end build/link/scan boundary.
+def test_real_static_decoder(tmp_path, release, state, optimization, pic):  # noqa: PLR0915 -- End-to-end build/link/scan boundary.
     assert SOURCE_ROOT
     tree = Path(SOURCE_ROOT) / f"brotli-{release}"
     compiler = shutil.which("cc")
@@ -51,7 +73,7 @@ def test_real_static_decoder(tmp_path, release, state, pic):  # noqa: PLR0915 --
     assert compiler
     assert archiver
     assert strip
-    flags = ["-O2", "-fPIC"] if pic else ["-O2", "-fno-pic", "-fno-PIE"]
+    flags = [optimization, "-fPIC"] if pic else [optimization, "-fno-pic", "-fno-PIE"]
     build = runpy.run_path(str(ROOT / "scripts/build_binary_references.py"))["build_references"]
     catalog = build([tree], compiler, flags)
     reference = matcher.CodeReference.from_json(catalog["references"][0])
@@ -91,6 +113,7 @@ def test_real_static_decoder(tmp_path, release, state, pic):  # noqa: PLR0915 --
         assessment = matcher.match_code(data, [reference])
         assert not assessment.limited
         assert {m["state"] for m in assessment.matches} == {state}
+        assert_packaged_match_if_compatible(data, reference, state)
         offsets.append(assessment.matches[0]["file_offset"])
         # Removing section headers must not change the answer.
         sectionless = bytearray(data)

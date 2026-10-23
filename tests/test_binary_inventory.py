@@ -68,9 +68,57 @@ def test_bundled_named_stripped_library(tmp_path):
     result = run_scan(archive)
     assert result.returncode == 1
     findings = json.loads(result.stdout)["findings"]
-    assert findings[-1]["path"].endswith("app.whl!native/libbrotlidec.so.1")
-    assert findings[-1]["sha256"]
+    assert len(findings) == 1
+    assert findings[0]["path"].endswith("app.whl!native/libbrotlidec.so.1")
+    assert findings[0]["sha256"]
     assert list(tmp_path.iterdir()) == [archive]
+
+
+def test_named_read_and_unread_findings_share_the_binary_schema(tmp_path):
+    readable = tmp_path / "libbrotli.dll"
+    readable.write_bytes(b"MZ")
+    unread = tmp_path / "libbrotli.so"
+    unread.write_bytes(b"too large")
+    result = run_scan(tmp_path, "--max-file-bytes", "4")
+    assert result.returncode == 3
+    findings = json.loads(result.stdout)["findings"]
+    assert len(findings) == 2
+    assert set(findings[0]) == set(findings[1])
+    by_path = {finding["path"]: finding for finding in findings}
+    assert by_path[str(readable)]["sha256"] == hashlib.sha256(b"MZ").hexdigest()
+    assert by_path[str(unread)]["sha256"] is None
+    assert by_path[str(unread)]["code_assessment"] == "Content was not inspected; filename only"
+
+
+def test_report_records_default_and_effective_limits(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("nothing to inventory")
+    default_report = json.loads(run_scan(path).stdout)
+    assert default_report["coverage"]["limits"] == {
+        "max_file_bytes": 128 * 1024 * 1024,
+        "max_total_bytes": 1024 * 1024 * 1024,
+        "max_files": 100000,
+        "archive_depth": 2,
+    }
+    custom_report = json.loads(
+        run_scan(
+            path,
+            "--max-file-bytes",
+            "10",
+            "--max-total-bytes",
+            "20",
+            "--max-files",
+            "30",
+            "--archive-depth",
+            "4",
+        ).stdout
+    )
+    assert custom_report["coverage"]["limits"] == {
+        "max_file_bytes": 10,
+        "max_total_bytes": 20,
+        "max_files": 30,
+        "archive_depth": 4,
+    }
 
 
 @pytest.mark.parametrize("catalog", [[], {"bad": "build"}, {"a" * 64: 123}, {"a" * 64: ""}])
