@@ -75,6 +75,27 @@ def executable_ranges(data: bytes) -> tuple[int, list[tuple[int, int]]]:
     return header[2], sorted(set(ranges))
 
 
+def validate_metadata(entry: dict) -> None:
+    for field in ("id", "source_sha256", "object_sha256", "source", "compiler", "flags"):
+        if not isinstance(entry.get(field), str) or not entry[field].strip():
+            msg = f"Invalid code reference {field}"
+            raise ValueError(msg)
+    for field in ("source_sha256", "object_sha256"):
+        value = entry[field]
+        if len(value) != hashlib.sha256().digest_size * 2 or any(
+            c not in "0123456789abcdef" for c in value
+        ):
+            msg = f"Invalid code reference {field}"
+            raise ValueError(msg)
+    if (
+        entry.get("state") not in ("fixed", "vulnerable")
+        or not isinstance(entry.get("machine"), int)
+        or entry["machine"] not in MACHINES
+    ):
+        msg = "Invalid code reference state or machine"
+        raise ValueError(msg)
+
+
 @dataclass(frozen=True)
 class CodeReference:
     metadata: dict
@@ -88,24 +109,7 @@ class CodeReference:
         if not isinstance(entry, dict):
             msg = "Code reference must be an object"
             raise ValueError(msg)  # noqa: TRY004 -- Malformed catalog is a CLI value error.
-        for field in ("id", "source_sha256", "object_sha256", "source", "compiler", "flags"):
-            if not isinstance(entry.get(field), str) or not entry[field].strip():
-                msg = f"Invalid code reference {field}"
-                raise ValueError(msg)
-        for field in ("source_sha256", "object_sha256"):
-            value = entry[field]
-            if len(value) != hashlib.sha256().digest_size * 2 or any(
-                c not in "0123456789abcdef" for c in value
-            ):
-                msg = f"Invalid code reference {field}"
-                raise ValueError(msg)
-        if (
-            entry.get("state") not in ("fixed", "vulnerable")
-            or not isinstance(entry.get("machine"), int)
-            or entry["machine"] not in MACHINES
-        ):
-            msg = "Invalid code reference state or machine"
-            raise ValueError(msg)
+        validate_metadata(entry)
         try:
             code = bytes.fromhex(entry["code"])
             mask = bytes.fromhex(entry["mask"])
@@ -181,7 +185,9 @@ class CodeAssessment:
         return "unknown"
 
 
-def match_code(data: bytes, references: list[CodeReference]) -> CodeAssessment:
+def match_code(  # noqa: C901 -- Bounded reference/segment/candidate search with explicit limits.
+    data: bytes, references: list[CodeReference]
+) -> CodeAssessment:
     try:
         machine, ranges = executable_ranges(data)
     except ValueError as error:
@@ -254,6 +260,26 @@ def relocation_mask(machine: int, kind: int) -> bytes:
     raise ValueError(msg)
 
 
+def apply_relocations(  # noqa: PLR0913 -- ELF section context and output mask.
+    data: bytes, sections: list[tuple], index: int, code: bytes, mask: bytearray, *, machine: int
+) -> None:
+    for relocation in sections:
+        if relocation[1] not in (4, 9) or relocation[7] != index:
+            continue
+        if relocation[1] != SHT_RELA or relocation[9] != RELOCATION.size:
+            msg = "Only ELF64 RELA executable relocations are supported"
+            raise ValueError(msg)
+        entries = checked_slice(data, relocation[4], relocation[5])
+        if len(entries) % RELOCATION.size:
+            msg = "Malformed relocation table"
+            raise ValueError(msg)
+        for offset, info, _ in RELOCATION.iter_unpack(entries):
+            field_mask = relocation_mask(machine, info & 0xFFFFFFFF)
+            checked_slice(code, offset, len(field_mask))
+            for i, value in enumerate(field_mask):
+                mask[offset + i] &= value
+
+
 def reference_from_object(data: bytes, metadata: dict) -> dict:
     """Build a complete decoder .text signature, rejecting unsupported object layouts."""
     header = elf_header(data)
@@ -271,21 +297,7 @@ def reference_from_object(data: bytes, metadata: dict) -> dict:
     index, section = code_sections[0]
     code = checked_slice(data, section[4], section[5])
     mask = bytearray(b"\xff" * len(code))
-    for relocation in sections:
-        if relocation[1] not in (4, 9) or relocation[7] != index:
-            continue
-        if relocation[1] != SHT_RELA or relocation[9] != RELOCATION.size:
-            msg = "Only ELF64 RELA executable relocations are supported"
-            raise ValueError(msg)
-        entries = checked_slice(data, relocation[4], relocation[5])
-        if len(entries) % RELOCATION.size:
-            msg = "Malformed relocation table"
-            raise ValueError(msg)
-        for offset, info, _ in RELOCATION.iter_unpack(entries):
-            field_mask = relocation_mask(header[2], info & 0xFFFFFFFF)
-            checked_slice(code, offset, len(field_mask))
-            for i, value in enumerate(field_mask):
-                mask[offset + i] &= value
+    apply_relocations(data, sections, index, code, mask, machine=header[2])
     entry = {
         **metadata,
         "machine": header[2],

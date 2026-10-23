@@ -17,7 +17,7 @@ from brotli_binary_match import (
     load_references,
     match_code,
 )
-from brotli_inventory import Inventory, positive
+from brotli_inventory import Inventory, archive_kind, positive
 
 MAGICS = {
     b"\x7fELF": "ELF",
@@ -93,7 +93,9 @@ class BinaryInventory(Inventory):
                     "code_assessment": assessment.reason,
                 }
             )
-        self.inspect_container(data, label, depth)
+        kind = archive_kind(data, label)
+        if kind is not None:
+            self._inspect_container(data, label, depth, kind)
 
 
 def load_catalog(path: Path | None) -> dict[str, str]:
@@ -144,11 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         archive_depth=args.archive_depth,
     )
     roots = [root.expanduser().absolute() for root in args.roots]
-    for root in roots:
-        if inventory.exhausted():
-            inventory.gap(str(root), "Budget exhausted; root not inspected.")
-        else:
-            inventory.scan_root(root)
+    inventory.scan_roots(roots)
     report = {
         "schema_version": 2,
         "scope": [str(root) for root in roots],
@@ -157,8 +155,11 @@ def main(argv: list[str] | None = None) -> int:
             "files_read": inventory.files_read,
             "files_seen": inventory.files_seen,
             "bytes_read": inventory.bytes_read,
+            "archives_attempted": inventory.archives_attempted,
             "archives_opened": inventory.archives_opened,
             "gap_count": inventory.gap_count,
+            "gap_details_retained": len(inventory.gaps),
+            "gap_details_omitted": inventory.gap_count - len(inventory.gaps),
             "gaps": inventory.gaps,
             "excluded": [".git"],
             "symlinks_followed": False,

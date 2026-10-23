@@ -32,6 +32,11 @@ The CNA record has disjoint Brotli version ranges. A single comparison against
 1.2.1 would incorrectly warn on fixed 1.0.10 and 1.1.1. Other Node branches,
 forks, prereleases, and custom builds need decoder-specific evidence. The helper
 does not assert that every historical Node release contains an affected decoder.
+The [Node.js release schedule](https://github.com/nodejs/Release/blob/main/schedule.json)
+marks Node 20 and the historical odd-numbered branches through 25 as end of life
+on this snapshot date. The helper recommends a supported fixed branch for these
+versions while retaining unknown decoder patch status and exit 3. Future branches
+outside the snapshot are not assumed to be end of life.
 
 An older version can contain a vendor backport. Establish the OS release,
 provider, architecture, and complete package revision, then use that provider's
@@ -75,13 +80,35 @@ of absence. Do not use a changing repository count as a deployment count.
   documented architecture/compiler corpus. Relocation targets/data and other
   copies remain unverified; unmatched code is unknown. The helper does not disassemble,
   load libraries, invoke interpreters, or execute target tools.
-- ZIP-family archives and TAR variants are bounded by file, total-read,
-  nesting, and count limits. Unsupported/encrypted content, unreadable files,
-  symlinks, large files, and remote build inputs remain coverage gaps. Archive
-  member names are report labels; no member is extracted to disk.
+- JavaScript/TypeScript fetch references and Undici imports/dependencies identify
+  possible Node HTTP response-decoding routes even without a Brotli dependency.
+  They do not establish the fetch binding, runtime, patch state, or input owner.
+  The bounded heuristic skips comments/ordinary strings and preserves templates;
+  literal template text can produce extra leads. Computed names, dynamic loading,
+  bundler rewrites, and unavailable source can hide calls. See the
+  [Node/fetch guide](reachability.md#nodes-built-in-fetch).
+- ZIP-family archives, TAR, gzip, bzip2, and XZ are identified by known content
+  signatures as well as filename hints, including extensionless container layers.
+  Expansion, member reads, nesting, and file counts are bounded. Recognized
+  unsupported formats (including AR/Debian, RPM, Zstandard, 7z, and RAR), encrypted
+  content, unreadable files, unchecked symlink targets, and limits produce gaps.
+  Signature-free or unrecognized encodings can be missed. No member is extracted;
+  hostile names and error messages are escaped in text and JSON output. Container
+  traversal inventories layers without reconstructing a final image filesystem.
+- Filesystem symlinks are never opened. When a resolved target was visited
+  directly among the supplied scan roots, the alias adds no gap.
+  Broken/external/unchecked targets and archive links remain gaps. Python bytecode
+  symbol strings are not native-decoder evidence; Python project metadata is
+  checked in dependency fields rather than its project description.
 - Exit 0 applies only to reported items that match known fixed source or a
   supported upstream version rule. Exit 3 includes no matches. Neither clears
   uninspected copies or establishes application reachability.
+
+Validation used decoder source references, synthetic packaging fixtures, and
+a benign loopback test of built-in Node fetch's Brotli response decoding. No
+deployed application or binary was tested; no malformed or exploit payload was
+executed. The fetch test establishes a decoding route, not CVE triggerability.
+See the repository's [validation record](https://github.com/trailofbits/brotli-checker/blob/main/docs/validation.md).
 
 ## Escalating an unresolved result
 
