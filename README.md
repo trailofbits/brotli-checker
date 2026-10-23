@@ -35,7 +35,7 @@ what information is missing and who can get it.
 
 ## Run the checker directly
 
-Requires Python 3.10 or newer; no extra Python packages are needed.
+Supports Python 3.12–3.15; no extra Python packages are needed.
 
 ```sh
 git clone https://github.com/trailofbits/brotli-checker.git

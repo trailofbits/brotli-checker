@@ -35,7 +35,7 @@ the conversation already provides local/server access, use it. Ask only for
 missing access or a target that cannot be inferred. Do not send malformed
 streams or exploit probes.
 
-From this skill's directory, run the offline inventory helper (Python 3.10+).
+From this skill's directory, run the offline inventory helper (Python 3.12–3.15).
 Use JSON internally for the evidence; the default text output is for people:
 
 ```sh
