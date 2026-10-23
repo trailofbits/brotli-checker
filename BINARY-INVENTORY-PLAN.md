@@ -188,4 +188,11 @@ behavior, and triage hash binding/range/output/completeness invariants.
 Real triage: Node selected 9 relevant functions; Fedora public fallback remains
 explicitly incomplete. All objdump invocations read a private snapshot matching
 the reported input hash; no targets executed. Validation summaries are under
-docs/artifacts/ and docs/binary-validation.md. Remaining: publish follow-up PR.
+docs/artifacts/ and docs/binary-validation.md.
+
+Published follow-up: https://github.com/trailofbits/brotli-checker/pull/7 on
+codex/binary-scanner-followup, against current main. All requested implementation,
+tests, skill workflow, and validation summaries are committed and pushed. Existing
+evaluation/ remains untracked and untouched. Local verification is complete;
+GitHub CI passed on implementation commit 1b61f7e: Python 3.12, 3.13, 3.14,
+3.15, and the existing benign built-in Node fetch check.
