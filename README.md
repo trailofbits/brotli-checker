@@ -114,6 +114,12 @@ or unused dependency can produce a match. It does not trace URL ownership or
 discover the running Node version; provide that runtime's version with
 `--node-version`. A supplied fixed version does not clear an unresolved fetch lead.
 
+Electron apps also have Chromium networking and font-decoding paths. The
+[Electron/Slack measurement record](docs/electron-validation.md) confirms benign
+response decoding in an installed Slack renderer and explains why an Electron
+version label or standalone Node version cannot establish its patch status.
+Slack's message, preview, and upload paths were not validated.
+
 ### Exit codes
 
 For automation, use the exit code together with the JSON evidence:

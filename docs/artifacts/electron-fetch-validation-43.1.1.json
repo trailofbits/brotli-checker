@@ -1,0 +1,631 @@
+{
+  "schema_version": 1,
+  "platform": "darwin",
+  "architecture": "arm64",
+  "versions": {
+    "node": "24.18.0",
+    "acorn": "8.16.0",
+    "ada": "3.4.4",
+    "amaro": "1.1.9",
+    "ares": "1.34.6",
+    "brotli": "1.2.0",
+    "cldr": "48.0",
+    "icu": "78.2",
+    "llhttp": "9.4.2",
+    "merve": "1.2.2",
+    "modules": "148",
+    "napi": "10",
+    "nbytes": "0.1.4",
+    "ncrypto": "0.0.1",
+    "nghttp2": "1.69.0",
+    "nghttp3": "",
+    "ngtcp2": "",
+    "openssl": "0.0.0",
+    "simdjson": "4.6.4",
+    "simdutf": "7.7.0",
+    "sqlite": "3.53.1",
+    "tz": "2025c",
+    "undici": "7.28.0",
+    "unicode": "17.0",
+    "uv": "1.52.1",
+    "uvwasi": "0.0.23",
+    "v8": "15.0.245.15-electron.0",
+    "zlib": "1.3.2.1-motley",
+    "zstd": "1.6.0",
+    "electron": "43.1.1",
+    "chrome": "150.0.7871.114"
+  },
+  "scope": "Trusted fixture in a separate Electron runtime; valid loopback HTTP/HTTPS responses only.",
+  "certificate_trust": "Ephemeral loopback certificate pinned for Chromium sessions and added to Node trust for this process only.",
+  "renderer": {
+    "node_require_available": false,
+    "node_process_available": false,
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.114 Electron/43.1.1 Safari/537.36",
+    "secure_context": true
+  },
+  "chromium_wrapper_instrumentation": "not_performed; decoded bytes establish response decoding",
+  "patch_status": "not_assessed_by_probe",
+  "target_application_input_path": "not_assessed",
+  "exploitability": "not_assessed",
+  "blocked_requests": [],
+  "validation_errors": [],
+  "results": [
+    {
+      "transport": "http",
+      "route": "main_node_fetch",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=main_node_fetch_plain_control",
+          "accept_encoding": "gzip, deflate"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "main_node_fetch",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=main_node_fetch_default",
+          "accept_encoding": "gzip, deflate"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 1,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "main_node_fetch",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=main_node_fetch_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 1,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "main_node_fetch",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=main_node_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        },
+        {
+          "path": "/body?case=main_node_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 1,
+      "redirected": true,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "main_net_fetch",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=main_net_fetch_plain_control",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "main_net_fetch",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=main_net_fetch_default",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "main_net_fetch",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=main_net_fetch_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": false,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": null,
+      "error": "Error: net::ERR_CONTENT_DECODING_FAILED"
+    },
+    {
+      "transport": "http",
+      "route": "main_net_fetch",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=main_net_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        },
+        {
+          "path": "/body?case=main_net_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": false,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": null,
+      "error": "Error: net::ERR_CONTENT_DECODING_FAILED"
+    },
+    {
+      "transport": "http",
+      "route": "main_session_fetch",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=main_session_fetch_plain_control",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "main_session_fetch",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=main_session_fetch_default",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "main_session_fetch",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=main_session_fetch_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": false,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": null,
+      "error": "Error: net::ERR_CONTENT_DECODING_FAILED"
+    },
+    {
+      "transport": "http",
+      "route": "main_session_fetch",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=main_session_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        },
+        {
+          "path": "/body?case=main_session_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": false,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": null,
+      "error": "Error: net::ERR_CONTENT_DECODING_FAILED"
+    },
+    {
+      "transport": "http",
+      "route": "sandboxed_renderer_fetch",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=sandboxed_renderer_fetch_plain_control",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "sandboxed_renderer_fetch",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=sandboxed_renderer_fetch_default",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "sandboxed_renderer_fetch",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=sandboxed_renderer_fetch_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "http",
+      "route": "sandboxed_renderer_fetch",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=sandboxed_renderer_fetch_redirect_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        },
+        {
+          "path": "/body?case=sandboxed_renderer_fetch_redirect_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": true,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_node_fetch",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=main_node_fetch_plain_control",
+          "accept_encoding": "br, gzip, deflate"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_node_fetch",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=main_node_fetch_default",
+          "accept_encoding": "br, gzip, deflate"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 1,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_node_fetch",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=main_node_fetch_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 1,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_node_fetch",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=main_node_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        },
+        {
+          "path": "/body?case=main_node_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 1,
+      "redirected": true,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_net_fetch",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=main_net_fetch_plain_control",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_net_fetch",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=main_net_fetch_default",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_net_fetch",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=main_net_fetch_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": false,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": null,
+      "error": "Error: net::ERR_CONTENT_DECODING_FAILED"
+    },
+    {
+      "transport": "https",
+      "route": "main_net_fetch",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=main_net_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        },
+        {
+          "path": "/body?case=main_net_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": false,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": null,
+      "error": "Error: net::ERR_CONTENT_DECODING_FAILED"
+    },
+    {
+      "transport": "https",
+      "route": "main_session_fetch",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=main_session_fetch_plain_control",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_session_fetch",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=main_session_fetch_default",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "main_session_fetch",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=main_session_fetch_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": false,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": null,
+      "error": "Error: net::ERR_CONTENT_DECODING_FAILED"
+    },
+    {
+      "transport": "https",
+      "route": "main_session_fetch",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=main_session_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        },
+        {
+          "path": "/body?case=main_session_fetch_redirect_identity",
+          "accept_encoding": "identity"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": false,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": null,
+      "error": "Error: net::ERR_CONTENT_DECODING_FAILED"
+    },
+    {
+      "transport": "https",
+      "route": "sandboxed_renderer_fetch",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=sandboxed_renderer_fetch_plain_control",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "sandboxed_renderer_fetch",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=sandboxed_renderer_fetch_default",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "sandboxed_renderer_fetch",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=sandboxed_renderer_fetch_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": false,
+      "error": null
+    },
+    {
+      "transport": "https",
+      "route": "sandboxed_renderer_fetch",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=sandboxed_renderer_fetch_redirect_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        },
+        {
+          "path": "/body?case=sandboxed_renderer_fetch_redirect_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "node_zlib_wrapper_calls": 0,
+      "redirected": true,
+      "error": null
+    }
+  ],
+  "fixture_sha256": "d55428179c064548aedd9833651d4beea66976201e52df91816a98406df503cd"
+}

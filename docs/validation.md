@@ -6,6 +6,13 @@ application or production binary's patch state was validated, and no malformed
 or exploit payload was executed.** The fetch test demonstrates a decoding route,
 not CVE triggerability or exploitation.
 
+Subsequent [Electron and Slack measurements](electron-validation.md) confirmed
+valid-response decoding in four Electron APIs and the installed Slack renderer.
+They used explicit maintainer fixtures and a fresh Slack profile. Slack's
+native patch status and input paths from messages, previews, or uploads remain
+unknown. The record includes two failed startup attempts and their macOS
+sandbox-initialization cause.
+
 ## Vulnerable reference and fixed control
 
 The vulnerable target was [Google Brotli v1.2.0's decoder source](https://github.com/google/brotli/blob/v1.2.0/c/dec/decode.c).

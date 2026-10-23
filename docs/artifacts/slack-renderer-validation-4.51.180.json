@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "slack_version": "4.51.180",
+  "framework_version": "43.1.1",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "scope": "Installed signed Slack binary in a new empty profile, remote navigation to our valid loopback fixture; no workspace or messages tested.",
+  "isolation": {
+    "separate_profile": true,
+    "outbound_network": "Chromium proxy points to closed loopback port; explicit loopback bypass. Node/OS traffic is not independently blocked.",
+    "existing_workspace_used": false,
+    "certificate_trust": "Command-line exception restricted to ephemeral fixture certificate public-key hash",
+    "csp_bypassed": false,
+    "test_disabled_renderer_sandbox": false,
+    "application_renderer_sandbox_setting": "not_independently_verified"
+  },
+  "renderer": {
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 27_0_1) AppleWebKit/537.36 (KHTML, like Gecko) Slack/4.51.180 Chrome/150.0.7871.114 Electron/43.1.1 Safari/537.36 MacAppStore/27.0.0 AppleSilicon Sonic Slack_SSB/4.51.180",
+    "node_require_available": false,
+    "node_process_available": true,
+    "secure_context": true
+  },
+  "patch_status": "not_assessed_by_probe",
+  "target_application_input_path": "not_assessed; trusted debugger navigation is not a message or preview route",
+  "exploitability": "not_assessed",
+  "results": [
+    {
+      "transport": "http",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=plain_control",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "redirected": false
+    },
+    {
+      "transport": "http",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=default",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "redirected": false
+    },
+    {
+      "transport": "http",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "redirected": false
+    },
+    {
+      "transport": "http",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=redirect_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        },
+        {
+          "path": "/body?case=redirect_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "redirected": true
+    },
+    {
+      "transport": "https",
+      "case": "plain_control",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/plain?case=plain_control",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": null,
+      "decoded_body_matches": true,
+      "redirected": false
+    },
+    {
+      "transport": "https",
+      "case": "default",
+      "requested_accept_encoding": null,
+      "requests": [
+        {
+          "path": "/body?case=default",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "redirected": false
+    },
+    {
+      "transport": "https",
+      "case": "identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/body?case=identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "redirected": false
+    },
+    {
+      "transport": "https",
+      "case": "redirect_identity",
+      "requested_accept_encoding": "identity",
+      "requests": [
+        {
+          "path": "/redirect?case=redirect_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        },
+        {
+          "path": "/body?case=redirect_identity",
+          "accept_encoding": "gzip, deflate, br, zstd"
+        }
+      ],
+      "content_encoding": "br",
+      "decoded_body_matches": true,
+      "redirected": true
+    }
+  ],
+  "fixture_sha256": "6461ab7bcca580e628deea7a4b66ee9ce80797833c88566191eb82ededb19117"
+}

@@ -139,6 +139,14 @@ or discover the running Node version. Review its locations and continue with
 the Node/fetch section of the reachability guide. A fixed supplied version or
 standalone Brotli library does not clear an unresolved runtime lead.
 
+For Electron apps, use the guide's Electron section. Separate Chromium's
+renderer/net/session fetch paths from Node fetch, and verify which decoder the
+embedder links. A standalone Node version rule cannot classify a vendor Electron
+build. Mach-O and ASAR packages require additional inspection. Benign Electron
+and Slack renderer measurements confirmed local response decoding, while Slack's
+shipped decoder patch status and attacker-controlled product paths remain unknown.
+The offline scanner does not launch either application.
+
 Report reachability as `confirmed`, `not_reachable_in_reviewed_configuration`,
 or `unknown`, with paths/lines or deployment evidence. A negative conclusion
 must name the exact configuration and reviewed paths. Missing evidence remains
