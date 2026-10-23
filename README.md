@@ -89,6 +89,7 @@ The skill consults current vendor guidance when online research is available.
 
 Use uv for development. The committed lockfile pins the development tools;
 the installed skill still uses only Python's standard library.
+Dependency resolution waits one week before accepting new package uploads.
 
 ```sh
 uv sync --locked
