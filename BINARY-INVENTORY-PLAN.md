@@ -196,3 +196,43 @@ tests, skill workflow, and validation summaries are committed and pushed. Existi
 evaluation/ remains untracked and untouched. Local verification is complete;
 GitHub CI passed on implementation commit 1b61f7e: Python 3.12, 3.13, 3.14,
 3.15, and the existing benign built-in Node fetch check.
+
+## Size policy correction
+
+User rejected the Node-sized 128 MiB threshold: capacity must reflect large Brotli
+embedders, not the first successful sample. Local Firefox libxul is 199331336
+bytes and Qt6 WebEngineCore 193124864. Chromium's official stack-trace guide
+records a 5.3 GB unstripped browser build (2021 observation, not an upper bound):
+https://www.chromium.org/chromium-os/developer-library/guides/debugging/stack-traces/
+
+Revised design: no default regular-file or aggregate read-size cap; preserve
+explicit user caps. User clarified that full reads should be avoided unless
+necessary: regular artifacts now use offset-based pread without copying or
+mapping. Only whole-artifact SHA-256 needs a streamed full-file pass.
+Archive expansion is separately budgeted (8 GiB/member or stream, 64 GiB aggregate)
+to accommodate the measured multi-GB browser envelope with headroom. Source-text
+regex decoding has its own explicit budget; binary hashing/matching is unaffected.
+Triage reuses sparse FileData and copies only bounded code fragments for raw
+objdump, preserving virtual addresses. File mutation invalidates the packet.
+Sequential archive streams may spool when random access is required.
+Acceptance: real larger browser engines, sparse multi-GB test with evidence past
+old/32-bit offsets, bounded heap, preserved explicit and expansion limits, all
+prior tests and static checks, update the existing PR if still open.
+Ownership: matcher reviewer owns shared data/matcher compatibility; integration
+reviewer owns inventory/CLI budgets; primary owns triage and docs; corpus agent
+owns independent large-file measurements.
+
+Completed sparse implementation and independent review. Native FileData uses
+pread without copying or mapping; metadata and matching use validated offsets.
+Indicators use one load-segment pass rather than repeated whole-file searches.
+SHA-256 is streamed. Input mutation invalidates results; explicit user caps still
+apply. Triage disassembles bounded raw fragments at original virtual addresses.
+Sequential archive expansion may spool, under separate expansion budgets.
+
+Verification: 308 tests passed with BROTLI_TEST_SOURCES and BROTLI_LARGE_FILE_TESTS
+enabled, no skips, 90.19% coverage; Ruff format/check, ty, diff checks passed.
+Actual 6,442,478,920-byte CLI probe found code/version above 4 GiB with zero gaps;
+primary repeat measured 30,892 KiB RSS and no whole-file copy. Firefox and Qt
+WebEngine now scan without size gaps. Node's 118 MB input produces only 14,440
+bytes of triage fragments. Durable evidence: docs/binary-validation.md and the
+binary-size-validation.json summary. Status: verified; publishing update to PR 7.

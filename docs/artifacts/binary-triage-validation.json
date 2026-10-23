@@ -3,43 +3,6 @@
   "target_execution": false,
   "results": [
     {
-      "artifact": "libbrotlidec.so.1.2.0",
-      "sha256": "ebbfaffb1c0572c5c78d7534ad56cb7b61219788836e76299c4be7ec4a1c61c0",
-      "size_bytes": 69064,
-      "classification": {
-        "patch_status": "unknown",
-        "reason": "Disassembly requires model comparison with reviewed source; no automatic verdict"
-      },
-      "collection": {
-        "status": "incomplete",
-        "incomplete": true,
-        "reasons": [
-          "Missing defined block-switch classes: Command, Distance, Literal",
-          "No defined ProcessCommands symbol; patch-status propagation scope is incomplete"
-        ],
-        "next_request": "Provide a trusted linker/map-derived --start-address/--stop-address, or an executable --file-offset/--length; keep the range within the reported limits."
-      },
-      "limits": {
-        "max_file_bytes": 134217728,
-        "max_output_bytes": 1048576,
-        "max_range_bytes": 65536,
-        "timeout_seconds": 15,
-        "max_symbols": 12
-      },
-      "scopes": [
-        {
-          "mode": "symbol",
-          "name": "BrotliDecoderDecompressStream",
-          "start_address": 25632,
-          "stop_address": 30464,
-          "size_bytes": 4832
-        }
-      ],
-      "snapshot_sha256": "ebbfaffb1c0572c5c78d7534ad56cb7b61219788836e76299c4be7ec4a1c61c0",
-      "snapshot_matches_target": true,
-      "all_commands_use_snapshot": true
-    },
-    {
       "artifact": "node",
       "sha256": "f15053488b3c49d16eb4b0da25593b459a79839248381f6aa61a876bcce54966",
       "size_bytes": 117532552,
@@ -53,10 +16,10 @@
         "reasons": []
       },
       "limits": {
-        "max_file_bytes": 134217728,
+        "max_file_bytes": null,
         "max_output_bytes": 1048576,
         "max_range_bytes": 65536,
-        "timeout_seconds": 30,
+        "timeout_seconds": 15,
         "max_symbols": 12
       },
       "scopes": [
@@ -124,9 +87,130 @@
           "size_bytes": 4768
         }
       ],
-      "snapshot_sha256": "f15053488b3c49d16eb4b0da25593b459a79839248381f6aa61a876bcce54966",
-      "snapshot_matches_target": true,
-      "all_commands_use_snapshot": true
+      "input_mode": "code_fragments",
+      "fragment_bytes": 14440,
+      "fragments": [
+        {
+          "sha256": "f8942d3dc9d27b2d1988602359aee438a67199fa14d197127859e31b6a8d82c8",
+          "file_offset": 32266256,
+          "start_address": 36460560,
+          "stop_address": 36461440,
+          "size_bytes": 880,
+          "ephemeral": true
+        },
+        {
+          "sha256": "348430cf7610d79cc5bf3a2cae311e44f5f2f1470b7304d10bf074754292e040",
+          "file_offset": 32267136,
+          "start_address": 36461440,
+          "stop_address": 36462248,
+          "size_bytes": 808,
+          "ephemeral": true
+        },
+        {
+          "sha256": "5d39d687ff422ea6a5a0b8dc94d513d5b4d08c8693a6906d4c6f2f6e1f8afb19",
+          "file_offset": 32267952,
+          "start_address": 36462256,
+          "stop_address": 36463080,
+          "size_bytes": 824,
+          "ephemeral": true
+        },
+        {
+          "sha256": "e6a9a49426dd60cbbeec921585359f754ad5f020abc741de6c0d870d74874791",
+          "file_offset": 32273204,
+          "start_address": 36467508,
+          "stop_address": 36468000,
+          "size_bytes": 492,
+          "ephemeral": true
+        },
+        {
+          "sha256": "3c40abfa752229ca3cf1a892bc579fe83ecfcd1937f0553ebdf9f3ae4d68c6c0",
+          "file_offset": 32273696,
+          "start_address": 36468000,
+          "stop_address": 36468424,
+          "size_bytes": 424,
+          "ephemeral": true
+        },
+        {
+          "sha256": "4027ec1cc2b9155c4899a339c476813fa1b2c1bbf41f66620f14d326fbb21178",
+          "file_offset": 32274128,
+          "start_address": 36468432,
+          "stop_address": 36468868,
+          "size_bytes": 436,
+          "ephemeral": true
+        },
+        {
+          "sha256": "4d93eba8f9900dae0a733e3ebfa44f1a2907849d3de72b521614c4cffa4bacc6",
+          "file_offset": 32277348,
+          "start_address": 36471652,
+          "stop_address": 36474304,
+          "size_bytes": 2652,
+          "ephemeral": true
+        },
+        {
+          "sha256": "6684b27824e738ad304d4e7c261681edd6811a718f17caf61c687ec71068e6c3",
+          "file_offset": 32280000,
+          "start_address": 36474304,
+          "stop_address": 36477460,
+          "size_bytes": 3156,
+          "ephemeral": true
+        },
+        {
+          "sha256": "e3ef9e91ae89df1efd97803b4f7b1a5cf781ce2e2bc750013d1272aa3c288935",
+          "file_offset": 32283892,
+          "start_address": 36478196,
+          "stop_address": 36482964,
+          "size_bytes": 4768,
+          "ephemeral": true
+        }
+      ],
+      "all_commands_use_fragments": true
+    },
+    {
+      "artifact": "libbrotlidec.so.1.2.0",
+      "sha256": "ebbfaffb1c0572c5c78d7534ad56cb7b61219788836e76299c4be7ec4a1c61c0",
+      "size_bytes": 69064,
+      "classification": {
+        "patch_status": "unknown",
+        "reason": "Disassembly requires model comparison with reviewed source; no automatic verdict"
+      },
+      "collection": {
+        "status": "incomplete",
+        "incomplete": true,
+        "reasons": [
+          "Missing defined block-switch classes: Command, Distance, Literal",
+          "No defined ProcessCommands symbol; patch-status propagation scope is incomplete"
+        ],
+        "next_request": "Provide a trusted linker/map-derived --start-address/--stop-address, or an executable --file-offset/--length; keep the range within the reported limits."
+      },
+      "limits": {
+        "max_file_bytes": null,
+        "max_output_bytes": 1048576,
+        "max_range_bytes": 65536,
+        "timeout_seconds": 15,
+        "max_symbols": 12
+      },
+      "scopes": [
+        {
+          "mode": "symbol",
+          "name": "BrotliDecoderDecompressStream",
+          "start_address": 25632,
+          "stop_address": 30464,
+          "size_bytes": 4832
+        }
+      ],
+      "input_mode": "code_fragments",
+      "fragment_bytes": 4832,
+      "fragments": [
+        {
+          "sha256": "7b98bf3dec6b27629ced6c64b1efa663bc313ca3e47c5e3de67f299eb6a712ab",
+          "file_offset": 25632,
+          "start_address": 25632,
+          "stop_address": 30464,
+          "size_bytes": 4832,
+          "ephemeral": true
+        }
+      ],
+      "all_commands_use_fragments": true
     }
   ]
 }

@@ -3,7 +3,9 @@ import contextlib
 import hashlib
 import io
 import json
+import struct
 import sys
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -146,12 +148,20 @@ def test_symbol_triage_selects_patch_functions_and_preserves_unknown(tmp_path, m
         "ProcessCommands",
     ]
     assert len(report["evidence"]["disassembly"]) == 5
-    snapshot = report["tool"]["snapshot"]
-    assert snapshot["sha256"] == report["target"]["sha256"]
-    assert snapshot["ephemeral"] is True
-    assert all(command[-1] == snapshot["path"] for command in report["tool"]["commands"])
-    assert snapshot["path"] != str(target)
-    assert not Path(snapshot["path"]).exists()
+    fragments = report["tool"]["fragments"]
+    assert report["tool"]["input_mode"] == "code_fragments"
+    assert len(fragments) == 5
+    for fragment, command in zip(fragments, report["tool"]["commands"], strict=True):
+        begin = fragment["file_offset"]
+        assert (
+            fragment["sha256"]
+            == hashlib.sha256(data[begin : begin + fragment["size_bytes"]]).hexdigest()
+        )
+        assert fragment["size_bytes"] <= report["limits"]["max_range_bytes"]
+        assert fragment["ephemeral"] is True
+        assert command[-1] == fragment["path"]
+        assert "--target=binary" in command
+        assert not Path(fragment["path"]).exists()
     assert target.read_bytes() == before
 
 
@@ -191,36 +201,81 @@ def test_file_offset_range_is_translated_to_executable_address(tmp_path, monkeyp
         "length": 4,
     }
     command = report["tool"]["commands"][0]
-    assert "--start-address=0x401002" in command
-    assert "--stop-address=0x401006" in command
-    assert command[-1] == report["tool"]["snapshot"]["path"]
+    assert "--adjust-vma=0x401002" in command
+    assert command[-1] == report["tool"]["fragments"][0]["path"]
+    assert report["tool"]["fragments"][0]["size_bytes"] == 4
+
+
+def test_large_regular_file_uses_only_small_code_fragments(tmp_path, monkeypatch):
+    target = tmp_path / "large-browser"
+    target.write_bytes(elf(b"x" * 0x400))
+    size = 129 * 1024 * 1024
+    with target.open("r+b") as stream:
+        stream.truncate(size)
+    tracemalloc.start()
+    try:
+        code, report = run_main(monkeypatch, target, outputs=("asm",) * 5)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert code == 0
+    assert report["target"]["size_bytes"] == size
+    assert report["limits"]["max_file_bytes"] is None
+    assert sum(f["size_bytes"] for f in report["tool"]["fragments"]) < 1024
+    assert peak < 16 * 1024 * 1024
+
+
+def test_input_mutation_marks_collected_packet_incomplete(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 0x400))
+    monkeypatch.setattr(triage, "relevant_symbols", lambda *_: (SYMBOL_FIXTURES, None))
+
+    def change_during_disassembly(*_):
+        with target.open("r+b") as stream:
+            stream.seek(-1, 2)
+            stream.write(b"y")
+        return {"returncode": 0, "output": "asm", "limited": False, "reason": None}
+
+    monkeypatch.setattr(triage, "run_bounded", change_during_disassembly)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = triage.main([str(target), "--objdump", "/bin/true"])
+    report = json.loads(output.getvalue())
+    assert code == 3
+    assert report["collection"]["incomplete"]
+    assert "chang" in " ".join(report["collection"]["reasons"]).lower()
 
 
 def test_address_range_and_section_are_exact_and_bounded(tmp_path, monkeypatch):
     target = tmp_path / "service"
-    target.write_bytes(elf())
+    data = bytearray(elf_with_symbols(b"instructions", 183, [{"name": ".text"}]))
+    # Reuse the fixture's string table for section names.
+    struct.pack_into("<H", data, 62, 2)
+    section_table = matcher.elf_header(bytes(data))[6]
+    struct.pack_into("<I", data, section_table + matcher.SECTION_HEADER.size, 1)
+    target.write_bytes(data)
     code, report = run_main(
         monkeypatch,
         target,
         "--start-address",
-        "0x401000",
+        "0x400100",
         "--stop-address",
-        "0x401008",
+        "0x400108",
         "--section",
         ".text",
         outputs=("address disassembly",),
     )
     assert code == 0
     assert report["scope"]["section"] == ".text"
-    assert "--section=.text" in report["tool"]["commands"][0]
+    assert "--adjust-vma=0x400100" in report["tool"]["commands"][0]
 
     code, report = run_main(
         monkeypatch,
         target,
         "--start-address",
-        "0x401000",
+        "0x400100",
         "--stop-address",
-        "0x401100",
+        "0x400200",
         "--max-range-bytes",
         "8",
         outputs=(),

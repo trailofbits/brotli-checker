@@ -6,11 +6,14 @@
   "results": {
     "brotli_inventory.py": {
       "exit_code": 1,
-      "files_read": 11,
+      "files_read": 13,
       "gap_count": 0,
       "limits": {
-        "max_file_bytes": 134217728,
-        "max_total_bytes": 1073741824,
+        "max_file_bytes": null,
+        "max_total_bytes": null,
+        "max_expanded_bytes": 8589934592,
+        "max_total_expanded_bytes": 68719476736,
+        "max_text_bytes": 134217728,
         "max_files": 50000,
         "archive_depth": 2
       },
@@ -129,16 +132,36 @@
           "linkage": "unknown",
           "reported_versions": [],
           "matched_states": []
+        },
+        {
+          "artifact": "libxul.so",
+          "sha256": "5d5b97d61872cbc08f4b5b61321722c2348d7d57382b46c0c5b35c468a2233d4",
+          "kind": "binary_candidate",
+          "patch_status": "unknown",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libQt6WebEngineCore.so.6.11.2",
+          "sha256": "5742a7695237b22fadff8a5e981308436917887da47430b05746d961d78315b6",
+          "kind": "binary_candidate",
+          "patch_status": "unknown",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
         }
       ]
     },
     "brotli_binary_inventory.py": {
       "exit_code": 1,
-      "files_read": 11,
+      "files_read": 13,
       "gap_count": 0,
       "limits": {
-        "max_file_bytes": 134217728,
-        "max_total_bytes": 1073741824,
+        "max_file_bytes": null,
+        "max_total_bytes": null,
+        "max_expanded_bytes": 8589934592,
+        "max_total_expanded_bytes": 68719476736,
         "max_files": 100000,
         "archive_depth": 2
       },
@@ -252,6 +275,24 @@
         {
           "artifact": "python3.14",
           "sha256": "ef59e677fa67d883e7f6d2a5aabbb99f1a14dd77dad74ada90d613202843cb80",
+          "kind": "binary_candidate",
+          "patch_status": "not_assessed",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libxul.so",
+          "sha256": "5d5b97d61872cbc08f4b5b61321722c2348d7d57382b46c0c5b35c468a2233d4",
+          "kind": "binary_candidate",
+          "patch_status": "not_assessed",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libQt6WebEngineCore.so.6.11.2",
+          "sha256": "5742a7695237b22fadff8a5e981308436917887da47430b05746d961d78315b6",
           "kind": "binary_candidate",
           "patch_status": "not_assessed",
           "linkage": "unknown",

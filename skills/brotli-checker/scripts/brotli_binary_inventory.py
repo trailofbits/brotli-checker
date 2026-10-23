@@ -10,14 +10,17 @@ import json
 import sys
 from pathlib import Path
 
+from brotli_binary_data import Buffer, sha256_data
 from brotli_binary_match import (
     REFERENCES,
     CodeReference,
     load_references,
 )
 from brotli_inventory import (
+    DEFAULT_MAX_EXPANDED_BYTES,
     DEFAULT_MAX_FILE_BYTES,
     DEFAULT_MAX_TOTAL_BYTES,
+    DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
     Inventory,
     archive_kind,
     assess_binary,
@@ -42,10 +45,28 @@ MAGICS = {
 
 
 class BinaryInventory(Inventory):
-    def __init__(
-        self, catalog: dict[str, str], references: list[CodeReference], **limits: int
+    def __init__(  # noqa: PLR0913 -- Traversal and expansion limits are public CLI controls.
+        self,
+        catalog: dict[str, str],
+        references: list[CodeReference],
+        *,
+        max_file_bytes: int | None,
+        max_total_bytes: int | None,
+        max_files: int,
+        archive_depth: int,
+        max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+        max_total_expanded_bytes: int = DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
     ) -> None:
-        super().__init__({"fingerprints": []}, code_references=None, **limits)
+        super().__init__(
+            {"fingerprints": []},
+            max_file_bytes,
+            max_total_bytes,
+            max_files,
+            archive_depth,
+            max_expanded_bytes=max_expanded_bytes,
+            max_total_expanded_bytes=max_total_expanded_bytes,
+            code_references=None,
+        )
         self.catalog = catalog
         self.references = references
 
@@ -92,8 +113,8 @@ class BinaryInventory(Inventory):
             "code_assessment": code_assessment,
         }
 
-    def inspect(self, data: bytes, label: str, depth: int) -> None:
-        digest = hashlib.sha256(data).hexdigest()
+    def inspect(self, data: Buffer, label: str, depth: int) -> None:
+        digest = sha256_data(data)
         file_format = next((name for magic, name in MAGICS.items() if data.startswith(magic)), None)
         catalog_label = self.catalog.get(digest)
         assessment = assess_binary(data, self.references)
@@ -123,7 +144,7 @@ class BinaryInventory(Inventory):
             )
         kind = archive_kind(data, label)
         if kind is not None:
-            self._inspect_container(data, label, depth, kind)
+            self._inspect_container(data, label, depth, kind, digest)
 
 
 def load_catalog(path: Path | None) -> dict[str, str]:
@@ -159,13 +180,25 @@ def main(argv: list[str] | None = None) -> int:
         "--max-file-bytes",
         type=positive,
         default=DEFAULT_MAX_FILE_BYTES,
-        help="maximum bytes read from one file/member (default: 128 MiB)",
+        help="optional maximum bytes read from one file/member (default: no cap)",
     )
     parser.add_argument(
         "--max-total-bytes",
         type=positive,
         default=DEFAULT_MAX_TOTAL_BYTES,
-        help="maximum cumulative bytes read (default: 1 GiB)",
+        help="optional maximum cumulative bytes read (default: no cap)",
+    )
+    parser.add_argument(
+        "--max-expanded-bytes",
+        type=positive,
+        default=DEFAULT_MAX_EXPANDED_BYTES,
+        help="maximum expanded bytes read from one archive member/stream",
+    )
+    parser.add_argument(
+        "--max-total-expanded-bytes",
+        type=positive,
+        default=DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
+        help="maximum cumulative expanded archive/member bytes",
     )
     parser.add_argument(
         "--max-files",
@@ -193,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
         max_total_bytes=args.max_total_bytes,
         max_files=args.max_files,
         archive_depth=args.archive_depth,
+        max_expanded_bytes=args.max_expanded_bytes,
+        max_total_expanded_bytes=args.max_total_expanded_bytes,
     )
     roots = [root.expanduser().absolute() for root in args.roots]
     inventory.scan_roots(roots)
@@ -204,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
             "files_read": inventory.files_read,
             "files_seen": inventory.files_seen,
             "bytes_read": inventory.bytes_read,
+            "expanded_items_read": inventory.expanded_items_read,
+            "expanded_bytes_read": inventory.expanded_bytes_read,
             "archives_attempted": inventory.archives_attempted,
             "archives_opened": inventory.archives_opened,
             "gap_count": inventory.gap_count,
@@ -217,6 +254,8 @@ def main(argv: list[str] | None = None) -> int:
                 for key in (
                     "max_file_bytes",
                     "max_total_bytes",
+                    "max_expanded_bytes",
+                    "max_total_expanded_bytes",
                     "max_files",
                     "archive_depth",
                 )

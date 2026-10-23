@@ -16,10 +16,13 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING
 
+from brotli_binary_data import Buffer, FileData, file_data, sha256_data
 from brotli_binary_match import (
+    EM_AARCH64,
     PROGRAM_HEADER,
     SECTION_HEADER,
     checked_slice,
@@ -28,7 +31,10 @@ from brotli_binary_match import (
 )
 from brotli_binary_metadata import MAX_SYMBOL_TABLES, MAX_SYMBOLS, SYMBOL
 
-DEFAULT_MAX_FILE_BYTES = 128 * 1024 * 1024
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+DEFAULT_MAX_FILE_BYTES = None
 DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 DEFAULT_MAX_RANGE_BYTES = 64 * 1024
 DEFAULT_TIMEOUT_SECONDS = 15
@@ -93,42 +99,30 @@ def trusted_objdump(value: str | None) -> Path:
     return resolved
 
 
-def _read_open_target(stream: BinaryIO, max_file_bytes: int) -> tuple[bytes, os.stat_result]:
-    metadata = os.fstat(stream.fileno())
-    if not stat.S_ISREG(metadata.st_mode):
-        message = "Target is not a regular file"
-        raise TriageError(message)
-    if metadata.st_size > max_file_bytes:
-        message = f"Target exceeds --max-file-bytes ({metadata.st_size} > {max_file_bytes})"
-        raise TriageError(message)
-    return stream.read(max_file_bytes + 1), metadata
-
-
-def read_target(path: Path, max_file_bytes: int) -> tuple[bytes, os.stat_result]:
+@contextmanager
+def read_target(path: Path, max_file_bytes: int | None) -> Generator[FileData]:
     try:
         metadata = path.lstat()
-    except OSError as error:
-        message = f"Cannot read target: {error}"
-        raise TriageError(message) from error
-    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
-        message = "Target symlinks and nonregular files are not inspected"
-        raise TriageError(message)
-    try:
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            message = "Target symlinks and nonregular files are not inspected"
+            raise TriageError(message)
         descriptor = os.open(
             path,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
         )
         with os.fdopen(descriptor, "rb") as stream:
-            data, metadata = _read_open_target(stream, max_file_bytes)
-    except TriageError:
-        raise
-    except OSError as error:
-        message = f"Cannot read target: {error}"
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                message = "Target is not a regular file"
+                raise TriageError(message)
+            if max_file_bytes is not None and metadata.st_size > max_file_bytes:
+                message = f"Target exceeds --max-file-bytes ({metadata.st_size} > {max_file_bytes})"
+                raise TriageError(message)
+            with file_data(stream, max_file_bytes) as data:
+                yield data
+    except (OSError, ValueError) as error:
+        message = f"Cannot read stable target: {error}"
         raise TriageError(message) from error
-    if len(data) > max_file_bytes:
-        message = "Target grew beyond --max-file-bytes while being read"
-        raise TriageError(message)
-    return data, metadata
 
 
 def run_bounded(  # noqa: C901 -- Process/pipe/time bounds share one lifecycle.
@@ -196,14 +190,14 @@ def run_bounded(  # noqa: C901 -- Process/pipe/time bounds share one lifecycle.
     }
 
 
-def checked_range(data: bytes, offset: int, size: int) -> tuple[int, int]:
+def checked_range(data: Buffer, offset: int, size: int) -> tuple[int, int]:
     if offset < 0 or size < 0 or offset > len(data) or size > len(data) - offset:
         message = "ELF range outside file"
         raise ValueError(message)
     return offset, offset + size
 
 
-def function_offset(data: bytes, header: tuple, address: int, size: int) -> int | None:
+def function_offset(data: Buffer, header: tuple, address: int, size: int) -> int | None:
     table = checked_slice(data, header[5], header[9] * header[10])
     for kind, flags, start, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table):
         if (
@@ -216,7 +210,7 @@ def function_offset(data: bytes, header: tuple, address: int, size: int) -> int 
 
 
 def relevant_symbols(  # noqa: C901, PLR0911, PLR0912, PLR0915 -- Bounded ELF validation.
-    data: bytes, deadline: float, candidate_limit: int = DEFAULT_MAX_SYMBOLS + 1
+    data: Buffer, deadline: float, candidate_limit: int = DEFAULT_MAX_SYMBOLS + 1
 ) -> tuple[list[dict], str | None]:
     """Select relevant defined/imported functions from bounded in-file ELF tables."""
     header = elf_header(data)
@@ -250,7 +244,7 @@ def relevant_symbols(  # noqa: C901, PLR0911, PLR0912, PLR0915 -- Bounded ELF va
             )
         name_start, name_stop = checked_range(data, names[4], names[5])
         entry_start, entry_stop = checked_range(data, table[4], table[5])
-        entries = memoryview(data)[entry_start:entry_stop]
+        entries = data[entry_start:entry_stop]
         for name_offset, info, _, index, address, size in SYMBOL.iter_unpack(entries):
             if time.monotonic() >= deadline:
                 return [*defined_symbols, *imported_symbols], "ELF symbol scan timeout reached"
@@ -319,7 +313,7 @@ def symbol_priority(symbol: dict) -> tuple[int, int, int, str]:
     return 0 if symbol["defined"] else 1, priority, symbol["address"], symbol["name"]
 
 
-def file_offset_address(data: bytes, file_offset: int, length: int) -> int:
+def file_offset_address(data: Buffer, file_offset: int, length: int) -> int:
     header = elf_header(data)
     table = checked_slice(data, header[5], header[9] * header[10])
     for kind, flags, start, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table):
@@ -334,7 +328,7 @@ def file_offset_address(data: bytes, file_offset: int, length: int) -> int:
     raise TriageError(message)
 
 
-def validate_address_range(data: bytes, start: int, stop: int) -> None:
+def validate_address_range(data: Buffer, start: int, stop: int) -> None:
     header = elf_header(data)
     table = checked_slice(data, header[5], header[9] * header[10])
     for kind, flags, _, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table):
@@ -346,9 +340,9 @@ def validate_address_range(data: bytes, start: int, stop: int) -> None:
 
 def base_report(path: Path, args: argparse.Namespace) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "target": {"path": str(path), "sha256": None, "size_bytes": None},
-        "tool": {"path": None, "snapshot": None, "commands": []},
+        "tool": {"path": None, "input_mode": "code_fragments", "fragments": [], "commands": []},
         "scope": {"mode": "symbols"},
         "limits": {
             "max_file_bytes": args.max_file_bytes,
@@ -366,10 +360,10 @@ def base_report(path: Path, args: argparse.Namespace) -> dict:
         },
         "evidence": {"symbols": [], "disassembly": []},
         "limitations": [
-            "The target is read once; trusted objdump receives a private snapshot of those bytes.",
+            "SHA-256 requires one streamed full-file pass; ELF analysis uses bounded offset reads.",
             (
-                "The target is never executed or loaded, and the private snapshot is removed "
-                "after use."
+                "The target is never executed or loaded; only bounded code fragments are copied "
+                "for objdump and removed after use."
             ),
             "Disassembly is bounded and may omit inlined, stripped, split, or optimized code.",
             "Strings and version evidence cannot establish that the fix is present.",
@@ -417,7 +411,7 @@ def validate_scope(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     return "address_range" if address_range else "file_offset_range" if offset_range else "symbols"
 
 
-def explicit_range(data: bytes, args: argparse.Namespace, mode: str) -> tuple[int, int]:
+def explicit_range(data: Buffer, args: argparse.Namespace, mode: str) -> tuple[int, int]:
     if mode == "address_range":
         start, stop = args.start_address, args.stop_address
     else:
@@ -430,25 +424,76 @@ def explicit_range(data: bytes, args: argparse.Namespace, mode: str) -> tuple[in
     return start, stop
 
 
-def create_snapshot(data: bytes, directory: str) -> Path:
-    path = Path(directory) / "target.elf"
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o400,
-    )
+def require_section(data: Buffer, name: str, start: int, stop: int) -> None:
+    header = elf_header(data)
+    if header[11] == SECTION_HEADER.size and 0 < header[13] < header[12]:
+        sections = list(
+            SECTION_HEADER.iter_unpack(checked_slice(data, header[6], header[12] * header[11]))
+        )
+        strings = sections[header[13]]
+        checked_range(data, strings[4], strings[5])
+        for section in sections:
+            if section[1] != 1 or not section[2] & SHF_EXECINSTR:
+                continue
+            if section[0] >= strings[5]:
+                continue
+            offset = strings[4] + section[0]
+            value = data[
+                offset : min(offset + len(name.encode("utf-8")) + 1, strings[4] + strings[5])
+            ]
+            if (
+                value == name.encode("utf-8") + b"\0"
+                and section[3] <= start < stop <= section[3] + section[5]
+            ):
+                return
+    message = "Requested section does not contain the executable address range"
+    raise TriageError(message)
+
+
+def fragment_command(  # noqa: PLR0913, PLR0917 -- Bound original addresses to a small tool input.
+    report: dict, data: Buffer, directory: Path, objdump: Path, start: int, stop: int
+) -> list[str]:
+    header = elf_header(data)
+    offset = function_offset(data, header, start, stop - start)
+    if offset is None:
+        message = "Code fragment is outside file-backed executable data"
+        raise TriageError(message)
+    code = data[offset : offset + stop - start]
+    path = directory / f"code-{len(report['tool']['fragments'])}.bin"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
     with os.fdopen(descriptor, "wb") as stream:
-        stream.write(data)
-    return path
+        stream.write(code)
+    report["tool"]["fragments"].append(
+        {
+            "path": str(path),
+            "sha256": hashlib.sha256(code).hexdigest(),
+            "file_offset": offset,
+            "start_address": start,
+            "stop_address": stop,
+            "size_bytes": len(code),
+            "ephemeral": True,
+        }
+    )
+    architecture = "aarch64" if header[2] == EM_AARCH64 else "i386:x86-64"
+    return [
+        str(objdump),
+        "--disassemble-all",
+        "--wide",
+        "--target=binary",
+        f"--architecture={architecture}",
+        "--endian=little",
+        f"--adjust-vma=0x{start:x}",
+        str(path),
+    ]
 
 
-def collect_snapshot(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bounded orchestration.
+def collect_ranges(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bounded orchestration.
     report: dict,
     args: argparse.Namespace,
     mode: str,
-    data: bytes,
+    data: Buffer,
     objdump: Path,
-    snapshot: Path,
+    directory: Path,
     deadline: float,
 ) -> tuple[int, dict]:
     output_left = args.max_output_bytes
@@ -461,17 +506,10 @@ def collect_snapshot(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bound
         report["scope"].update(start_address=start, stop_address=stop)
         if mode == "file_offset_range":
             report["scope"].update(file_offset=args.file_offset, length=args.length)
-        command = [
-            str(objdump),
-            "--disassemble",
-            "--wide",
-            f"--start-address=0x{start:x}",
-            f"--stop-address=0x{stop:x}",
-        ]
         if args.section:
-            command.append(f"--section={args.section}")
+            require_section(data, args.section, start, stop)
             report["scope"]["section"] = args.section
-        command.append(str(snapshot))
+        command = fragment_command(report, data, directory, objdump, start, stop)
         used = command_evidence(report, command, dict(report["scope"]), deadline, output_left)
         output_left -= used
     else:
@@ -518,14 +556,7 @@ def collect_snapshot(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bound
             except TriageError as error:
                 report["collection"]["reasons"].append(f"Symbol {symbol['name']}: {error}")
                 continue
-            command = [
-                str(objdump),
-                "--disassemble",
-                "--wide",
-                f"--start-address=0x{start:x}",
-                f"--stop-address=0x{stop:x}",
-                str(snapshot),
-            ]
+            command = fragment_command(report, data, directory, objdump, start, stop)
             used = command_evidence(
                 report,
                 command,
@@ -559,31 +590,25 @@ def collect(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[
     report["scope"]["mode"] = mode
     try:
         objdump = trusted_objdump(args.objdump)
-        data, _ = read_target(path, args.max_file_bytes)
-    except TriageError as error:
+        report["tool"]["path"] = str(objdump)
+        with read_target(path, args.max_file_bytes) as data:
+            report["target"].update(sha256=sha256_data(data), size_bytes=len(data))
+            try:
+                executable_ranges(data)
+            except ValueError as error:
+                report["collection"]["reasons"].append(f"Unsupported or malformed ELF: {error}")
+                return 3, report
+            deadline = time.monotonic() + args.timeout_seconds
+            with tempfile.TemporaryDirectory(prefix="brotli-triage-") as directory:
+                code, report = collect_ranges(
+                    report, args, mode, data, objdump, Path(directory), deadline
+                )
+    except (TriageError, OSError) as error:
         report["collection"]["reasons"].append(str(error))
+        report["collection"].update(status="incomplete", incomplete=True)
         return 3, report
-    digest = hashlib.sha256(data).hexdigest()
-    report["tool"]["path"] = str(objdump)
-    report["target"].update(sha256=digest, size_bytes=len(data))
-    try:
-        executable_ranges(data)
-    except ValueError as error:
-        report["collection"]["reasons"].append(f"Unsupported or malformed ELF: {error}")
-        return 3, report
-    deadline = time.monotonic() + args.timeout_seconds
-    try:
-        with tempfile.TemporaryDirectory(prefix="brotli-triage-") as directory:
-            snapshot = create_snapshot(data, directory)
-            report["tool"]["snapshot"] = {
-                "path": str(snapshot),
-                "sha256": digest,
-                "ephemeral": True,
-            }
-            return collect_snapshot(report, args, mode, data, objdump, snapshot, deadline)
-    except OSError as error:
-        report["collection"]["reasons"].append(f"Cannot create private snapshot: {error}")
-        return 3, report
+    else:
+        return code, report
 
 
 def write_new_output(path: Path, rendered: str, forbidden: list[str | None]) -> None:
@@ -616,7 +641,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--section", help="section constraint for an explicit address range")
     parser.add_argument("--file-offset", type=nonnegative)
     parser.add_argument("--length", type=positive)
-    parser.add_argument("--max-file-bytes", type=positive, default=DEFAULT_MAX_FILE_BYTES)
+    parser.add_argument(
+        "--max-file-bytes",
+        type=positive,
+        default=DEFAULT_MAX_FILE_BYTES,
+        help="optional file byte limit; no default size cap",
+    )
     parser.add_argument("--max-output-bytes", type=positive, default=DEFAULT_MAX_OUTPUT_BYTES)
     parser.add_argument("--max-range-bytes", type=positive, default=DEFAULT_MAX_RANGE_BYTES)
     parser.add_argument("--timeout-seconds", type=positive, default=DEFAULT_TIMEOUT_SECONDS)

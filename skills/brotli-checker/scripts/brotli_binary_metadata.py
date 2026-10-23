@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import struct
+from typing import TYPE_CHECKING
 
 from brotli_binary_match import (
     EM_AARCH64,
     EM_X86_64,
     PROGRAM_HEADER,
     SECTION_HEADER,
+    checked_range,
     checked_slice,
     elf_header,
     executable_ranges,
+    iter_structs,
 )
+
+if TYPE_CHECKING:
+    from brotli_binary_data import Buffer
 
 SYMBOL = struct.Struct("<IBBHQQ")
 MAX_SYMBOLS = 1_000_000
@@ -91,7 +97,7 @@ def constant_version(  # noqa: C901, PLR0911 -- Strict instruction-form decoder.
     return value
 
 
-def _function_offset(data: bytes, header: tuple, address: int, size: int) -> int | None:
+def _function_offset(data: Buffer, header: tuple, address: int, size: int) -> int | None:
     table = checked_slice(data, header[5], header[9] * header[10])
     for kind, flags, start, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table):
         if kind == 1 and flags & 1 and virtual <= address and address + size <= virtual + file_size:
@@ -99,14 +105,7 @@ def _function_offset(data: bytes, header: tuple, address: int, size: int) -> int
     return None
 
 
-def _checked_range(data: bytes, offset: int, size: int) -> tuple[int, int]:
-    if offset < 0 or size < 0 or offset > len(data) or size > len(data) - offset:
-        msg = "ELF range outside file"
-        raise ValueError(msg)
-    return offset, offset + size
-
-
-def decoder_metadata(data: bytes) -> dict:
+def decoder_metadata(data: Buffer) -> dict:
     result = {
         "defined_symbols": [],
         "imported_symbols": [],
@@ -122,7 +121,7 @@ def decoder_metadata(data: bytes) -> dict:
 
 
 def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
-    data: bytes, result: dict
+    data: Buffer, result: dict
 ) -> None:
     header = elf_header(data)
     executable_ranges(data)
@@ -155,9 +154,10 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
         if string_section[1] != SHT_STRTAB:
             msg = "ELF symbol names do not reference a string table"
             raise ValueError(msg)
-        string_start, string_end = _checked_range(data, string_section[4], string_section[5])
-        symbols = checked_slice(data, section[4], section[5])
-        for name_offset, info, _, index, address, size in SYMBOL.iter_unpack(symbols):
+        string_start, string_end = checked_range(data, string_section[4], string_section[5])
+        for name_offset, info, _, index, address, size in iter_structs(
+            data, SYMBOL, section[4], section[5]
+        ):
             if name_offset >= string_section[5]:
                 msg = "ELF symbol name outside string table"
                 raise ValueError(msg)

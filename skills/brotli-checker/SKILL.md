@@ -60,7 +60,11 @@ status, or establish an absence of Brotli. Supply extracted image filesystems
 or additional artifact roots as needed. Filesystem symlink targets visited
 directly do not add a gap; other targets still need checking. If a resource limit
 is reached, scan a smaller relevant folder or adjust the limit shown by `--help`.
-The default read limits are 128 MiB for one file/member and 1 GiB total.
+Regular files have no default per-file or total byte cap. ELF analysis uses
+sparse offset reads; full-artifact SHA-256 is streamed. Archive expansion is
+separately budgeted at 8 GiB/member or stream and 64 GiB total; override with
+`--max-expanded-bytes` and `--max-total-expanded-bytes` as needed. Optional
+`--max-file-bytes` and `--max-total-bytes` still impose explicit input caps.
 
 For independently obtained upstream versions, optional flags are:
 
@@ -101,8 +105,10 @@ For an unresolved local ELF with decoder name, symbol, version, or code evidence
 collect bounded disassembly for model review instead of stopping at a generic
 unknown. Do not disassemble every unrelated ELF. Run this only with a trusted
 local `objdump`; the helper rejects target
-symlinks, hashes one read of the target, passes a private snapshot of those exact
-bytes to `objdump`, and never executes or loads target code:
+symlinks, streams the original artifact hash, reads ELF structures by offset,
+and passes only bounded code-fragment snapshots to `objdump`. It never executes
+or loads target code and does not copy the full target. Detected input mutation
+makes the report incomplete:
 
 ```sh
 python3 scripts/brotli_binary_triage.py /absolute/target > triage.json
@@ -111,7 +117,10 @@ python3 scripts/brotli_binary_triage.py /absolute/target > triage.json
 The default mode selects defined `Decode*BlockSwitch`,
 `SafeDecode*BlockSwitch`, and `ProcessCommands*` symbols, with
 `BrotliDecoderDecompressStream` as a public-symbol fallback. It records the target
-SHA-256, exact commands, selected scope, limits, symbols, and bounded output. Exit
+SHA-256, exact commands, selected scope, limits, symbols, and bounded output.
+Fragment hashes and source offsets bind the assembly to selected bytes; raw
+objdump output uses `.data`, not original section names. Resolve numeric call
+targets using the reported symbol addresses and original ELF scope. Exit
 0 means evidence collection completed, not that the binary is fixed. Exit 3 means
 the evidence is incomplete. For stripped code, use only a range derived from
 trusted link/map or scanner evidence, for example `--file-offset OFFSET --length

@@ -147,10 +147,15 @@ python3 scripts/brotli_binary_triage.py /absolute/target > triage.json
 ```
 
 Use a trusted local `objdump`; never use a tool or script from the target. The
-helper rejects target symlinks, reads and hashes one regular ELF, invokes only the
-trusted tool on a private snapshot of those exact bytes, and records every exact
-command, selected scope, and time/file/output/range limit. It neither loads nor
-executes the target, and removes the snapshot afterward. Treat exit 0 as successful
+helper rejects target symlinks and streams the original artifact SHA-256 while
+using sparse reads for ELF structures. Only bounded selected code fragments are
+copied for raw-binary objdump, with original virtual addresses preserved. It
+records each fragment's hash/source offset, exact command, scope, and limits.
+The original regular file is not copied or memory-mapped. Changes detected on the
+open input invalidate collection. It neither loads nor executes the target and
+removes all fragments afterward. Raw output's `.data` label is not the source ELF
+section; use recorded scopes and symbol addresses for numeric call targets.
+Treat exit 0 as successful
 evidence collection only. Treat exit 3, a timeout/output cap, unsupported ELF,
 missing relevant symbols, or truncated symbol selection as explicitly incomplete.
 

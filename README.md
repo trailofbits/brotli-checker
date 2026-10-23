@@ -246,13 +246,25 @@ not automatically produce or execute quarantine commands.
 Exit codes differ from the source scanner: `0` means no candidates or reported
 scan gaps, `1` means candidates, `2` means invalid arguments/catalog, and `3` means
 scan gaps (even if candidates were also found). Inspect the report in every case.
-Defaults are 128 MiB per file, 1 GiB total reads, 100,000 files/members, and two
-archive levels. Adjust `--max-file-bytes`, `--max-total-bytes`, `--max-files`, and
-`--archive-depth` explicitly for larger installations. Symlinks are skipped and
-reported; pass the intended real paths separately. `.git` is excluded. Applied
-limits are recorded in `coverage.limits`. File and expansion caps bound the
-in-memory reads and nested decompression work; they are not detection thresholds.
-The 128 MiB default accommodates the 118 MB Node binary used in validation.
+Regular files have **no default file-size or aggregate byte cap**. Optional
+`--max-file-bytes` and `--max-total-bytes` impose caller-selected limits.
+Defaults still limit the inventory to 100,000 files/members and two archive
+levels. Symlinks are skipped and reported; pass real paths separately. `.git` is
+excluded. Applied limits, including null (unset) byte limits, are recorded in
+`coverage.limits`.
+
+Large ELF inputs use sparse offset reads for headers, symbols, executable matching,
+and load-segment indicators. Whole-artifact SHA-256 requires a streamed full-file
+pass; it does not allocate or copy the whole file. Regular files are not spooled
+or memory-mapped. Detected input mutation makes results incomplete.
+
+Archive expansion has separate defaults: 8 GiB per member/expanded stream and
+64 GiB cumulative expanded bytes. Override with `--max-expanded-bytes` and
+`--max-total-expanded-bytes`. These expansion-work budgets accommodate multi-GB
+browser builds: Chromium's [official size table](https://www.chromium.org/chromium-os/developer-library/guides/debugging/stack-traces/)
+records a 5.3 GB unstripped build from 2021, not an upper bound on modern binaries.
+Sequential archive data may need temporary spooling for random access; `TMPDIR`
+controls placement. Use a disk-backed directory for large expansions.
 
 ## Detection and scope
 
@@ -295,10 +307,13 @@ characters; JSON retains the original labels as escaped strings.
 
 If a large tree hits a limit, scan a smaller relevant folder or use
 `--max-file-bytes`, `--max-total-bytes`, `--max-files`, or `--archive-depth`.
-The defaults are 128 MiB per file/expanded stream, 1 GiB total, 50,000 files or
-members, and two archive levels. The total includes reading the container,
-decompression, and reading its members. Increasing a limit increases resource
-use; skipped files keep the result incomplete.
+There is no default regular-file or cumulative input-byte cap. The main scanner
+retains defaults of 50,000 files/members and two archive levels. Expansion defaults
+are 8 GiB per member/stream and 64 GiB cumulative. Optional total-input accounting
+includes containers, expansion, and members; it is not a count of internal pread
+calls. Source-text regex analysis has a separate 128 MiB `--max-text-bytes` budget;
+exceeding it records a text-analysis gap without suppressing binary inspection.
+Increasing a limit increases resource use; skipped work keeps the result incomplete.
 
 JSON records total, retained, and omitted gap-detail counts. It distinguishes
 archive inspection attempts from successful opens. Unresolved container markers

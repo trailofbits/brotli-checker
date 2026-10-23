@@ -13,7 +13,7 @@ The scanner's evidence layers are deliberately separate:
 ## Recognition coverage
 
 On 2026-10-23, the Linux AArch64 corpus was scanned by both CLIs at their new
-default byte budgets. Both read all 11 files without gaps. Results and input
+default byte budgets. Both inspected all 13 files without gaps. Results and input
 SHA-256 hashes are in [binary-validation.json](artifacts/binary-validation.json).
 
 | Corpus role | Result |
@@ -23,6 +23,7 @@ SHA-256 hashes are in [binary-validation.json](artifacts/binary-validation.json)
 | Node v22.14.0 ARM64 local installation | Statically reported embedded Brotli 1.1.0; potentially affected |
 | WOFF2 decoder | Decoder import, not an embedded-code match |
 | Encoder library and Python executable | No matching decoder code; remain unclassified, not certified absent |
+| Firefox libxul and Qt WebEngine Core (199 MB / 193 MB) | Inspected without size-limit gaps; unmatched code remains unresolved |
 
 The independent package results are version evidence, not exact code matches.
 The Node installation's download provenance was not independently authenticated.
@@ -57,7 +58,30 @@ claim. No target binary was executed and no malformed compressed input was used.
 
 The triage workflow retains function/range evidence and missing-scope details.
 The [triage validation summary](artifacts/binary-triage-validation.json) records
-the final Node and Fedora scope selections, snapshot identity, and completeness.
+the final Node and Fedora scope selections, fragment identities, and completeness.
+The 118 MB Node input produces only 14,440 bytes of code fragments for objdump;
+the whole input is never copied. Original SHA-256 is streamed, and input mutation
+invalidates collection.
 An entry-point-only packet is orientation material, not complete coverage of
 block-switch status propagation. A fixed-looking helper or reported fixed version
 cannot clear uninspected paths or additional embedded copies.
+
+## Large-file resource policy
+
+There is no default regular-file size or aggregate input-byte cap. FileData
+keeps a stable open descriptor and uses bounded pread access; it does not copy
+or map the input. Matching scans executable PT_LOAD ranges, generic indicators
+scan validated load ranges once, and ELF metadata is read at validated offsets.
+The one necessarily complete pass computes the whole-artifact SHA-256 in chunks.
+
+A [6.44 GB sparse ELF validation](artifacts/binary-size-validation.json) found the
+expected code and version above the 4 GiB offset with zero gaps and 30,892 KiB
+maximum RSS. Sparse-hole timing is not a real-disk throughput benchmark; the
+invariants are correct 64-bit offsets, streamed identity hashing, bounded analysis
+reads, and no proportional heap allocation or scratch copy.
+
+The regression suite checks sparse code/symbol access beyond 6 GiB by default.
+Enable `BROTLI_LARGE_FILE_TESTS=1` for the complete large-file hash/CLI regressions.
+Archive members and decompression streams have separate 8 GiB/item and 64 GiB
+cumulative expansion budgets; sequential expansion may require temporary spooling
+for later random access. Explicit user-selected input caps remain available.
