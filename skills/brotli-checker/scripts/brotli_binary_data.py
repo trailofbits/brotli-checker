@@ -178,6 +178,8 @@ class FileData:
     ) -> bool:
         if isinstance(prefix, tuple):
             return any(self.startswith(item, start, end) for item in prefix)
+        if start > len(self):
+            return False
         normalized_start, normalized_stop, _ = slice(start, end).indices(len(self))
         if len(prefix) > normalized_stop - normalized_start:
             return False
