@@ -60,11 +60,12 @@ Identify the real binary/build and follow the call path through wrappers and
 redirects. An Undici import alone does not establish use of its fetch API or
 automatic response decoding.
 
-A [benign loopback probe](../scripts/verify_node_fetch.cjs) confirmed built-in
-fetch invoking Node's Brotli decoder for valid HTTP response bodies, including
-with an identity request header and after a redirect. It did not test malformed
-streams, deployment reachability, or exploitation; see the
-[validation record](https://github.com/trailofbits/brotli-checker/blob/main/docs/validation.md#benign-built-in-fetch-validation).
+The [benign loopback probe](../scripts/verify_node_fetch.cjs) checks built-in
+fetch's invocation of Node's Brotli decoder for valid HTTP response bodies,
+including with an identity request header and after a redirect. It does not test
+malformed streams, deployment reachability, or exploitation. See
+[runtime fixtures](https://github.com/trailofbits/brotli-checker/blob/main/CONTRIBUTING.md#runtime-fixtures)
+for maintainer instructions.
 
 ## Electron applications
 
@@ -81,22 +82,19 @@ selected Chromium decoder, and shipped artifact. An affected standalone Node
 version or a Brotli version string alone does not classify an Electron build.
 Vendor builds with the same Electron version can contain different native code.
 
-Benign measurements on Electron 43.1.1 and Slack 4.51.180 confirmed browser
-response decoding over loopback HTTP and HTTPS. Node fetch also decoded when
-it sent identity. Electron net/session fetch rejected those identity responses,
-and browser fetch omitted the attempted identity header. Do not transfer Node's
-header behavior to every Electron API, or treat an error as proof that no
-decoder was entered. See the
-[measurement record](https://github.com/trailofbits/brotli-checker/blob/main/docs/electron-validation.md).
+Do not transfer Node's header behavior to every Electron API, or treat a
+response-decoding error as proof that no decoder was entered. The
+[runtime fixtures](https://github.com/trailofbits/brotli-checker/blob/main/CONTRIBUTING.md#runtime-fixtures)
+can compare valid-response handling in a separately obtained Electron runtime
+or an explicitly authorized installed Slack test instance.
 
 For a real app, establish whether a message, preview, external URL, attachment,
 font, or redirect actually delivers attacker-controlled bytes to the selected
 decoder. Account for proxying, re-encoding, allowlists, authentication, and
 process boundaries. A trusted debugger opening a local fixture confirms only
 that tested runtime route; it does not prove an attacker-controlled product path.
-The Slack measurement left both its shipped decoder patch state and those
-product input paths unknown. Mach-O matching and ASAR parsing are outside the
-offline helper's supported classifiers.
+Mach-O matching and ASAR parsing are outside the offline helper's supported
+classifiers.
 
 Keep app inspection read-only unless runtime testing is explicitly authorized.
 For an authorized runtime test, use a fresh profile and quit the normal app

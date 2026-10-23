@@ -17,4 +17,4 @@ Use the latest revision and verify current upstream/vendor advisories.
 The scanner reads untrusted local artifacts without executing them. Resource
 limits reduce exposure to oversized inputs; they do not guarantee a complete
 inventory. No result certifies an application safe. See
-[validation limits](docs/validation.md#what-remains-unvalidated).
+[scanner scope and limits](docs/usage.md#detection-and-traversal).
