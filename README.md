@@ -87,16 +87,27 @@ The skill consults current vendor guidance when online research is available.
 
 ## Development
 
-Run the offline tests:
+Use uv for development. The committed lockfile pins the development tools;
+the installed skill still uses only Python's standard library.
 
 ```sh
-python3 -m unittest discover -s tests -v
+uv sync --locked
+uv run --locked ruff format --check .
+uv run --locked ruff check .
+uv run --locked ty check skills/brotli-checker/scripts scripts tests
+uv run --locked pytest
 ```
+
+CI runs the offline tests on Python 3.12, 3.13, 3.14, and 3.15, with an 80%
+minimum for line and branch coverage combined. `make lint`, `make format`, and
+`make test` run the same tools locally. The standalone inventory script also
+declares its supported Python versions with PEP 723 metadata, so it can be run
+with `uv run --script` after the skill is copied elsewhere.
 
 To recheck the published source fingerprints and modified-source detection,
 run this optional maintainer check, which downloads reference source but never
 executes it:
 
 ```sh
-python3 scripts/verify_fingerprints.py
+uv run --locked python scripts/verify_fingerprints.py
 ```

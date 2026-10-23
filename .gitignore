@@ -2,5 +2,9 @@ __pycache__/
 *.py[cod]
 .venv/
 .ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 artifacts/
 .DS_Store

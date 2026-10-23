@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12,<3.16"
+# dependencies = []
+# ///
+
 """Offline, non-executing evidence collection for CVE-2026-111497."""
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import tarfile
 import zipfile
 import zlib
 from pathlib import Path
+from typing import Protocol
 
 REGISTRY = Path(__file__).resolve().parent.parent / "references" / "fingerprints.json"
 SOURCE_SUFFIXES = {"", ".c", ".cc", ".cpp", ".cxx", ".h", ".inc", ".inl", ".unbr"}
@@ -56,21 +62,24 @@ MANIFEST_NAMES = {
     "metadata",
     "pkg-info",
 }
-DEPENDENCY = re.compile(r"brotli(?:4j|dec|common|enc)?|woff2|workerd", re.I)
+DEPENDENCY = re.compile(r"brotli(?:4j|dec|common|enc)?|woff2|workerd", re.IGNORECASE)
 SWITCH_CALL = r"Decode(?:Literal|Command|Distance)BlockSwitch\s*\("
 OLD_CALL = re.compile(r"\bBROTLI_SAFE\s*\(\s*(" + SWITCH_CALL + r")")
 NEW_CALL = re.compile(r"\bBROTLI_SAFE_WITH_STATUS\s*\(\s*(" + SWITCH_CALL + r")")
-BAD_GUARD = re.compile(
-    r"if\s*\(\s*max_block_type\s*<=\s*1\s*\)\s*\{\s*return\s+BROTLI_FALSE\s*;"
-)
-COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+BAD_GUARD = re.compile(r"if\s*\(\s*max_block_type\s*<=\s*1\s*\)\s*\{\s*return\s+BROTLI_FALSE\s*;")
+COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 GOOD = {"fixed_source", "upstream_fixed_version"}
 WARNING = {"vulnerable_source", "potentially_vulnerable"}
+MAX_RECORDED_GAPS = 200
+MAX_DISPLAY_COPIES = 10
+MAX_DISPLAY_GAPS = 5
 
 
-def finding(
-    path: str, kind: str, patch_status: str, reason: str, **evidence: object
-) -> dict:
+class BinaryReader(Protocol):
+    def read(self, size: int = -1, /) -> bytes: ...
+
+
+def finding(path: str, kind: str, patch_status: str, reason: str, **evidence: object) -> dict:
     return {
         "path": path,
         "kind": kind,
@@ -96,7 +105,7 @@ def assess_version(component: str, value: str) -> dict:
         )
     version = tuple(map(int, match.groups()))
     if component == "brotli":
-        branch = version[:2]
+        branch = (version[0], version[1])
         fixes = {(1, 0): 10, (1, 1): 1, (1, 2): 1}
         if branch not in fixes or version < (1, 0, 3):
             return finding(
@@ -139,10 +148,8 @@ class Inventory:
         max_total_bytes: int,
         max_files: int,
         archive_depth: int,
-    ):
-        self.fingerprints = {
-            entry["sha256"]: entry for entry in registry["fingerprints"]
-        }
+    ) -> None:
+        self.fingerprints = {entry["sha256"]: entry for entry in registry["fingerprints"]}
         self.max_file_bytes = max_file_bytes
         self.max_total_bytes = max_total_bytes
         self.max_files = max_files
@@ -157,13 +164,11 @@ class Inventory:
 
     def gap(self, path: str, reason: str) -> None:
         self.gap_count += 1
-        if len(self.gaps) < 200:
+        if len(self.gaps) < MAX_RECORDED_GAPS:
             self.gaps.append({"path": path, "reason": reason})
 
     def exhausted(self) -> bool:
-        return (
-            self.files_seen >= self.max_files or self.bytes_read >= self.max_total_bytes
-        )
+        return self.files_seen >= self.max_files or self.bytes_read >= self.max_total_bytes
 
     def candidate_name(self, label: str) -> None:
         name = label.rsplit("!", 1)[-1].replace("\\", "/").rsplit("/", 1)[-1].lower()
@@ -175,11 +180,14 @@ class Inventory:
                     label,
                     "artifact_name_candidate",
                     "unknown",
-                    "Artifact name suggests a Brotli component; contents, linkage, and patch status need review.",
+                    (
+                        "Artifact name suggests a Brotli component; contents, linkage, and "
+                        "patch status need review."
+                    ),
                 )
             )
 
-    def read(self, stream: object, size: int, label: str, depth: int) -> None:
+    def read(self, stream: BinaryReader, size: int, label: str, depth: int) -> None:
         self.files_seen += 1
         self.candidate_name(label)
         if self.files_seen > self.max_files:
@@ -207,7 +215,10 @@ class Inventory:
                     label,
                     "exact_source_match",
                     "fixed_source" if fixed else "vulnerable_source",
-                    "Bytes match a reviewed decoder file; surrounding tree/build and runtime remain unverified.",
+                    (
+                        "Bytes match a reviewed decoder file; surrounding tree/build and "
+                        "runtime remain unverified."
+                    ),
                     sha256=digest,
                     git_blob=entry["git_blob"],
                     sources=entry["sources"],
@@ -219,10 +230,7 @@ class Inventory:
         text = data.decode("utf-8", errors="replace") if b"\0" not in data else ""
         if text and suffix in SOURCE_SUFFIXES and "DecodeBlockTypeAndLength" in text:
             code = COMMENTS.sub("", text)
-            if (
-                "ProcessCommandsInternal" in code
-                and "BrotliDecoderDecompressStream" in code
-            ):
+            if "ProcessCommandsInternal" in code and "BrotliDecoderDecompressStream" in code:
                 old = len(OLD_CALL.findall(code))
                 new = len(NEW_CALL.findall(code))
                 bad_guard = bool(BAD_GUARD.search(code))
@@ -232,21 +240,25 @@ class Inventory:
                         label,
                         "modified_decoder_source",
                         "potentially_vulnerable" if potential else "unknown",
-                        "Old block-switch error handling detected; review the source against the fix."
+                        (
+                            "Old block-switch error handling detected; review the source against "
+                            "the fix."
+                        )
                         if potential
-                        else "Unrecognized decoder source; fix markers alone do not validate a backport.",
+                        else (
+                            "Unrecognized decoder source; fix markers alone do not validate a "
+                            "backport."
+                        ),
                         sha256=digest,
                         old_switch_calls=old,
                         status_switch_calls=new,
                         false_on_invalid_switch=bad_guard,
-                        format_error_marker="BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH"
-                        in code,
+                        format_error_marker="BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH" in code,
                     )
                 )
                 return
         if text and (
-            name in MANIFEST_NAMES
-            or name.endswith((".cmake", ".spdx.json", ".cdx.json"))
+            name in MANIFEST_NAMES or name.endswith((".cmake", ".spdx.json", ".cdx.json"))
         ):
             lines = [
                 {"line": i, "text": line[:300]}
@@ -259,7 +271,10 @@ class Inventory:
                         label,
                         "dependency_candidate",
                         "unknown",
-                        "Declaration or metadata only; resolve the selected implementation and embedded version.",
+                        (
+                            "Declaration or metadata only; resolve the selected implementation "
+                            "and embedded version."
+                        ),
                         matches=lines[:20],
                         matching_lines=len(lines),
                     )
@@ -278,7 +293,10 @@ class Inventory:
                         label,
                         "decoder_symbol_candidate",
                         "unknown",
-                        "Decoder symbol/string may identify imports, exports, or embedded code; patch status unknown.",
+                        (
+                            "Decoder symbol/string may identify imports, exports, or embedded "
+                            "code; patch status unknown."
+                        ),
                         sha256=digest,
                     )
                 )
@@ -296,73 +314,9 @@ class Inventory:
         self.archives_opened += 1
         try:
             if Path(label).suffix.lower() in ZIP_SUFFIXES:
-                with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                    for info in archive.infolist():
-                        if info.is_dir():
-                            continue
-                        member = f"{label}!{info.filename}"
-                        if self.exhausted():
-                            self.gap(
-                                label,
-                                "Budget exhausted; remaining archive members not inspected.",
-                            )
-                            break
-                        if stat.S_ISLNK(info.external_attr >> 16):
-                            self.gap(member, "Archive symlink not followed.")
-                            continue
-                        try:
-                            with archive.open(info) as stream:
-                                self.read(stream, info.file_size, member, depth + 1)
-                        except (
-                            OSError,
-                            RuntimeError,
-                            ValueError,
-                            zipfile.BadZipFile,
-                            NotImplementedError,
-                            zlib.error,
-                            lzma.LZMAError,
-                        ) as error:
-                            self.gap(member, f"Cannot inspect archive member: {error}")
+                self._inspect_zip(data, label, depth)
             else:
-                name = label.lower()
-                decompressor = None
-                if name.endswith((".tar.gz", ".tgz")):
-                    decompressor = gzip.GzipFile(fileobj=io.BytesIO(data))
-                elif name.endswith((".tar.xz", ".txz")):
-                    decompressor = lzma.LZMAFile(io.BytesIO(data))
-                elif name.endswith(".tar.bz2"):
-                    decompressor = bz2.BZ2File(io.BytesIO(data))
-                if decompressor is not None:
-                    remaining = min(
-                        self.max_file_bytes, self.max_total_bytes - self.bytes_read
-                    )
-                    with decompressor:
-                        data = decompressor.read(remaining + 1)
-                    self.bytes_read += len(data)
-                    if len(data) > remaining:
-                        self.gap(
-                            label,
-                            "Expanded TAR exceeds size or remaining total-byte limit.",
-                        )
-                        return
-                with tarfile.open(fileobj=io.BytesIO(data), mode="r|") as archive:
-                    for info in archive:
-                        if info.isdir():
-                            continue
-                        member = f"{label}!{info.name}"
-                        if self.exhausted():
-                            self.gap(
-                                label,
-                                "Budget exhausted; remaining archive members not inspected.",
-                            )
-                            break
-                        if not info.isfile():
-                            self.gap(member, "Nonregular archive member not followed.")
-                            continue
-                        stream = archive.extractfile(info)
-                        if stream is not None:
-                            with stream:
-                                self.read(stream, info.size, member, depth + 1)
+                self._inspect_tar(data, label, depth)
         except (
             OSError,
             EOFError,
@@ -374,6 +328,71 @@ class Inventory:
         ) as error:
             self.gap(label, f"Cannot inspect archive: {error}")
 
+    def _inspect_zip(self, data: bytes, label: str, depth: int) -> None:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                member = f"{label}!{info.filename}"
+                if self.exhausted():
+                    self.gap(label, "Budget exhausted; remaining archive members not inspected.")
+                    break
+                if stat.S_ISLNK(info.external_attr >> 16):
+                    self.gap(member, "Archive symlink not followed.")
+                    continue
+                try:
+                    with archive.open(info) as stream:
+                        self.read(stream, info.file_size, member, depth + 1)
+                except (
+                    OSError,
+                    RuntimeError,
+                    ValueError,
+                    zipfile.BadZipFile,
+                    NotImplementedError,
+                    zlib.error,
+                    lzma.LZMAError,
+                ) as error:
+                    self.gap(member, f"Cannot inspect archive member: {error}")
+
+    def _expand_tar(self, data: bytes, label: str) -> bytes | None:
+        name = label.lower()
+        if name.endswith((".tar.gz", ".tgz")):
+            open_compressed = gzip.open
+        elif name.endswith((".tar.xz", ".txz")):
+            open_compressed = lzma.open
+        elif name.endswith(".tar.bz2"):
+            open_compressed = bz2.open
+        else:
+            return data
+        remaining = min(self.max_file_bytes, self.max_total_bytes - self.bytes_read)
+        with open_compressed(io.BytesIO(data), "rb") as stream:
+            expanded = stream.read(remaining + 1)
+        self.bytes_read += len(expanded)
+        if len(expanded) > remaining:
+            self.gap(label, "Expanded TAR exceeds size or remaining total-byte limit.")
+            return None
+        return expanded
+
+    def _inspect_tar(self, data: bytes, label: str, depth: int) -> None:
+        expanded = self._expand_tar(data, label)
+        if expanded is None:
+            return
+        with tarfile.open(fileobj=io.BytesIO(expanded), mode="r|") as archive:
+            for info in archive:
+                if info.isdir():
+                    continue
+                member = f"{label}!{info.name}"
+                if self.exhausted():
+                    self.gap(label, "Budget exhausted; remaining archive members not inspected.")
+                    break
+                if not info.isfile():
+                    self.gap(member, "Nonregular archive member not followed.")
+                    continue
+                stream = archive.extractfile(info)
+                if stream is not None:
+                    with stream:
+                        self.read(stream, info.size, member, depth + 1)
+
     def scan_file(self, path: Path) -> None:
         label = str(path)
         try:
@@ -383,9 +402,7 @@ class Inventory:
                 return
             descriptor = os.open(
                 path,
-                os.O_RDONLY
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_NONBLOCK", 0),
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
             )
             with os.fdopen(descriptor, "rb") as stream:
                 metadata = os.fstat(stream.fileno())
@@ -404,25 +421,14 @@ class Inventory:
         def walk_error(error: OSError) -> None:
             self.gap(str(error.filename), f"Cannot walk directory: {error}")
 
-        for directory, dirs, files in os.walk(
-            root, followlinks=False, onerror=walk_error
-        ):
+        for directory, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
             if self.exhausted():
                 self.gap(
                     str(root),
                     "Budget exhausted; remaining filesystem paths not inspected.",
                 )
                 break
-            kept = []
-            for name in sorted(dirs):
-                path = Path(directory) / name
-                if name == ".git":
-                    continue
-                if path.is_symlink():
-                    self.gap(str(path), "Directory symlink not followed.")
-                else:
-                    kept.append(name)
-            dirs[:] = kept
+            dirs[:] = self._filter_directories(Path(directory), dirs)
             for name in sorted(files):
                 if name == ".git":
                     continue
@@ -434,11 +440,24 @@ class Inventory:
                     return
                 self.scan_file(Path(directory) / name)
 
+    def _filter_directories(self, directory: Path, names: list[str]) -> list[str]:
+        kept = []
+        for name in sorted(names):
+            path = directory / name
+            if name == ".git":
+                continue
+            if path.is_symlink():
+                self.gap(str(path), "Directory symlink not followed.")
+            else:
+                kept.append(name)
+        return kept
+
 
 def positive(value: str) -> int:
     number = int(value)
     if number <= 0:
-        raise argparse.ArgumentTypeError("must be positive")
+        message = "must be positive"
+        raise argparse.ArgumentTypeError(message)
     return number
 
 
@@ -447,7 +466,11 @@ def explain_finding(item: dict) -> dict:
     if status == "vulnerable_source":
         return {
             "result": "Vulnerable Brotli source found",
-            "next_action": "Have the app's maintainer check whether this copy is used. If it is, update its Brotli dependency, rebuild and deploy the app, and confirm the running app has the fix.",
+            "next_action": (
+                "Have the app's maintainer check whether this copy is used. If it "
+                "is, update its Brotli dependency, rebuild and deploy the app, and "
+                "confirm the running app has the fix."
+            ),
         }
     if status == "potentially_vulnerable":
         evidence = item["evidence"]
@@ -456,25 +479,43 @@ def explain_finding(item: dict) -> dict:
             minimum = evidence["fixed_branch_version"]
             return {
                 "result": f"The supplied {component} version may need an update",
-                "next_action": f"Ask the maintainer to update {component} to {minimum} or a later fixed release on that branch, or confirm a vendor-supplied fix. Check the version actually used by the running app.",
+                "next_action": (
+                    f"Ask the maintainer to update {component} to {minimum} or a later "
+                    "fixed release on that branch, or confirm a vendor-supplied fix. "
+                    "Check the version actually used by the running app."
+                ),
             }
         return {
             "result": "Possible vulnerable Brotli source",
-            "next_action": "Ask the maintainer to check the changes in this copy against the Brotli fix and update it if needed. Confirm whether the running app uses this copy.",
+            "next_action": (
+                "Ask the maintainer to check the changes in this copy against the "
+                "Brotli fix and update it if needed. Confirm whether the running app "
+                "uses this copy."
+            ),
         }
     if status == "fixed_source":
         return {
             "result": "Fix identified in this source file",
-            "next_action": "Confirm that the running app uses this fixed copy. Other copies listed here need their own checks.",
+            "next_action": (
+                "Confirm that the running app uses this fixed copy. Other copies "
+                "listed here need their own checks."
+            ),
         }
     if status == "upstream_fixed_version":
         return {
             "result": "Supplied version meets a known fix",
-            "next_action": "Confirm that this version belongs to the running app, and check any additional Brotli copies bundled inside it.",
+            "next_action": (
+                "Confirm that this version belongs to the running app, and check any "
+                "additional Brotli copies bundled inside it."
+            ),
         }
     return {
         "result": "More information needed",
-        "next_action": "Share this finding with the app's maintainer or hosting provider. Ask them to identify the Brotli copy inside this component and confirm whether it includes the fix.",
+        "next_action": (
+            "Share this finding with the app's maintainer or hosting provider. "
+            "Ask them to identify the Brotli copy inside this component and "
+            "confirm whether it includes the fix."
+        ),
     }
 
 
@@ -485,18 +526,35 @@ def summarize(report: dict) -> dict:
         return {
             "status": "needs_attention",
             "title": "Vulnerable Brotli source found",
-            "meaning": "Affected Brotli code is present. We still need to check whether your running app uses it to process data supplied by other people.",
+            "meaning": (
+                "Affected Brotli code is present. We still need to check whether "
+                "your running app uses it to process data supplied by other people."
+            ),
             "next_steps": [
-                "Ask the app's maintainer to check the flagged copies below and update any that the app uses.",
-                "If the copy is included inside the app, rebuild and deploy the app after updating it. Updating the computer's Brotli package alone may leave the copy inside the app unchanged.",
-                "Confirm the updated copy is in the running app. The fixed copies listed here do not clear other copies.",
+                (
+                    "Ask the app's maintainer to check the flagged copies below and "
+                    "update any that the app uses."
+                ),
+                (
+                    "If the copy is included inside the app, rebuild and deploy the app "
+                    "after updating it. Updating the computer's Brotli package alone may "
+                    "leave the copy inside the app unchanged."
+                ),
+                (
+                    "Confirm the updated copy is in the running app. The fixed copies "
+                    "listed here do not clear other copies."
+                ),
             ],
         }
     if "potentially_vulnerable" in statuses:
         return {
             "status": "needs_attention",
             "title": "A Brotli update may be needed",
-            "meaning": "Some checked code or supplied versions may be affected. A maintainer needs to confirm which copy the app uses and whether its vendor has already fixed it.",
+            "meaning": (
+                "Some checked code or supplied versions may be affected. A "
+                "maintainer needs to confirm which copy the app uses and whether its "
+                "vendor has already fixed it."
+            ),
             "next_steps": [
                 "Follow the update or verification step for each flagged item below.",
                 "Confirm the running app uses the fixed copy after the update.",
@@ -506,16 +564,26 @@ def summarize(report: dict) -> dict:
         return {
             "status": "needs_more_information",
             "title": "Some files could not be checked",
-            "meaning": "This check is incomplete. Any fixes identified in other files do not tell us what is inside the skipped files.",
+            "meaning": (
+                "This check is incomplete. Any fixes identified in other files do "
+                "not tell us what is inside the skipped files."
+            ),
             "next_steps": [
-                "Share the skipped-file list with the app's maintainer and ask them to check those files or provide the app package for inspection."
+                (
+                    "Share the skipped-file list with the app's maintainer and ask them "
+                    "to check those files or provide the app package for inspection."
+                )
             ],
         }
     if findings and statuses <= GOOD:
         return {
             "status": "checked_items_include_fix",
             "title": "Fix identified in the checked items",
-            "meaning": "The checked source files or supplied versions match a known fix. This does not yet confirm what your running app uses or cover copies outside this check.",
+            "meaning": (
+                "The checked source files or supplied versions match a known fix. "
+                "This does not yet confirm what your running app uses or cover "
+                "copies outside this check."
+            ),
             "next_steps": [
                 "Confirm the running app uses these fixed copies or versions.",
                 "Check any additional copies bundled inside the app or its packages.",
@@ -526,9 +594,16 @@ def summarize(report: dict) -> dict:
         "title": "More information needed",
         "meaning": "This check could not confirm whether the app's Brotli decoder includes the fix."
         if findings
-        else "No matching Brotli decoder was identified in the files checked. It may be inside a built application or outside the folders checked.",
+        else (
+            "No matching Brotli decoder was identified in the files checked. It "
+            "may be inside a built application or outside the folders checked."
+        ),
         "next_steps": [
-            "Ask the app's maintainer or hosting provider to identify the Brotli copies used by the running app and confirm whether they include the fix. Share the findings below if available."
+            (
+                "Ask the app's maintainer or hosting provider to identify the Brotli "
+                "copies used by the running app and confirm whether they include the "
+                "fix. Share the findings below if available."
+            )
         ],
     }
 
@@ -561,44 +636,39 @@ def render_text(report: dict) -> str:
             copies[item["path"]] = item
     if copies:
         lines.extend(["", "Files and versions checked:"])
-        ordered = sorted(
-            copies.values(), key=lambda item: priorities[item["patch_status"]]
-        )
-        for item in ordered[:10]:
+        ordered = sorted(copies.values(), key=lambda item: priorities[item["patch_status"]])
+        for item in ordered[:MAX_DISPLAY_COPIES]:
             explanation = explain_finding(item)
             location = item["path"]
-            if (
-                item["kind"] == "supplied_version"
-                and "supplied_version" in item["evidence"]
-            ):
+            if item["kind"] == "supplied_version" and "supplied_version" in item["evidence"]:
                 evidence = item["evidence"]
                 component = "Node.js" if evidence["component"] == "node" else "Brotli"
-                location = (
-                    f"{component} {evidence['supplied_version']} (version supplied)"
-                )
+                location = f"{component} {evidence['supplied_version']} (version supplied)"
             lines.extend(
                 [
                     f"- {explanation['result']}: {location}",
                     f"  Next: {explanation['next_action']}",
                 ]
             )
-        if len(ordered) > 10:
+        if len(ordered) > MAX_DISPLAY_COPIES:
             lines.append(
-                f"- {len(ordered) - 10} more items are included in the full report (--json)."
+                f"- {len(ordered) - MAX_DISPLAY_COPIES} more items are included "
+                "in the full report (--json)."
             )
     gaps = report["coverage"]["gaps"]
     if gaps:
         lines.extend(["", "Could not check:"])
-        lines.extend(f"- {gap['path']}: {gap['reason']}" for gap in gaps[:5])
-        remaining = report["coverage"]["gap_count"] - min(5, len(gaps))
+        lines.extend(f"- {gap['path']}: {gap['reason']}" for gap in gaps[:MAX_DISPLAY_GAPS])
+        remaining = report["coverage"]["gap_count"] - min(MAX_DISPLAY_GAPS, len(gaps))
         if remaining:
-            lines.append(
-                f"- {remaining} more gaps are included in the full report (--json)."
-            )
+            lines.append(f"- {remaining} more gaps are included in the full report (--json).")
     lines.extend(
         [
             "",
-            f"Checked {report['coverage']['files_read']} files and archive entries. {report['cve']}; advisory data: {report['snapshot_date']}.",
+            (
+                f"Checked {report['coverage']['files_read']} files and archive entries. "
+                f"{report['cve']}; advisory data: {report['snapshot_date']}."
+            ),
             "Full technical evidence for a maintainer: run with --json.",
         ]
     )
@@ -625,11 +695,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-file-bytes", type=positive, default=16 * 1024 * 1024)
     parser.add_argument("--max-total-bytes", type=positive, default=256 * 1024 * 1024)
     parser.add_argument("--max-files", type=positive, default=50000)
-    parser.add_argument("--archive-depth", type=int, choices=range(0, 6), default=2)
+    parser.add_argument("--archive-depth", type=int, choices=range(6), default=2)
     args = parser.parse_args(argv)
-    roots = args.roots or (
-        [] if args.brotli_version or args.node_version else [Path.cwd()]
-    )
+    roots = args.roots or ([] if args.brotli_version or args.node_version else [Path.cwd()])
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     inventory = Inventory(
         registry,
@@ -647,9 +715,7 @@ def main(argv: list[str] | None = None) -> int:
         ("brotli", args.brotli_version),
         ("node", args.node_version),
     ):
-        inventory.findings.extend(
-            assess_version(component, value) for value in versions
-        )
+        inventory.findings.extend(assess_version(component, value) for value in versions)
     statuses = {item["patch_status"] for item in inventory.findings}
     if statuses & WARNING:
         result, code = "affected_evidence_found", 1
@@ -685,8 +751,14 @@ def main(argv: list[str] | None = None) -> int:
             },
             "limitations": [
                 "No absence-of-Brotli guarantee.",
-                "Static/stripped binaries, encrypted archives, remote build inputs, and unprovided artifacts require review.",
-                "Build selection, shipment, runtime identity, reachability, and exploitability are not established.",
+                (
+                    "Static/stripped binaries, encrypted archives, remote build inputs, "
+                    "and unprovided artifacts require review."
+                ),
+                (
+                    "Build selection, shipment, runtime identity, reachability, and "
+                    "exploitability are not established."
+                ),
             ],
         },
     }
