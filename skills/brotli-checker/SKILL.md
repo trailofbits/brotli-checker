@@ -99,12 +99,13 @@ Its exit codes differ: 1 means inventory candidates (including fixed matches),
 End-of-life Node.js versions get supported-branch upgrade advice, while decoder
 patch status remains unknown (exit 3) without build or vendor evidence.
 
-Validation has covered decoder source references, synthetic packaging fixtures,
-and a benign loopback test of built-in Node fetch response decompression.
-No deployed application or binary was tested, and no malformed or exploit
-payload was executed. The benign fetch test establishes a decoding route,
-not CVE triggerability or exploitation. Do not describe source classification
-as an end-to-end test of a vulnerable app.
+Validation has covered decoder source references, synthetic ELF/packaging
+fixtures, an opt-in suite for locally compiled stripped ELF artifacts, and a
+benign loopback test of built-in Node fetch response decompression. No deployed
+application or production binary's patch state was validated, and no malformed
+or exploit payload was executed. The benign fetch test establishes a decoding
+route, not CVE triggerability or exploitation. Do not describe source
+classification as an end-to-end test of a vulnerable app.
 
 ## Establish patch status and reachability
 

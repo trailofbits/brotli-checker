@@ -1390,5 +1390,6 @@ def make_report(
     }
 
 
+# gremlin: pardon[out_of_scope] CLI bootstrap guard; imports must not launch argparse.
 if __name__ == "__main__":
     sys.exit(main())

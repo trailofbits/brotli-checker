@@ -6,6 +6,8 @@ __pycache__/
 .coverage
 coverage.xml
 htmlcov/
+coverage/
+.gremlins_cache/
 artifacts/
 .DS_Store
 .serena/

@@ -104,10 +104,11 @@ of absence. Do not use a changing repository count as a deployment count.
   supported upstream version rule. Exit 3 includes no matches. Neither clears
   uninspected copies or establishes application reachability.
 
-Validation used decoder source references, synthetic packaging fixtures, and
-a benign loopback test of built-in Node fetch's Brotli response decoding. No
-deployed application or binary was tested; no malformed or exploit payload was
-executed. The fetch test establishes a decoding route, not CVE triggerability.
+Validation covers source references, synthetic ELF/packaging fixtures, an opt-in
+suite for locally compiled ELF artifacts, and a benign loopback test of built-in
+Node fetch's Brotli response decoding. No deployed application or production
+binary's patch state was validated; no malformed or exploit payload was executed.
+The fetch test establishes a decoding route, not CVE triggerability.
 See the repository's [validation record](https://github.com/trailofbits/brotli-checker/blob/main/docs/validation.md).
 
 ## Escalating an unresolved result

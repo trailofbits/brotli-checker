@@ -287,18 +287,23 @@ An additional benign loopback probe confirmed that built-in Node fetch invokes
 the Brotli decoder for valid HTTP responses, including with an identity request
 header and after a redirect.
 
-**No deployed application or binary was tested, and no malformed or exploit
-payload was executed.** Automated archive tests use synthetic packaging fixtures.
-These checks establish source detection, scanner behavior, and the local fetch
-decoding route. They do not establish application exposure, exploitability,
-or inventory completeness.
+ELF matching has synthetic layout/relocation tests and an opt-in suite that builds
+local upstream source trees into stripped test artifacts. The latter is separate
+from the source-only check above and requires a Linux ELF compiler.
+
+**No deployed application or production binary's patch state was validated, and
+no malformed or exploit payload was executed.** Archive tests use synthetic
+packaging fixtures. These checks establish source detection, reference code
+matching, scanner behavior, and the local fetch decoding route. They do not
+establish application exposure, exploitability, or inventory completeness.
 See [the validation record](docs/validation.md) for hashes, commands, and limits.
 
 ## Development
 
 Use uv for development. The committed lockfile pins the development tools;
 the installed inventory helper still uses only Python's standard library.
-Dependency resolution waits one week before accepting new package uploads.
+Dependency resolution permits the latest stable releases. Dependabot's weekly
+proposals retain a seven-day cooldown; reviewed updates can be made immediately.
 
 ```sh
 uv sync --locked
@@ -319,6 +324,27 @@ elsewhere.
 
 The repository and the independently installed skill are distributed under the
 [MIT license](LICENSE).
+
+Compiled Brotli reference data retains its
+[upstream copyright and license](skills/brotli-checker/references/THIRD_PARTY_NOTICES.md).
+See [contributing](CONTRIBUTING.md) for development and dependency updates and
+[security reporting](SECURITY.md) for private vulnerability reports.
+
+CI runs Python 3.12–3.15 checks, the benign Node fetch probe, zizmor's offline
+pedantic workflow analysis, a locked dependency advisory audit, and
+pytest-gremlins mutation testing. Repeat the latter two locally:
+
+```sh
+make security
+make mutations
+```
+
+Mutation testing enforces an 80% minimum score and requires results from every
+scanner module. Errors, skipped modules, missing/empty reports, and unapproved
+pardons fail the check. The two CLI bootstrap guards have documented exclusions;
+standalone help tests cover their entry points. JSON/HTML evidence is retained
+as a CI artifact for 14 days. This
+measures the tests' response to mutations; it is not a vulnerability assessment.
 
 To recheck the published source fingerprints and modified-source detection,
 run this optional maintainer check, which downloads reference source but never

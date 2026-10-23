@@ -180,5 +180,6 @@ def main(argv: list[str] | None = None) -> int:
     return 3 if inventory.gap_count else (1 if inventory.findings else 0)
 
 
+# gremlin: pardon[out_of_scope] CLI bootstrap guard; imports must not launch argparse.
 if __name__ == "__main__":
     sys.exit(main())

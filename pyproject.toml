@@ -9,7 +9,12 @@ requires-python = ">=3.12,<3.16"
 dependencies = []
 
 [tool.uv]
-exclude-newer = "1 week"
+# Explicitly override any user-level waiting period for reviewed updates.
+exclude-newer = "0 days"
+
+[project.urls]
+Repository = "https://github.com/trailofbits/brotli-checker"
+Issues = "https://github.com/trailofbits/brotli-checker/issues"
 
 [tool.ruff]
 target-version = "py312"
@@ -33,7 +38,7 @@ max-complexity = 8
 
 [tool.ty.environment]
 python-version = "3.12"
-extra-paths = ["skills/brotli-checker/scripts"]
+extra-paths = ["skills/brotli-checker/scripts", "scripts"]
 
 [tool.ty.terminal]
 error-on-warning = true
@@ -44,8 +49,22 @@ unused-ignore-comment = "warn"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["skills/brotli-checker/scripts", "scripts"]
 addopts = ["--strict-config", "--strict-markers", "--cov", "--cov-report=term-missing"]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # The gremlins coverage launcher imports its package before pytest starts.
+    "ignore:Module already imported so cannot be rewritten; pytest_gremlins:pytest.PytestAssertRewriteWarning",
+]
+
+[tool.pytest-gremlins]
+paths = ["skills/brotli-checker/scripts"]
+workers = 2
+cache = false
+report = ["json", "html"]
+coverage_timeout = 120
+mutant_timeout = 10
+max_pardons = 2  # Only the two standalone CLI bootstrap guards; checked again in CI.
 
 [tool.coverage.run]
 branch = true
@@ -60,6 +79,8 @@ exclude_also = ["^if __name__ =="]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
-    "ruff>=0.17.1",
-    "ty>=0.0.89",
+    "ruff>=0.17.2",
+    "ty>=0.0.91",
 ]
+security = ["pip-audit>=2.10.1", "zizmor>=1.31.1"]
+mutation = ["pytest-gremlins>=1.12.2"]
