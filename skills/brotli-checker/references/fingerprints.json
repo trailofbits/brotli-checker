@@ -1,0 +1,286 @@
+{
+  "schema_version": 1,
+  "cve": "CVE-2026-111497",
+  "verified_on": "2026-10-23",
+  "upstream_fix": "https://github.com/google/brotli/commit/0ed4268a4401abcb4472096340477cf4af7d1a2b",
+  "inventory_revision": "6f34a3ae446cbba851214fd6a0b40d3a6e3c786f",
+  "verification": "Fetched upstream releases and pinned inventory source; verified Git blob and SHA-256, and compared block-switch handling with upstream fix. Source-file evidence only.",
+  "fingerprints": [
+    {
+      "sha256": "26281b8a8dbe1f85fe96dcb16eeae68620cd106876b7e006ae29398afd0537ba",
+      "git_blob": "08bd76ca16e2a8d6a45ec48a18c95c5fa118561f",
+      "size": 89681,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "upstream-1.0.7",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.0.7/c/dec/decode.c"
+        },
+        {
+          "label": "inventory-08bd76ca16e2a8d6a45ec48a18c95c5fa118561f",
+          "url": "https://raw.githubusercontent.com/pmq20/node-packer/12c46c6e44fbc14d9ee645ebd17d5296b324f7e0/current/deps/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "2026366b7511e77ca16bafcd708299ffe33579c8c2bc7b8af66c2902a858cbd5",
+      "git_blob": "114c5057d7d91f5a634167e00d84a8f4f9112c53",
+      "size": 92978,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-114c5057d7d91f5a634167e00d84a8f4f9112c53",
+          "url": "https://raw.githubusercontent.com/hexhive/el3xir/af0e3573a3f4317d089dd6fbad25bfadc7ba0c54/src/aflvatarplusplus/qemu_mode/qemuafl/roms/edk2/BaseTools/Source/C/BrotliCompress/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "4fd20d5f0c6d8afb007ddb90ce4b7015762ff881658798aad83a46766e589268",
+      "git_blob": "220c7e85c6331bff7a0a44c55f951823b143fd56",
+      "size": 103991,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "upstream-1.1.0",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.1.0/c/dec/decode.c"
+        },
+        {
+          "label": "inventory-220c7e85c6331bff7a0a44c55f951823b143fd56",
+          "url": "https://raw.githubusercontent.com/mozilla/rr/c145f2f80e63e9627b79deed6e0d3eae0d658e38/third-party/brotli/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "06320e9f33a9d49a1880ba0709ae609407e7f8fe9dea97ee435b1d4ad60e6faf",
+      "git_blob": "278b62255e260f066208ca3e36cbaed73abc0bab",
+      "size": 88563,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-278b62255e260f066208ca3e36cbaed73abc0bab",
+          "url": "https://raw.githubusercontent.com/xingyun86/ppshuai_brotli/9898e334a9a749fc387048433cdef9643657852a/src/brotli/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "79db5a1879540eb7c915ce948e8fb94adc1ff49be87dca01529b9283c6ba343e",
+      "git_blob": "2b45765563464d49c91ac480d6ba1e868d97f113",
+      "size": 105535,
+      "state": "fixed",
+      "sources": [
+        {
+          "label": "upstream-1.1.1",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.1.1/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "48591f9bafcf49390f5d44c1a201e5121860ffdfdf1066715c315e4e56090159",
+      "git_blob": "2fe58a7b2f89f76bc0f9e304ce28cc8794f74586",
+      "size": 101068,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-2fe58a7b2f89f76bc0f9e304ce28cc8794f74586",
+          "url": "https://raw.githubusercontent.com/moatlab/femu/2d50161f24c4cb86d58185b0efd44457412eadce/roms/edk2/BaseTools/Source/C/BrotliCompress/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "4b24ab7b9278acd6930b28965347650367c2e37e41086fe136ca54298de1c253",
+      "git_blob": "3ee1963a8509674d1f4c4698592659c3e485b613",
+      "size": 103111,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-3ee1963a8509674d1f4c4698592659c3e485b613",
+          "url": "https://raw.githubusercontent.com/bleedingxiko/voxelbones-4.1.3/e77cdce21ceb31f02af46f29f67aed73d58d5f68/thirdparty/brotli/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "8a2f9cb02e281bcee227d9adc1484ca67b059409161826e796ff846272e22502",
+      "git_blob": "630edeb73e0b93cd89189a52e90ca4fc90d1ce29",
+      "size": 89078,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "upstream-1.0.3",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.0.3/c/dec/decode.c"
+        },
+        {
+          "label": "inventory-630edeb73e0b93cd89189a52e90ca4fc90d1ce29",
+          "url": "https://raw.githubusercontent.com/interactiveplus/easycrossplatform_src/3e1f33c0cf11ec46e7a7cb88802f99f4c94c7e4c/deps/brotli/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "be092f655322dbf42a4e116864f18358649f79a501fc368a17b8e225ee15a344",
+      "git_blob": "674b829a32e1cc004387cc03f98a238dc58a74bc",
+      "size": 88595,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "upstream-1.0.5",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.0.5/c/dec/decode.c"
+        },
+        {
+          "label": "upstream-1.0.6",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.0.6/c/dec/decode.c"
+        },
+        {
+          "label": "inventory-674b829a32e1cc004387cc03f98a238dc58a74bc",
+          "url": "https://raw.githubusercontent.com/samueltulach/rainbow/43e461adb22baa6318b7c7355af98fc545ce8997/edk2/BaseTools/Source/C/BrotliCompress/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "7327740d587020895a9fbcb8c49c4c9b5f9b233f7987d9ac9ede9e0415767633",
+      "git_blob": "70d594bf44875762a3f42ae6665daa2f2ab6edf8",
+      "size": 107672,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-70d594bf44875762a3f42ae6665daa2f2ab6edf8",
+          "url": "https://raw.githubusercontent.com/jamaika1/plugins_ffmpeg_vvc_evc_htj2k/3f96189722b72bab48945c69ae1760ff155d604b/libavcodec/libjxl/brotli/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+      "git_blob": "74db1a292b95b535e5a0ed2e7f7ab8ed61b9b55a",
+      "size": 109324,
+      "state": "fixed",
+      "sources": [
+        {
+          "label": "upstream-1.2.1",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "d8ae8a954051f317ac26fe633f5ecaa0ec537296cc175a3afdb3bdb6a8dc2979",
+      "git_blob": "845f556c0436b65da796a62dec7ca47b8731d9a4",
+      "size": 101330,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-845f556c0436b65da796a62dec7ca47b8731d9a4",
+          "url": "https://raw.githubusercontent.com/telegrammessenger/telegram-ios/fb0e62ba8a147f0821da6aa63c09da7d79a10111/third-party/libjxl/libjxl/third_party/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "77b3b1d24dd6ecba71b35d8bf10db835fd47c0f68ad0afdb51b405b832ec8a57",
+      "git_blob": "86dcd5fb79f5b1a25b09ff228e75a2037a349ac5",
+      "size": 88557,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "upstream-1.0.4",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.0.4/c/dec/decode.c"
+        },
+        {
+          "label": "inventory-86dcd5fb79f5b1a25b09ff228e75a2037a349ac5",
+          "url": "https://raw.githubusercontent.com/superk589/princessguide/4e2c467f265f009dc760ee299ce3790dec0106ec/Pods/BrotliKit/Dependencies/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "9ac66fb95903c2b1bcbfc298bed8472075f6a0e0f0079df4dc7155d65b3b1bfc",
+      "git_blob": "9c10f50fbfacdd34e25dbd838054c40658c9da66",
+      "size": 92968,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-9c10f50fbfacdd34e25dbd838054c40658c9da66",
+          "url": "https://raw.githubusercontent.com/schnaader/precomp-cpp/a11b077425fb6f6c22fc39c3265a2c1af7333665/contrib/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "3c6209b73b0b41526448d2315d3a104bf58a3e46d3096574158ba93ef10480c8",
+      "git_blob": "ae5a3d3fa359e53c5d641ac79b793f746e4d03b7",
+      "size": 93022,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "upstream-1.0.8",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.0.8/c/dec/decode.c"
+        },
+        {
+          "label": "upstream-1.0.9",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.0.9/c/dec/decode.c"
+        },
+        {
+          "label": "inventory-ae5a3d3fa359e53c5d641ac79b793f746e4d03b7",
+          "url": "https://raw.githubusercontent.com/szcnick/p7zip-hw/6819e2dc1917e1267babddc6391cea56ead7123d/C/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "44a4c1973553725c693dc38136cd32a5ec97a471bba8bf5c25bd23fa5b486542",
+      "git_blob": "b23d9fb2208887eb79faaf10bd00fad745bffcfd",
+      "size": 94479,
+      "state": "fixed",
+      "sources": [
+        {
+          "label": "upstream-1.0.10",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.0.10/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "5a993957e39a73857c19dd2cd12932c55c24ef3681a6f115102c014e05ea3293",
+      "git_blob": "de46eb43f0f3aa43c976cc21f9e005dd449982d5",
+      "size": 103973,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-de46eb43f0f3aa43c976cc21f9e005dd449982d5",
+          "url": "https://raw.githubusercontent.com/inotfound/magic/f49b432737d8fe5c4745cd2a87241a00b7353f3c/ThirdParty/Brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "3ff07cde137f680a3e7081314d2e65bf2b88f05546cbd40670aee8ad0692fa0d",
+      "git_blob": "e03f7b3dc9294c303eb30841e3654b877b07d7e3",
+      "size": 107782,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-e03f7b3dc9294c303eb30841e3654b877b07d7e3",
+          "url": "https://raw.githubusercontent.com/s1986q/mybrotli/eee8e875785904e7fa8557ebda069c1184d73703/jni/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+      "git_blob": "e87e7f5ea0f9d06acdb52fe0c08d298e7ee85357",
+      "size": 107780,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "upstream-1.2.0",
+          "url": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c"
+        },
+        {
+          "label": "inventory-e87e7f5ea0f9d06acdb52fe0c08d298e7ee85357",
+          "url": "https://raw.githubusercontent.com/bunkerity/bunkerweb/b09e418447718dc9a7eb40158e3e12ce719bfd5f/src/deps/src/brotli/c/dec/decode.c"
+        }
+      ]
+    },
+    {
+      "sha256": "6468095399eb044ac27e65f0612ed61a6fee0874d1e4cf0046c5cedfcd9211a3",
+      "git_blob": "fc7d535a3cbdffc33fd1ed2f01c608cadde798d2",
+      "size": 107666,
+      "state": "vulnerable",
+      "sources": [
+        {
+          "label": "inventory-fc7d535a3cbdffc33fd1ed2f01c608cadde798d2",
+          "url": "https://raw.githubusercontent.com/utelle/wxpdfdoc/1aa2154023d7da66d9c19665564f334ecf8bfbf0/thirdparty/woff2/brotli/dec/decode.c"
+        }
+      ]
+    }
+  ]
+}

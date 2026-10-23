@@ -1,0 +1,3 @@
+interface:
+  display_name: "Brotli Security Checker"
+  short_description: "Check whether your app needs a Brotli security update"
