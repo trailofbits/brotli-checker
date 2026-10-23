@@ -78,8 +78,13 @@ of absence. Do not use a changing repository count as a deployment count.
   or renamed binaries can evade these clues. Compiled ELF decoder references can
   identify matching executable code without symbols, but only within the
   documented architecture/compiler corpus. Relocation targets/data and other
-  copies remain unverified; unmatched code is unknown. The helper does not disassemble,
-  load libraries, invoke interpreters, or execute target tools.
+  copies remain unverified. On unmatched ELF builds, defined/imported decoder
+  symbols and statically decoded constant-return version functions provide
+  additional triage evidence. An old reported version warrants update/backport
+  review, never a definitive vulnerable-code claim; a fixed reported version
+  never clears a binary. The inventory does not load libraries or execute target
+  tools. The separate opt-in triage helper invokes trusted host objdump to collect
+  bounded disassembly for model inspection; it never executes target code.
 - JavaScript/TypeScript fetch references and Undici imports/dependencies identify
   possible Node HTTP response-decoding routes even without a Brotli dependency.
   They do not establish the fetch binding, runtime, patch state, or input owner.

@@ -541,7 +541,10 @@ class Inventory:
             return
         kind = archive_kind(data, label)
         if kind is not None:
+            first_finding = len(self.findings)
             self._inspect_container(data, label, depth, kind)
+            if len(self.findings) == first_finding:
+                self.record_name_fallback(label, len(data))
             return
         self._inspect_noncontainer(data, label, digest)
 
@@ -1061,6 +1064,13 @@ def explain_lead(item: dict) -> dict:
             ),
         }
     advice = {
+        "binary_candidate": (
+            "Unclassified native binary",
+            (
+                "No supported decoder code matched. Use build records or scoped disassembly "
+                "if this binary may embed Brotli; this is not evidence of absence."
+            ),
+        ),
         "dependency_candidate": (
             "Dependency or metadata mention",
             (
@@ -1408,7 +1418,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--code-references",
         type=Path,
         default=REFERENCES,
-        help="compiled ELF decoder references; unmatched binaries remain unknown",
+        help="compiled ELF decoder references; unmatched code remains unidentified",
     )
     parser.add_argument(
         "--max-file-bytes",

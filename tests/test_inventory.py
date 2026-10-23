@@ -781,6 +781,17 @@ class TestInventory:
         assert len([line for line in output.splitlines() if line.startswith("- Possible")]) == 1
         assert "Containers needing inspection" not in output
 
+    def test_empty_named_container_retains_unresolved_name_evidence(self):
+        target = self.root / "libbrotli.whl"
+        with zipfile.ZipFile(target, "w"):
+            pass
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 3
+        candidates = [row for row in report["findings"] if row["path"] == str(target)]
+        assert len(candidates) == 1
+        assert candidates[0]["kind"] == "artifact_name_candidate"
+        assert candidates[0]["patch_status"] == "unknown"
+
     @pytest.mark.parametrize(
         "limits",
         [

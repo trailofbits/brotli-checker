@@ -1,0 +1,132 @@
+{
+  "date": "2026-10-23",
+  "target_execution": false,
+  "results": [
+    {
+      "artifact": "libbrotlidec.so.1.2.0",
+      "sha256": "ebbfaffb1c0572c5c78d7534ad56cb7b61219788836e76299c4be7ec4a1c61c0",
+      "size_bytes": 69064,
+      "classification": {
+        "patch_status": "unknown",
+        "reason": "Disassembly requires model comparison with reviewed source; no automatic verdict"
+      },
+      "collection": {
+        "status": "incomplete",
+        "incomplete": true,
+        "reasons": [
+          "Missing defined block-switch classes: Command, Distance, Literal",
+          "No defined ProcessCommands symbol; patch-status propagation scope is incomplete"
+        ],
+        "next_request": "Provide a trusted linker/map-derived --start-address/--stop-address, or an executable --file-offset/--length; keep the range within the reported limits."
+      },
+      "limits": {
+        "max_file_bytes": 134217728,
+        "max_output_bytes": 1048576,
+        "max_range_bytes": 65536,
+        "timeout_seconds": 15,
+        "max_symbols": 12
+      },
+      "scopes": [
+        {
+          "mode": "symbol",
+          "name": "BrotliDecoderDecompressStream",
+          "start_address": 25632,
+          "stop_address": 30464,
+          "size_bytes": 4832
+        }
+      ],
+      "snapshot_sha256": "ebbfaffb1c0572c5c78d7534ad56cb7b61219788836e76299c4be7ec4a1c61c0",
+      "snapshot_matches_target": true,
+      "all_commands_use_snapshot": true
+    },
+    {
+      "artifact": "node",
+      "sha256": "f15053488b3c49d16eb4b0da25593b459a79839248381f6aa61a876bcce54966",
+      "size_bytes": 117532552,
+      "classification": {
+        "patch_status": "unknown",
+        "reason": "Disassembly requires model comparison with reviewed source; no automatic verdict"
+      },
+      "collection": {
+        "status": "evidence_collected",
+        "incomplete": false,
+        "reasons": []
+      },
+      "limits": {
+        "max_file_bytes": 134217728,
+        "max_output_bytes": 1048576,
+        "max_range_bytes": 65536,
+        "timeout_seconds": 30,
+        "max_symbols": 12
+      },
+      "scopes": [
+        {
+          "mode": "symbol",
+          "name": "SafeDecodeLiteralBlockSwitch",
+          "start_address": 36460560,
+          "stop_address": 36461440,
+          "size_bytes": 880
+        },
+        {
+          "mode": "symbol",
+          "name": "SafeDecodeCommandBlockSwitch",
+          "start_address": 36461440,
+          "stop_address": 36462248,
+          "size_bytes": 808
+        },
+        {
+          "mode": "symbol",
+          "name": "SafeDecodeDistanceBlockSwitch",
+          "start_address": 36462256,
+          "stop_address": 36463080,
+          "size_bytes": 824
+        },
+        {
+          "mode": "symbol",
+          "name": "DecodeLiteralBlockSwitch",
+          "start_address": 36467508,
+          "stop_address": 36468000,
+          "size_bytes": 492
+        },
+        {
+          "mode": "symbol",
+          "name": "DecodeCommandBlockSwitch",
+          "start_address": 36468000,
+          "stop_address": 36468424,
+          "size_bytes": 424
+        },
+        {
+          "mode": "symbol",
+          "name": "DecodeDistanceBlockSwitch",
+          "start_address": 36468432,
+          "stop_address": 36468868,
+          "size_bytes": 436
+        },
+        {
+          "mode": "symbol",
+          "name": "ProcessCommands",
+          "start_address": 36471652,
+          "stop_address": 36474304,
+          "size_bytes": 2652
+        },
+        {
+          "mode": "symbol",
+          "name": "SafeProcessCommands",
+          "start_address": 36474304,
+          "stop_address": 36477460,
+          "size_bytes": 3156
+        },
+        {
+          "mode": "symbol",
+          "name": "BrotliDecoderDecompressStream",
+          "start_address": 36478196,
+          "stop_address": 36482964,
+          "size_bytes": 4768
+        }
+      ],
+      "snapshot_sha256": "f15053488b3c49d16eb4b0da25593b459a79839248381f6aa61a876bcce54966",
+      "snapshot_matches_target": true,
+      "all_commands_use_snapshot": true
+    }
+  ]
+}

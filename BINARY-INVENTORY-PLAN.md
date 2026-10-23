@@ -167,3 +167,25 @@ Ownership: primary implements shared metadata assessment and CLI integration;
 matcher reviewer owns pure metadata tests; corpus agent owns O3 generator/defaults,
 packaged corpus and real-build matrix; integration agent owns triage helper/tests
 and skill/reachability guidance. All production patches go into existing PR 6.
+
+Upstream changed during implementation: PR 6 is already merged; fetched main
+670a274 and merged its source/archive/fetch/symlink fixes into the follow-up
+branch codex/binary-scanner-followup. A new linked PR is required. Independent
+merge review found and verified a repaired empty named-container fallback;
+the existing unknown/no-absence guarantees remain. Updated tests for intentional
+128 MiB/1 GiB defaults and one content finding instead of duplicate name rows.
+No unrelated upstream behavior was intentionally removed.
+
+Recognition evidence: Fedora libbrotlidec statically reports 1.2.0 and the local
+Node binary reports embedded Brotli 1.1.0. Both now get actionable version-based
+warnings; WOFF2 is identified as importing the decoder. O3 corpus regenerated
+through builder: 24 refs, SHA-256 b067216c952a881ebb73877ada2c791c21ad2ce5f39a42027d1a6f589ec9614c.
+24 real-build cases / 36 links passed against generated and packaged profiles.
+Final verification: 285 tests passed with local reference trees (24 real-build
+cases, no skips), 90.54% combined coverage. Ruff format/check, ty, and diff checks
+passed. Independent re-review approved metadata parsing, merged upstream
+behavior, and triage hash binding/range/output/completeness invariants.
+Real triage: Node selected 9 relevant functions; Fedora public fallback remains
+explicitly incomplete. All objdump invocations read a private snapshot matching
+the reported input hash; no targets executed. Validation summaries are under
+docs/artifacts/ and docs/binary-validation.md. Remaining: publish follow-up PR.

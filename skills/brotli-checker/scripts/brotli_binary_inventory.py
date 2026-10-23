@@ -223,10 +223,11 @@ def main(argv: list[str] | None = None) -> int:
             },
         },
         "limitations": [
-            "Strings, versions, and artifact catalog labels do not determine patch status.",
+            "Old reported versions support warnings, not proof of vulnerable code or a fix.",
+            "Strings and artifact catalog labels do not establish code patch status.",
             "Code matches cover reference decoder text only, not all copies or runtime use.",
             "Relocation targets and referenced data are not verified by masked code matching.",
-            "Unmatched builds, LTO, alternate compilers, and unsupported formats remain unknown.",
+            "Unmatched code remains unidentified; decoder metadata may still support warnings.",
             "Code reference provenance/state is trusted input; custom references require review.",
             "No matches does not establish absence of Brotli, especially in stripped binaries.",
             "Catalog matches identify exact bytes only; supplied labels are not verified.",
