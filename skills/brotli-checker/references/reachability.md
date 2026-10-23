@@ -66,6 +66,43 @@ with an identity request header and after a redirect. It did not test malformed
 streams, deployment reachability, or exploitation; see the
 [validation record](https://github.com/trailofbits/brotli-checker/blob/main/docs/validation.md#benign-built-in-fetch-validation).
 
+## Electron applications
+
+Resolve the API and process before applying Node's version rules. Renderer
+fetch, Electron `net.fetch`, and `session.fetch` use Chromium networking;
+Node's main-process fetch uses Undici. Electron's
+[networking documentation](https://www.electronjs.org/docs/latest/api/net#netfetchinput-init)
+distinguishes these routes. Chromium also decodes Brotli inside WOFF2 fonts.
+
+Electron can replace Node's bundled decoder with Chromium's copy. For example,
+[Electron 43.1.1's build patch](https://github.com/electron/electron/blob/v43.1.1/patches/node/build_add_gn_build_files.patch#L323-L338)
+links Node to Chromium's Brotli targets. Trace the target release's DEPS, patches,
+selected Chromium decoder, and shipped artifact. An affected standalone Node
+version or a Brotli version string alone does not classify an Electron build.
+Vendor builds with the same Electron version can contain different native code.
+
+Benign measurements on Electron 43.1.1 and Slack 4.51.180 confirmed browser
+response decoding over loopback HTTP and HTTPS. Node fetch also decoded when
+it sent identity. Electron net/session fetch rejected those identity responses,
+and browser fetch omitted the attempted identity header. Do not transfer Node's
+header behavior to every Electron API, or treat an error as proof that no
+decoder was entered. See the
+[measurement record](https://github.com/trailofbits/brotli-checker/blob/main/docs/electron-validation.md).
+
+For a real app, establish whether a message, preview, external URL, attachment,
+font, or redirect actually delivers attacker-controlled bytes to the selected
+decoder. Account for proxying, re-encoding, allowlists, authentication, and
+process boundaries. A trusted debugger opening a local fixture confirms only
+that tested runtime route; it does not prove an attacker-controlled product path.
+The Slack measurement left both its shipped decoder patch state and those
+product input paths unknown. Mach-O matching and ASAR parsing are outside the
+offline helper's supported classifiers.
+
+Keep app inspection read-only unless runtime testing is explicitly authorized.
+For an authorized runtime test, use a fresh profile and quit the normal app
+first. The maintainer Slack fixture refuses to launch over an existing main
+process. Normal decoding tests must not be described as CVE trigger tests.
+
 ## Java HTTP stacks and native JNI providers
 
 Look for `com.aayushatharva.brotli4j`, `DecoderJNI`, `BrotliDecoder`, native

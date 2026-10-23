@@ -154,12 +154,13 @@ Its exit codes differ: 1 means inventory candidates (including fixed matches),
 End-of-life Node.js versions get supported-branch upgrade advice, while decoder
 patch status remains unknown (exit 3) without build or vendor evidence.
 
-Validation has covered decoder source references, synthetic packaging fixtures,
-and a benign loopback test of built-in Node fetch response decompression.
-No deployed application or binary was tested, and no malformed or exploit
-payload was executed. The benign fetch test establishes a decoding route,
-not CVE triggerability or exploitation. Do not describe source classification
-as an end-to-end test of a vulnerable app.
+Validation has covered decoder source references, synthetic ELF/packaging
+fixtures, an opt-in suite for locally compiled stripped ELF artifacts, and a
+benign loopback test of built-in Node fetch response decompression. No deployed
+application or production binary's patch state was validated, and no malformed
+or exploit payload was executed. The benign fetch test establishes a decoding
+route, not CVE triggerability or exploitation. Do not describe source
+classification as an end-to-end test of a vulnerable app.
 
 ## Establish patch status and reachability
 
@@ -192,6 +193,14 @@ does not establish call paths, resolve fetch bindings, trace URL ownership,
 or discover the running Node version. Review its locations and continue with
 the Node/fetch section of the reachability guide. A fixed supplied version or
 standalone Brotli library does not clear an unresolved runtime lead.
+
+For Electron apps, use the guide's Electron section. Separate Chromium's
+renderer/net/session fetch paths from Node fetch, and verify which decoder the
+embedder links. A standalone Node version rule cannot classify a vendor Electron
+build. Mach-O and ASAR packages require additional inspection. Benign Electron
+and Slack renderer measurements confirmed local response decoding, while Slack's
+shipped decoder patch status and attacker-controlled product paths remain unknown.
+The offline scanner does not launch either application.
 
 Report reachability as `confirmed`, `not_reachable_in_reviewed_configuration`,
 or `unknown`, with paths/lines or deployment evidence. A negative conclusion

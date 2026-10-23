@@ -8,8 +8,8 @@ import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
+import brotli_binary_inventory as binary_inventory
 import pytest
 
 SCRIPT = (
@@ -22,16 +22,14 @@ import brotli_binary_data as binary_data  # noqa: E402
 def run_scan(*arguments):
     stdout, stderr = io.StringIO(), io.StringIO()
     with (
-        patch.object(sys, "argv", [str(SCRIPT), *map(str, arguments)]),
-        patch.object(sys, "path", [str(SCRIPT.parent), *sys.path]),
         contextlib.redirect_stdout(stdout),
         contextlib.redirect_stderr(stderr),
-        pytest.raises(SystemExit) as result,
     ):
-        runpy.run_path(str(SCRIPT), run_name="__main__")
-    return SimpleNamespace(
-        returncode=result.value.code, stdout=stdout.getvalue(), stderr=stderr.getvalue()
-    )
+        try:
+            code = binary_inventory.main(list(map(str, arguments)))
+        except SystemExit as result:
+            code = result.code
+    return SimpleNamespace(returncode=code, stdout=stdout.getvalue(), stderr=stderr.getvalue())
 
 
 @pytest.mark.parametrize("magic", [b"\x7fELF", b"MZ", b"\xcf\xfa\xed\xfe", b"\0asm", b"!<arch>\n"])

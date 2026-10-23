@@ -2,7 +2,6 @@ import bz2
 import contextlib
 import gzip
 import hashlib
-import importlib.util
 import io
 import json
 import lzma
@@ -17,19 +16,12 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+import brotli_binary_match as matcher
+import brotli_inventory as inventory
 import pytest
+from brotli_binary_match import CodeAssessment
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts/brotli_inventory.py"
-sys.path.insert(0, str(SCRIPT.parent))
-import brotli_binary_match as matcher  # noqa: E402
-from brotli_binary_match import CodeAssessment  # noqa: E402
-
-spec = importlib.util.spec_from_file_location("inventory", SCRIPT)
-if spec is None or spec.loader is None:
-    message = f"Cannot load the inventory helper at {SCRIPT}"
-    raise ImportError(message)
-inventory = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(inventory)
 
 
 def linked_elf(payload: bytes) -> bytes:
@@ -88,7 +80,13 @@ class TestInventory:
             "archive_depth": 2,
         }
         defaults.update(limits)
-        result = inventory.Inventory(self.registry, **defaults)
+        result = inventory.Inventory(
+            self.registry,
+            defaults["max_file_bytes"],
+            defaults["max_total_bytes"],
+            defaults["max_files"],
+            defaults["archive_depth"],
+        )
         result.scan_root(path or self.root)
         return result
 

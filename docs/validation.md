@@ -1,15 +1,23 @@
 # Validation record
 
-Checked on **2026-10-23**. This record describes source detection, scanner
-behavior, and a benign local fetch-decoding test. **No deployed application or
-binary was tested, and no malformed or exploit payload was executed.** The
-fetch test demonstrates a decoding route, not CVE triggerability or exploitation.
+Checked on **2026-10-23**. This record describes source detection, ELF reference
+matching, scanner behavior, and a benign local fetch-decoding test. **No deployed
+application or production binary's patch state was validated, and no malformed
+or exploit payload was executed.** The fetch test demonstrates a decoding route,
+not CVE triggerability or exploitation.
+
+Subsequent [Electron and Slack measurements](electron-validation.md) confirmed
+valid-response decoding in four Electron APIs and the installed Slack renderer.
+They used explicit maintainer fixtures and a fresh Slack profile. Slack's
+native patch status and input paths from messages, previews, or uploads remain
+unknown. The record includes two failed startup attempts and their macOS
+sandbox-initialization cause.
 
 ## Vulnerable reference and fixed control
 
 The vulnerable target was [Google Brotli v1.2.0's decoder source](https://github.com/google/brotli/blob/v1.2.0/c/dec/decode.c).
 The fixed control was [v1.0.10's decoder source](https://github.com/google/brotli/blob/v1.0.10/c/dec/decode.c).
-Neither source file was compiled or executed for this scanner validation.
+The initial source classification check did not compile or execute either file.
 
 | Target | Expected and observed classification | SHA-256 |
 | --- | --- | --- |
@@ -112,7 +120,8 @@ fixed Brotli version must still return review-required status because the
 library's patch status is unknown. This is a synthetic packaging test, not a
 scan of a real deployed image or proof that a binary is vulnerable.
 
-Observed results: all **115 tests passed on Python 3.12, 3.13, 3.14, and 3.15**.
+Before ELF matching was merged, all **115 tests passed on Python 3.12, 3.13,
+3.14, and 3.15**.
 The Python 3.12 run reported **92.03% combined line and branch coverage**.
 Ruff formatting/lint, ty type checks, and zizmor's offline pedantic checks passed.
 These local runs do not establish the result of a future hosted CI run.
@@ -149,6 +158,85 @@ make lint
 make test
 zizmor --offline --pedantic .github/workflows/checks.yml
 ```
+
+## ELF integration and release checks
+
+[PR #6](https://github.com/trailofbits/brotli-checker/pull/6) was merged after
+rebasing its behavior onto the fetch, archive, and reporting fixes. All five
+[hosted checks](https://github.com/trailofbits/brotli-checker/actions/runs/40020851074)
+passed before merging. The combined offline suite then passed 186 tests with
+12 opt-in build cases skipped. Additional release and mutation-gate regressions
+bring the local suite to **205 passing tests**, with **94.13% combined line and
+branch coverage** on Python 3.12.
+
+The packaged ELF corpus has 12 AArch64 GCC 16.2.1 references across three release
+pairs and two build profiles. Tests check every reference against synthetic ELF
+load segments and verify that affected and fixed states discriminate. Tests also
+exercise mixed copies, relocated fields versus opcodes, invalid headers, range
+bounds, overlays, non-executable data, imports, truncation, and matching budgets.
+
+The PR author reported all 12 real-build cases passing on Linux with local
+upstream trees, stripped applications, PIC/non-PIC and PIE/non-PIE combinations,
+removed section headers, and supported archive members. That evidence is recorded
+in the PR. These cases were **not rerun on this macOS release-preparation host**;
+the default CI suite skips them. They can be repeated with `BROTLI_TEST_SOURCES`
+and an ELF compiler, as described in the README. No resulting application is
+executed. These builds do not authenticate a production artifact, resolve masked
+relocation targets or referenced data, or establish runtime use.
+
+Release checks include:
+
+- A refreshed lockfile with the latest stable development/security/mutation tools.
+  There are no third-party runtime dependencies. uv 0.13.5 validates the lockfile.
+- zizmor 1.31.1 reports no findings in offline pedantic mode across the workflows
+  and Dependabot configuration. An authenticated online pedantic scan also passed.
+- actionlint accepts both workflows. Actions use full commit pins, checkout
+  credentials are not retained, token permissions are read-only, and job timeouts
+  bound execution.
+- pip-audit 2.10.1 found **no known advisories in 38 audited packages**, with no
+  skipped packages, from a hashed export of every dependency group. CI repeats
+  the online audit on pushes, pull requests, and a weekly schedule.
+- Gitleaks 8.30.1 found no matches in the working tree or reachable Git history
+  using redacted output. This is a point-in-time pattern scan; GitHub's private
+  repository secret-scanning service was not enabled for this check.
+- MIT notices cover the repository and installed skill; the compiled reference
+  catalog retains the upstream Brotli copyright and license. Security reporting
+  and contribution instructions are included.
+
+The 20 source fingerprints and 20 modified-source classifications were verified
+again after integration. The local benign Node fetch probe also passed again.
+These checks retain all the limits described above.
+
+## Mutation testing
+
+`make mutations` runs pytest-gremlins 1.12.2 with all default operators against
+all three Python scanner modules. Tests use normal imports so the plugin can
+instrument the code being exercised. Mutation subprocesses use a 10-second
+limit, CI uses two workers, and cached verdicts are disabled. JSON/HTML evidence
+is uploaded even when the job fails.
+
+The score gate recomputes the score from individual verdicts and rejects missing,
+empty, inconsistent, or partially instrumented reports, any runner errors, and
+missing scanner modules. It requires at least 80%. Only the two standalone CLI
+guards have `out_of_scope` pardons: reversing `__name__ == "__main__"` launches
+argparse during import and is classified as a runner error by this plugin version.
+The gate checks those exact source locations and comparison operators, permits
+at most those two pardons, and excludes them from the denominator. Standalone
+help tests verify both real entry points. No scanner logic is pardoned.
+
+Confirmed mutation-induced timeouts count as detections under the plugin's
+scoring; a timeout that cannot be confirmed against an unmutated control remains
+an error and fails the gate. A passing score still leaves surviving mutants and
+does not establish that every bug or vulnerability would be detected.
+
+The local Python 3.12 run with four workers assessed **388 mutants**: **329
+zapped, 55 survived, two confirmed timeouts, zero errors, and the two documented
+CLI-guard pardons**. The resulting score was **85.75%** (331 / 386). No source
+modules were skipped. Per-module scores were 86.36% for binary inventory, 93.38%
+for ELF matching, and 81.14% for source/runtime inventory. Boundary regressions
+added after the first run cover ELF ranges and header validation, mask density,
+shifted anchors, name-only binary candidates, escaped catalog output, and the
+remaining decompression budget. The same score gate accepted the resulting JSON.
 
 ## What remains unvalidated
 
