@@ -85,3 +85,24 @@ Enable `BROTLI_LARGE_FILE_TESTS=1` for the complete large-file hash/CLI regressi
 Archive members and decompression streams have separate 8 GiB/item and 64 GiB
 cumulative expansion budgets; sequential expansion may require temporary spooling
 for later random access. Explicit user-selected input caps remain available.
+
+ELF metadata parsing also has CPU-work bounds, independent of file size. It parses
+the executable mappings once, caches up to 4,096 distinct function queries, and
+allows at most 1,000,000 segment comparisons across those queries. Repeated symbol
+definitions reuse their mapping and version evidence. Exhaustion retains partial
+evidence, marks metadata limited, and adds an inventory coverage gap. The metadata
+record includes these limits alongside the existing symbol/table bounds.
+
+Disassembly collection records any selected functions omitted when a global time
+or output budget is exhausted. Filling the output budget exactly is complete only
+if every selected scope has already been collected. Regression tests cover both
+budget boundaries and the metadata work limits. The offline test suite also runs
+on macOS to catch platform-dependent tool paths.
+
+After merging the release checks into this follow-up, the local macOS Python 3.12
+run with `BROTLI_LARGE_FILE_TESTS=1 uv run --locked pytest -q` passed 314 tests
+with 24 Linux native-build cases skipped and 90.55% combined coverage. This
+includes the complete sparse-file hash/CLI regressions. Ruff, ty, zizmor's
+offline pedantic analysis, and the locked dependency advisory audit also passed.
+These results exercise scanner behavior; they do not establish exploitability
+of an installed application.

@@ -389,7 +389,7 @@ Compiled Brotli reference data retains its
 See [contributing](CONTRIBUTING.md) for development and dependency updates and
 [security reporting](SECURITY.md) for private vulnerability reports.
 
-CI runs Python 3.12–3.15 checks, the benign Node fetch probe, zizmor's offline
+CI runs Python 3.12–3.15 checks, Python 3.12 on macOS, the benign Node fetch probe, zizmor's offline
 pedantic workflow analysis, a locked dependency advisory audit, and
 pytest-gremlins mutation testing. Repeat the latter two locally:
 
@@ -400,7 +400,7 @@ make mutations
 
 Mutation testing enforces an 80% minimum score and requires results from every
 scanner module. Errors, skipped modules, missing/empty reports, and unapproved
-pardons fail the check. The two CLI bootstrap guards have documented exclusions;
+pardons fail the check. The three CLI bootstrap guards have documented exclusions;
 standalone help tests cover their entry points. JSON/HTML evidence is retained
 as a CI artifact for 14 days. This
 measures the tests' response to mutations; it is not a vulnerability assessment.

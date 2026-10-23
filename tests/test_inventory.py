@@ -86,6 +86,13 @@ class TestInventory:
             defaults["max_total_bytes"],
             defaults["max_files"],
             defaults["archive_depth"],
+            max_expanded_bytes=defaults.get(
+                "max_expanded_bytes", inventory.DEFAULT_MAX_EXPANDED_BYTES
+            ),
+            max_total_expanded_bytes=defaults.get(
+                "max_total_expanded_bytes", inventory.DEFAULT_MAX_TOTAL_EXPANDED_BYTES
+            ),
+            max_text_bytes=defaults.get("max_text_bytes", inventory.DEFAULT_MAX_TEXT_BYTES),
         )
         result.scan_root(path or self.root)
         return result

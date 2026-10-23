@@ -543,7 +543,13 @@ def collect_ranges(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bounded
             report["collection"]["reasons"].append(
                 "No defined ProcessCommands symbol; patch-status propagation scope is incomplete"
             )
-        for symbol in defined:
+        for index, symbol in enumerate(defined):
+            if output_left <= 0 or time.monotonic() >= deadline:
+                report["collection"]["reasons"].append(
+                    "Global objdump time/output budget exhausted; selected symbols omitted"
+                )
+                report["collection"]["omitted_symbols"] = [item["name"] for item in defined[index:]]
+                break
             size = symbol["size_bytes"]
             if not 0 < size <= args.max_range_bytes:
                 report["collection"]["reasons"].append(
@@ -571,8 +577,6 @@ def collect_ranges(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bounded
                 output_left,
             )
             output_left -= used
-            if output_left <= 0 or time.monotonic() >= deadline:
-                break
     if report["evidence"]["disassembly"] and not report["collection"]["reasons"]:
         report["collection"].update(status="evidence_collected", incomplete=False)
         return 0, report
@@ -678,5 +682,6 @@ def main(argv: list[str] | None = None) -> int:
     return code
 
 
+# gremlin: pardon[out_of_scope] CLI bootstrap guard; imports must not launch argparse.
 if __name__ == "__main__":
     sys.exit(main())

@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 SYMBOL = struct.Struct("<IBBHQQ")
 MAX_SYMBOLS = 1_000_000
 MAX_SYMBOL_TABLES = 16
+MAX_MAPPING_WORK = 1_000_000
+MAX_FUNCTION_QUERIES = 4096
 MAX_SYMBOL_NAME_BYTES = 64
 MAX_VERSION_FUNCTION_BYTES = 64
 SHT_STRTAB = 3
@@ -97,12 +99,41 @@ def constant_version(  # noqa: C901, PLR0911 -- Strict instruction-form decoder.
     return value
 
 
-def _function_offset(data: Buffer, header: tuple, address: int, size: int) -> int | None:
-    table = checked_slice(data, header[5], header[9] * header[10])
-    for kind, flags, start, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table):
-        if kind == 1 and flags & 1 and virtual <= address and address + size <= virtual + file_size:
-            return start + address - virtual
-    return None
+class MetadataLimitError(ValueError):
+    """Decoder metadata exceeded a combined CPU or retained-query budget."""
+
+
+class FunctionOffsets:
+    """Parse mappings once and bound work across all distinct function lookups."""
+
+    def __init__(self, data: Buffer, header: tuple) -> None:
+        table = checked_slice(data, header[5], header[9] * header[10])
+        self.segments = [
+            (start, virtual, file_size)
+            for kind, flags, start, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table)
+            if kind == 1 and flags & 1
+        ]
+        self.cache: dict[tuple[int, int], int | None] = {}
+        self.work_left = MAX_MAPPING_WORK
+
+    def resolve(self, address: int, size: int) -> int | None:
+        key = (address, size)
+        if key in self.cache:
+            return self.cache[key]
+        if len(self.cache) >= MAX_FUNCTION_QUERIES:
+            msg = "Decoder function query limit reached"
+            raise MetadataLimitError(msg)
+        for start, virtual, file_size in self.segments:
+            if self.work_left <= 0:
+                msg = "Decoder mapping work limit reached"
+                raise MetadataLimitError(msg)
+            self.work_left -= 1
+            if virtual <= address and address + size <= virtual + file_size:
+                offset = start + address - virtual
+                self.cache[key] = offset
+                return offset
+        self.cache[key] = None
+        return None
 
 
 def decoder_metadata(data: Buffer) -> dict:
@@ -112,9 +143,17 @@ def decoder_metadata(data: Buffer) -> dict:
         "versions": [],
         "reason": "No decoder API symbols found; stripped copies remain possible",
         "limited": False,
+        "limits": {
+            "max_symbols": MAX_SYMBOLS,
+            "max_symbol_tables": MAX_SYMBOL_TABLES,
+            "max_mapping_work": MAX_MAPPING_WORK,
+            "max_function_queries": MAX_FUNCTION_QUERIES,
+        },
     }
     try:
         _read_symbols(data, result)
+    except MetadataLimitError as error:
+        result.update(reason=str(error), limited=True)
     except (ValueError, struct.error) as error:
         result["reason"] = f"Decoder metadata unavailable: {error}"
     return result
@@ -136,6 +175,8 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
     )
     seen = 0
     tables_seen = 0
+    offsets = FunctionOffsets(data, header)
+    version_locations: set[tuple[int, int]] = set()
     for section in sections:
         if section[1] not in (2, 11):  # SHT_SYMTAB, SHT_DYNSYM.
             continue
@@ -166,13 +207,14 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
             name = data[name_start:end] if end >= 0 else b""
             if name not in DECODER_APIS or info & 0xF != STT_FUNC:
                 continue
+            offset = None
             if index == 0:
                 bucket = result["imported_symbols"]
             else:
                 if index >= len(sections):
                     continue
                 owner = sections[index]
-                offset = _function_offset(data, header, address, max(size, 1))
+                offset = offsets.resolve(address, max(size, 1))
                 if (
                     owner[1] != 1
                     or owner[2] & (SHF_ALLOC | SHF_EXECINSTR) != (SHF_ALLOC | SHF_EXECINSTR)
@@ -189,11 +231,13 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
                 name != b"BrotliDecoderVersion"
                 or index == 0
                 or not 0 < size <= MAX_VERSION_FUNCTION_BYTES
+                or offset is None
             ):
                 continue
-            offset = _function_offset(data, header, address, size)
-            if offset is None:
+            location = (offset, size)
+            if location in version_locations:
                 continue
+            version_locations.add(location)
             value = constant_version(checked_slice(data, offset, size), header[2])
             if value is not None:
                 version = f"{value >> 24}.{(value >> 12) & 0xFFF}.{value & 0xFFF}"
@@ -202,8 +246,7 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
                     "file_offset": offset,
                     "method": "constant_decoder_version_return",
                 }
-                if evidence not in result["versions"]:
-                    result["versions"].append(evidence)
+                result["versions"].append(evidence)
     if result["defined_symbols"] or result["imported_symbols"]:
         result["reason"] = (
             "Defined/imported decoder symbols; reported versions do not establish patch status"

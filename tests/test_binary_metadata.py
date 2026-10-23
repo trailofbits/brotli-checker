@@ -327,3 +327,50 @@ def test_missing_or_truncated_section_metadata_is_unknown():
     result = metadata.decoder_metadata(bytes(data))
     assert result["versions"] == []
     assert result["reason"] == "No ELF section table; symbol-based decoder evidence unavailable"
+
+
+def test_repeated_symbols_do_not_reread_program_table(monkeypatch):
+    code = x86_return(encoded_version(1, 2, 0))
+    data = elf_with_symbols(code, matcher.EM_X86_64, [{"name": "BrotliDecoderVersion"}] * 200)
+    header = matcher.elf_header(data)
+    original = metadata.checked_slice
+    table_reads = []
+
+    def count_reads(data, offset, size):
+        if offset == header[5] and size == header[9] * header[10]:
+            table_reads.append(size)
+        return original(data, offset, size)
+
+    monkeypatch.setattr(metadata, "checked_slice", count_reads)
+    result = metadata.decoder_metadata(data)
+    assert not result["limited"]
+    assert len(result["versions"]) == 1
+    assert len(table_reads) <= 1
+
+
+@pytest.mark.parametrize(
+    ("limit", "reason"),
+    [
+        ("MAX_MAPPING_WORK", "mapping work limit"),
+        ("MAX_FUNCTION_QUERIES", "function query limit"),
+    ],
+)
+def test_metadata_mapping_work_is_jointly_bounded(monkeypatch, limit, reason):
+    code = x86_return(encoded_version(1, 2, 0))
+    data = elf_with_symbols(
+        code * 3,
+        matcher.EM_X86_64,
+        [
+            {
+                "name": "BrotliDecoderVersion",
+                "address": CODE_ADDRESS + index * len(code),
+                "size": len(code),
+            }
+            for index in range(3)
+        ],
+    )
+    monkeypatch.setattr(metadata, limit, 2, raising=False)
+    result = metadata.decoder_metadata(data)
+    assert result["limited"]
+    assert reason in result["reason"]
+    assert len(result["versions"]) == 2

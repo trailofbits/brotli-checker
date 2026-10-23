@@ -40,12 +40,14 @@ def elf(payload=b"instructions", machine=183):
     return header + program + payload
 
 
-def run_main(monkeypatch, target, *arguments, outputs=(), symbols=None):
+def run_main(monkeypatch, target, *arguments, outputs=(), symbols=None, after_run=None):
     responses = iter(outputs)
 
     def fake_run(command, timeout_seconds, max_output_bytes):
         del command, timeout_seconds, max_output_bytes
         output = next(responses)
+        if after_run is not None:
+            after_run()
         return {
             "returncode": 0,
             "output": output,
@@ -59,7 +61,7 @@ def run_main(monkeypatch, target, *arguments, outputs=(), symbols=None):
     monkeypatch.setattr(triage, "relevant_symbols", lambda *_: (selected, None))
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        code = triage.main([str(target), "--objdump", "/bin/true", *map(str, arguments)])
+        code = triage.main([str(target), "--objdump", sys.executable, *map(str, arguments)])
     return code, json.loads(output.getvalue())
 
 
@@ -165,6 +167,43 @@ def test_symbol_triage_selects_patch_functions_and_preserves_unknown(tmp_path, m
     assert target.read_bytes() == before
 
 
+def test_exact_output_budget_marks_remaining_symbols_incomplete(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 0x400))
+    code, report = run_main(monkeypatch, target, "--max-output-bytes", "4", outputs=("1234",))
+    assert code == 3
+    assert report["collection"]["incomplete"]
+    assert len(report["evidence"]["disassembly"]) == 1
+    assert len(report["collection"]["omitted_symbols"]) == 4
+    assert "budget exhausted" in " ".join(report["collection"]["reasons"])
+    assert report["classification"]["patch_status"] == "unknown"
+
+
+def test_deadline_between_commands_marks_remaining_symbols_incomplete(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 0x400))
+    clock = [0.0]
+    monkeypatch.setattr(triage.time, "monotonic", lambda: clock[0])
+
+    def expire():
+        clock[0] = 20.0
+
+    code, report = run_main(monkeypatch, target, outputs=("asm",), after_run=expire)
+    assert code == 3
+    assert report["collection"]["incomplete"]
+    assert len(report["collection"]["omitted_symbols"]) == 4
+    assert len(report["tool"]["commands"]) == 1
+
+
+def test_exact_budget_after_last_symbol_does_not_discard_complete_collection(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 0x400))
+    code, report = run_main(monkeypatch, target, "--max-output-bytes", "20", outputs=("1234",) * 5)
+    assert code == 0
+    assert not report["collection"]["incomplete"]
+    assert len(report["evidence"]["disassembly"]) == 5
+
+
 def test_stripped_or_import_only_binary_requests_explicit_range(tmp_path, monkeypatch):
     target = tmp_path / "service"
     target.write_bytes(elf())
@@ -239,7 +278,7 @@ def test_input_mutation_marks_collected_packet_incomplete(tmp_path, monkeypatch)
     monkeypatch.setattr(triage, "run_bounded", change_during_disassembly)
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        code = triage.main([str(target), "--objdump", "/bin/true"])
+        code = triage.main([str(target), "--objdump", sys.executable])
     report = json.loads(output.getvalue())
     assert code == 3
     assert report["collection"]["incomplete"]
@@ -299,7 +338,7 @@ def test_symlinks_and_oversized_files_are_not_given_to_objdump(tmp_path, monkeyp
     for path, extra in ((link, ()), (target, ("--max-file-bytes", "1"))):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            assert triage.main([str(path), "--objdump", "/bin/true", *extra]) == 3
+            assert triage.main([str(path), "--objdump", sys.executable, *extra]) == 3
         report = json.loads(output.getvalue())
         assert report["collection"]["incomplete"]
         assert report["tool"]["commands"] == []
@@ -312,7 +351,7 @@ def test_unsupported_elf_is_hashed_and_explicitly_incomplete(tmp_path, monkeypat
     monkeypatch.setattr(triage, "run_bounded", pytest.fail)
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        assert triage.main([str(target), "--objdump", "/bin/true"]) == 3
+        assert triage.main([str(target), "--objdump", sys.executable]) == 3
     report = json.loads(output.getvalue())
     assert report["target"]["sha256"] == hashlib.sha256(data).hexdigest()
     assert "Unsupported or malformed ELF" in report["collection"]["reasons"][0]
@@ -510,7 +549,7 @@ def test_output_file_receives_json(tmp_path, monkeypatch):
                 [
                     str(target),
                     "--objdump",
-                    "/bin/true",
+                    sys.executable,
                     "--output",
                     str(report_path),
                 ]
@@ -530,7 +569,7 @@ def test_output_cannot_alias_target(tmp_path):
             [
                 str(target),
                 "--objdump",
-                "/bin/true",
+                sys.executable,
                 "--output",
                 str(target),
             ]

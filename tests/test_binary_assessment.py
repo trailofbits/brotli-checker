@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts"))
+import brotli_binary_metadata as metadata
 import brotli_inventory as scanner
 from test_binary_inventory import run_scan
 from test_binary_metadata import elf_with_symbols, encoded_version, x86_return
@@ -68,6 +69,38 @@ def test_imported_version_does_not_warn_as_embedded(tmp_path):
     assert finding["patch_status"] == "not_assessed"
     assert finding["linkage"] == "decoder_import"
     assert not finding["decoder_metadata"]["versions"]
+
+
+@pytest.mark.parametrize(("patch", "exit_code"), [(0, 1), (1, 3)])
+def test_metadata_work_limit_records_gap_and_preserves_partial_evidence(
+    tmp_path, monkeypatch, patch, exit_code
+):
+    code = x86_return(encoded_version(1, 2, patch))
+    target = tmp_path / "libbrotli.so"
+    target.write_bytes(
+        elf_with_symbols(
+            code * 2,
+            62,
+            [
+                {"name": "BrotliDecoderVersion", "size": len(code)},
+                {
+                    "name": "BrotliDecoderVersion",
+                    "address": 0x400100 + len(code),
+                    "size": len(code),
+                },
+            ],
+        )
+    )
+    monkeypatch.setattr(metadata, "MAX_MAPPING_WORK", 1)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        assert scanner.main([str(target), "--json"]) == exit_code
+    report = json.loads(output.getvalue())
+    assert report["coverage"]["gap_count"] == 1
+    assert "mapping work limit" in report["coverage"]["gaps"][0]["reason"]
+    evidence = report["findings"][0]["evidence"]["decoder_metadata"]
+    assert evidence["limited"]
+    assert [version["version"] for version in evidence["versions"]] == [f"1.2.{patch}"]
 
 
 def test_old_version_cannot_hide_affected_code_and_fixed_code_cannot_clear_old_version(monkeypatch):
