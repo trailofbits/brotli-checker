@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills/brotli-checker/scripts"))
-from brotli_binary_match import reference_from_object  # noqa: E402
+from brotli_binary_match import load_references, reference_from_object  # noqa: E402
 
 
 def build_references(trees: list[Path], compiler: str, flags: list[str]) -> dict:
@@ -67,6 +67,43 @@ def build_references(trees: list[Path], compiler: str, flags: list[str]) -> dict
     return {"schema_version": 1, "references": references}
 
 
+def unique_references(references: list[dict]) -> list[dict]:
+    unique = {}
+    for reference in references:
+        identifier = reference.get("id")
+        if not isinstance(identifier, str) or not identifier:
+            msg = "Generated code reference has no valid id"
+            raise ValueError(msg)
+        if identifier in unique:
+            if unique[identifier] != reference:
+                msg = f"Conflicting generated code reference id: {identifier}"
+                raise ValueError(msg)
+            continue
+        unique[identifier] = reference
+    return list(unique.values())
+
+
+def write_validated_catalog(output: Path, catalog: dict) -> None:
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            json.dump(catalog, stream, indent=2)
+            stream.write("\n")
+        load_references(temporary_path)
+        temporary_path.replace(output)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trees", nargs="+", type=Path)
@@ -75,15 +112,21 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     try:
-        profiles = args.cflags or ["-O2 -fno-pic -fno-PIE", "-O2 -fPIC"]
+        profiles = args.cflags or [
+            "-O2 -fno-pic -fno-PIE",
+            "-O2 -fPIC",
+            "-O3 -fno-pic -fno-PIE",
+            "-O3 -fPIC",
+        ]
         result = {"schema_version": 1, "references": []}
         for profile in profiles:
             result["references"].extend(
                 build_references(args.trees, args.cc, shlex.split(profile))["references"]
             )
+        result["references"] = unique_references(result["references"])
+        write_validated_catalog(args.output, result)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return 0
 
 

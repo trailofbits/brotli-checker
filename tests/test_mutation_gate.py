@@ -56,8 +56,11 @@ def test_empty_skipped_missing_and_inflated_reports_fail_closed(report, tmp_path
     assert gate.main([str(broken)]) == 1
 
 
-def test_only_documented_cli_guard_pardons_are_accepted(report, tmp_path):
-    path = gate.SOURCE / "brotli_inventory.py"
+@pytest.mark.parametrize(
+    "script", ["brotli_inventory.py", "brotli_binary_inventory.py", "brotli_binary_triage.py"]
+)
+def test_only_documented_cli_guard_pardons_are_accepted(report, tmp_path, script):
+    path = gate.SOURCE / script
     line = path.read_text().splitlines().index('if __name__ == "__main__":') + 1
     pardon = {
         "file_path": str(path),

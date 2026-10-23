@@ -1,0 +1,49 @@
+{
+  "date": "2026-10-23",
+  "target_execution": false,
+  "fixture_kind": "Sparse synthetic ELF containing packaged fixed decoder code and version metadata; not executed",
+  "logical_bytes": 6442478920,
+  "sha256": "d95cb6412695b74241613ff9550e4ab2b7486cf1123cad3fce9193fa3748eb14",
+  "patch_status": "fixed_code_match",
+  "code_offsets": [
+    6442455040
+  ],
+  "version_evidence": [
+    {
+      "version": "1.2.1",
+      "file_offset": 6442478560,
+      "method": "constant_decoder_version_return",
+      "upstream_status": "upstream_fixed_version",
+      "fixed_branch_version": "1.2.1"
+    }
+  ],
+  "coverage": {
+    "files_read": 1,
+    "files_seen": 1,
+    "bytes_read": 6442478920,
+    "expanded_items_read": 0,
+    "expanded_bytes_read": 0,
+    "archives_attempted": 0,
+    "archives_opened": 0,
+    "gap_count": 0,
+    "gap_details_retained": 0,
+    "gap_details_omitted": 0,
+    "gaps": [],
+    "excluded": [
+      ".git"
+    ],
+    "symlinks_followed": false,
+    "limits": {
+      "max_file_bytes": null,
+      "max_total_bytes": null,
+      "max_expanded_bytes": 8589934592,
+      "max_total_expanded_bytes": 68719476736,
+      "max_files": 100000,
+      "archive_depth": 2
+    }
+  },
+  "elapsed_seconds": 3.4,
+  "max_rss_kib": 30892,
+  "interpretation": "Sparse-hole timing is not a real-disk throughput benchmark. Whole-artifact hashing is streamed; ELF analysis uses offset reads. The regular file is neither copied nor memory-mapped.",
+  "regression_command": "BROTLI_LARGE_FILE_TESTS=1 .venv/bin/pytest tests/test_binary_data.py tests/test_binary_inventory.py --no-cov"
+}

@@ -10,14 +10,23 @@ import json
 import sys
 from pathlib import Path
 
+from brotli_binary_data import Buffer, sha256_data
 from brotli_binary_match import (
     REFERENCES,
-    CodeAssessment,
     CodeReference,
     load_references,
-    match_code,
 )
-from brotli_inventory import Inventory, archive_kind, positive
+from brotli_inventory import (
+    DEFAULT_MAX_EXPANDED_BYTES,
+    DEFAULT_MAX_FILE_BYTES,
+    DEFAULT_MAX_TOTAL_BYTES,
+    DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
+    Inventory,
+    archive_kind,
+    assess_binary,
+    is_binary_name_candidate,
+    positive,
+)
 
 MAGICS = {
     b"\x7fELF": "ELF",
@@ -33,69 +42,109 @@ MAGICS = {
     b"\0asm": "WebAssembly",
     b"!<arch>\n": "ar static library",
 }
-SYMBOLS = (
-    b"BrotliDecoderDecompress",
-    b"BrotliDecoderCreateInstance",
-    b"BrotliDecoderVersion",
-    b"BrotliEncoderCompress",
-    b"BrotliEncoderVersion",
-    b"libbrotlidec",
-    b"libbrotlicommon",
-    b"libbrotlienc",
-    b"org/brotli/dec/",
-    b"com/aayushatharva/brotli4j/",
-)
 
 
 class BinaryInventory(Inventory):
-    def __init__(
-        self, catalog: dict[str, str], references: list[CodeReference], **limits: int
+    def __init__(  # noqa: PLR0913 -- Traversal and expansion limits are public CLI controls.
+        self,
+        catalog: dict[str, str],
+        references: list[CodeReference],
+        *,
+        max_file_bytes: int | None,
+        max_total_bytes: int | None,
+        max_files: int,
+        archive_depth: int,
+        max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+        max_total_expanded_bytes: int = DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
     ) -> None:
-        super().__init__({"fingerprints": []}, code_references=None, **limits)
+        super().__init__(
+            {"fingerprints": []},
+            max_file_bytes,
+            max_total_bytes,
+            max_files,
+            archive_depth,
+            max_expanded_bytes=max_expanded_bytes,
+            max_total_expanded_bytes=max_total_expanded_bytes,
+            code_references=None,
+        )
         self.catalog = catalog
         self.references = references
 
-    def inspect(self, data: bytes, label: str, depth: int) -> None:
-        digest = hashlib.sha256(data).hexdigest()
+    def record_name_fallback(self, label: str, size_bytes: int | None = None) -> None:
+        if not is_binary_name_candidate(label):
+            return
+        self.findings.append(
+            self._finding(
+                label,
+                kind="artifact_name_candidate",
+                size_bytes=size_bytes,
+                code_assessment="Content was not inspected; filename only",
+            )
+        )
+
+    @staticmethod
+    def _finding(  # noqa: PLR0913 -- Stable schema has independent evidence fields.
+        path: str,
+        *,
+        kind: str,
+        sha256: str | None = None,
+        size_bytes: int | None = None,
+        format_hint: str | None = None,
+        indicators: list[str] | None = None,
+        catalog_label: str | None = None,
+        patch_status: str = "not_assessed",
+        linkage: str = "unknown",
+        code_matches: list[dict] | None = None,
+        decoder_metadata: dict | None = None,
+        code_assessment: str,
+    ) -> dict:
+        return {
+            "path": path,
+            "kind": kind,
+            "sha256": sha256,
+            "size_bytes": size_bytes,
+            "format_hint": format_hint,
+            "indicators": indicators or [],
+            "catalog_label": catalog_label,
+            "patch_status": patch_status,
+            "linkage": linkage,
+            "code_matches": code_matches or [],
+            "decoder_metadata": decoder_metadata or {},
+            "code_assessment": code_assessment,
+        }
+
+    def inspect(self, data: Buffer, label: str, depth: int) -> None:
+        digest = sha256_data(data)
         file_format = next((name for magic, name in MAGICS.items() if data.startswith(magic)), None)
-        indicators = [symbol.decode("ascii") for symbol in SYMBOLS if symbol in data]
         catalog_label = self.catalog.get(digest)
-        assessment = (
-            match_code(data, self.references)
-            if data.startswith(b"\x7fELF")
-            else CodeAssessment([], "Code matching supports linked ELF64 x86_64/AArch64 only")
-        )
-        matches = assessment.matches
-        if assessment.limited:
-            self.gap(label, assessment.reason)
-        # Include named candidates even when the binary has been stripped.
-        named = any(
-            item["path"] == label and item["kind"] == "artifact_name_candidate"
-            for item in self.findings[-1:]
-        )
+        assessment = assess_binary(data, self.references)
+        for reason in assessment["gaps"]:
+            self.gap(label, reason)
+        named = is_binary_name_candidate(label)
         if file_format or named or catalog_label is not None:
             self.findings.append(
-                {
-                    "path": label,
-                    "kind": "exact_artifact_match"
+                self._finding(
+                    label,
+                    kind="exact_artifact_match"
                     if catalog_label is not None
-                    else "decoder_code_match"
-                    if matches
-                    else "binary_candidate",
-                    "sha256": digest,
-                    "size_bytes": len(data),
-                    "format_hint": file_format,
-                    "indicators": indicators,
-                    "catalog_label": catalog_label,
-                    "patch_status": assessment.patch_status if matches else "not_assessed",
-                    "linkage": "embedded_code" if matches else "unknown",
-                    "code_matches": matches,
-                    "code_assessment": assessment.reason,
-                }
+                    else assessment["kind"],
+                    sha256=digest,
+                    size_bytes=len(data),
+                    format_hint=file_format,
+                    indicators=assessment["indicators"],
+                    catalog_label=catalog_label,
+                    patch_status="not_assessed"
+                    if assessment["patch_status"] == "unknown"
+                    else assessment["patch_status"],
+                    linkage=assessment["linkage"],
+                    code_matches=assessment["code_matches"],
+                    decoder_metadata=assessment["decoder_metadata"],
+                    code_assessment=assessment["reason"],
+                )
             )
         kind = archive_kind(data, label)
         if kind is not None:
-            self._inspect_container(data, label, depth, kind)
+            self._inspect_container(data, label, depth, kind, digest)
 
 
 def load_catalog(path: Path | None) -> dict[str, str]:
@@ -127,10 +176,43 @@ def main(argv: list[str] | None = None) -> int:
         default=REFERENCES,
         help="Compiled decoder reference catalog (defaults to packaged references)",
     )
-    parser.add_argument("--max-file-bytes", type=positive, default=64 * 1024 * 1024)
-    parser.add_argument("--max-total-bytes", type=positive, default=1024 * 1024 * 1024)
-    parser.add_argument("--max-files", type=positive, default=100000)
-    parser.add_argument("--archive-depth", type=int, choices=range(6), default=2)
+    parser.add_argument(
+        "--max-file-bytes",
+        type=positive,
+        default=DEFAULT_MAX_FILE_BYTES,
+        help="optional maximum bytes read from one file/member (default: no cap)",
+    )
+    parser.add_argument(
+        "--max-total-bytes",
+        type=positive,
+        default=DEFAULT_MAX_TOTAL_BYTES,
+        help="optional maximum cumulative bytes read (default: no cap)",
+    )
+    parser.add_argument(
+        "--max-expanded-bytes",
+        type=positive,
+        default=DEFAULT_MAX_EXPANDED_BYTES,
+        help="maximum expanded bytes read from one archive member/stream",
+    )
+    parser.add_argument(
+        "--max-total-expanded-bytes",
+        type=positive,
+        default=DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
+        help="maximum cumulative expanded archive/member bytes",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=positive,
+        default=100000,
+        help="maximum files/archive members considered (default: 100000)",
+    )
+    parser.add_argument(
+        "--archive-depth",
+        type=int,
+        choices=range(6),
+        default=2,
+        help="maximum nested archive levels, from 0 to 5 (default: 2)",
+    )
     args = parser.parse_args(argv)
     try:
         catalog = load_catalog(args.catalog)
@@ -144,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
         max_total_bytes=args.max_total_bytes,
         max_files=args.max_files,
         archive_depth=args.archive_depth,
+        max_expanded_bytes=args.max_expanded_bytes,
+        max_total_expanded_bytes=args.max_total_expanded_bytes,
     )
     roots = [root.expanduser().absolute() for root in args.roots]
     inventory.scan_roots(roots)
@@ -155,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
             "files_read": inventory.files_read,
             "files_seen": inventory.files_seen,
             "bytes_read": inventory.bytes_read,
+            "expanded_items_read": inventory.expanded_items_read,
+            "expanded_bytes_read": inventory.expanded_bytes_read,
             "archives_attempted": inventory.archives_attempted,
             "archives_opened": inventory.archives_opened,
             "gap_count": inventory.gap_count,
@@ -163,12 +249,24 @@ def main(argv: list[str] | None = None) -> int:
             "gaps": inventory.gaps,
             "excluded": [".git"],
             "symlinks_followed": False,
+            "limits": {
+                key: getattr(args, key)
+                for key in (
+                    "max_file_bytes",
+                    "max_total_bytes",
+                    "max_expanded_bytes",
+                    "max_total_expanded_bytes",
+                    "max_files",
+                    "archive_depth",
+                )
+            },
         },
         "limitations": [
-            "Strings, versions, and artifact catalog labels do not determine patch status.",
+            "Old reported versions support warnings, not proof of vulnerable code or a fix.",
+            "Strings and artifact catalog labels do not establish code patch status.",
             "Code matches cover reference decoder text only, not all copies or runtime use.",
             "Relocation targets and referenced data are not verified by masked code matching.",
-            "Unmatched builds, LTO, alternate compilers, and unsupported formats remain unknown.",
+            "Unmatched code remains unidentified; decoder metadata may still support warnings.",
             "Code reference provenance/state is trusted input; custom references require review.",
             "No matches does not establish absence of Brotli, especially in stripped binaries.",
             "Catalog matches identify exact bytes only; supplied labels are not verified.",

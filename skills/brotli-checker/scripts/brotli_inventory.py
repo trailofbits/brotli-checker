@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import bz2
 import gzip
-import hashlib
 import io
 import json
 import lzma
@@ -25,17 +24,56 @@ import tarfile
 import tomllib
 import zipfile
 import zlib
+from contextlib import contextmanager
 from itertools import islice
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, BinaryIO, cast
 
-from brotli_binary_match import REFERENCES, CodeReference, load_references, match_code
+from brotli_binary_data import (
+    Buffer,
+    DataChangedError,
+    DataLimitError,
+    file_data,
+    read_data,
+    sha256_data,
+)
+from brotli_binary_match import (
+    REFERENCES,
+    CodeAssessment,
+    CodeReference,
+    file_backed_ranges,
+    load_references,
+    match_code,
+)
+from brotli_binary_metadata import decoder_metadata
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 REGISTRY = Path(__file__).resolve().parent.parent / "references" / "fingerprints.json"
 SOURCE_SUFFIXES = {"", ".c", ".cc", ".cpp", ".cxx", ".h", ".inc", ".inl", ".unbr"}
 JS_SUFFIXES = {".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".node", ".a", ".lib", ".wasm", ".exe"}
 ZIP_SUFFIXES = {".zip", ".jar", ".war", ".ear", ".whl", ".nupkg", ".apk"}
+BINARY_SYMBOLS = (
+    b"BrotliDecoderDecompress",
+    b"BrotliDecoderCreateInstance",
+    b"BrotliDecoderVersion",
+    b"BrotliDecoderDestroyInstance",
+    b"BrotliEncoderCompress",
+    b"BrotliEncoderVersion",
+    b"libbrotlidec",
+    b"libbrotlicommon",
+    b"libbrotlienc",
+    b"org/brotli/dec/",
+    b"com/aayushatharva/brotli4j/",
+    b"DecoderJNI",
+)
+BINARY_INDICATOR_PATTERN = re.compile(
+    b"|".join(re.escape(symbol) for symbol in sorted(BINARY_SYMBOLS, key=len, reverse=True))
+)
+INDICATOR_CHUNK_BYTES = 4 * 1024 * 1024
+TEXT_PROBE_BYTES = 4096
 COMPRESSED_SUFFIXES = {".gz": "gzip", ".bz2": "bzip2", ".xz": "xz"}
 TAR_SUFFIXES = (".tar", ".tgz", ".txz", ".tbz", ".tbz2")
 UNSUPPORTED_SUFFIXES = {
@@ -147,6 +185,11 @@ WARNING = {
 MAX_RECORDED_GAPS = 200
 MAX_DISPLAY_COPIES = 10
 MAX_DISPLAY_GAPS = 5
+DEFAULT_MAX_FILE_BYTES = None
+DEFAULT_MAX_TOTAL_BYTES = None
+DEFAULT_MAX_EXPANDED_BYTES = 8 * 1024 * 1024 * 1024
+DEFAULT_MAX_TOTAL_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
+DEFAULT_MAX_TEXT_BYTES = 128 * 1024 * 1024
 MAX_SOURCE_MATCHES = 20
 PYC_HEADER_BYTES = 16
 DECODER_SYMBOLS = (
@@ -160,7 +203,7 @@ def leaf_name(label: str) -> str:
     return label.rsplit("!", 1)[-1].replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
-def tar_content(data: bytes) -> bool:
+def tar_content(data: Buffer) -> bool:
     if data[257:262] == b"ustar":
         return True
     try:
@@ -170,7 +213,19 @@ def tar_content(data: bytes) -> bool:
     return True
 
 
-def archive_kind(data: bytes, label: str) -> str | None:
+@contextmanager
+def buffer_stream(data: Buffer) -> Generator[BinaryIO]:
+    if isinstance(data, bytes):
+        yield io.BytesIO(data)
+        return
+    data.seek(0)
+    try:
+        yield cast("BinaryIO", data)
+    finally:
+        data.seek(0)
+
+
+def archive_kind(data: Buffer, label: str) -> str | None:
     """Recognize containers by bytes, then use names to catch damaged/opaque ones."""
     for signature, kind in ARCHIVE_SIGNATURES:
         if data.startswith(signature):
@@ -179,8 +234,12 @@ def archive_kind(data: bytes, label: str) -> str | None:
         return "unsupported"  # Zstandard/LZ4 skippable frames.
     if tar_content(data):
         return "tar"
-    if zipfile.is_zipfile(io.BytesIO(data)):
-        return "zip"  # Also recognizes ZIPs with a prepended executable stub.
+    with buffer_stream(data) as stream:
+        try:
+            if zipfile.is_zipfile(stream):
+                return "zip"  # Also recognizes ZIPs with a prepended executable stub.
+        except (OSError, ValueError):
+            pass
     return named_archive_kind(label)
 
 
@@ -201,7 +260,7 @@ def safe_text(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
-def python_bytecode(data: bytes, name: str) -> bool:
+def python_bytecode(data: Buffer, name: str) -> bool:
     return (
         Path(name).suffix in {".pyc", ".pyo"}
         and len(data) >= PYC_HEADER_BYTES
@@ -284,10 +343,6 @@ def dependency_matches(text: str, name: str) -> list[dict]:
     return matches
 
 
-class BinaryReader(Protocol):
-    def read(self, size: int = -1, /) -> bytes: ...
-
-
 def finding(path: str, kind: str, patch_status: str, reason: str, **evidence: object) -> dict:
     return {
         "path": path,
@@ -300,6 +355,36 @@ def finding(path: str, kind: str, patch_status: str, reason: str, **evidence: ob
         "reachability": "unknown",
         "exploitability": "not_assessed",
     }
+
+
+def is_binary_name_candidate(label: str) -> bool:
+    name = leaf_name(label)
+    return "brotli" in name and (
+        Path(name).suffix in NATIVE_SUFFIXES | ZIP_SUFFIXES or ".so." in name
+    )
+
+
+def binary_indicators(data: Buffer) -> list[str]:
+    if data.startswith(b"\x7fELF"):
+        try:
+            _, ranges = file_backed_ranges(data)
+        except ValueError:
+            ranges = []
+    else:
+        ranges = [(0, len(data))]
+    found = set()
+    overlap = max(map(len, BINARY_SYMBOLS)) - 1
+    for start, size in ranges:
+        tail = b""
+        position = start
+        stop = start + size
+        while position < stop:
+            chunk = data[position : min(position + INDICATOR_CHUNK_BYTES, stop)]
+            candidate = tail + chunk
+            found.update(match.group() for match in BINARY_INDICATOR_PATTERN.finditer(candidate))
+            tail = candidate[-overlap:]
+            position += len(chunk)
+    return [symbol.decode("ascii") for symbol in BINARY_SYMBOLS if symbol in found]
 
 
 def assess_version(component: str, value: str) -> dict:
@@ -359,15 +444,73 @@ def version_finding(path: str, minimum: str, evidence: dict, *, fixed: bool) -> 
     )
 
 
+def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally explicit.
+    data: Buffer, references: list[CodeReference]
+) -> dict:
+    is_elf = data.startswith(b"\x7fELF")
+    code = (
+        match_code(data, references)
+        if is_elf
+        else CodeAssessment([], "Code matching supports linked ELF64 x86_64/AArch64 only")
+    )
+    metadata = decoder_metadata(data) if is_elf else {}
+    versions = metadata.get("versions", [])
+    for version in versions:
+        rule = assess_version("brotli", version["version"])
+        version["upstream_status"] = rule["patch_status"]
+        version["fixed_branch_version"] = rule["evidence"].get("fixed_branch_version")
+    old_version = any(v["upstream_status"] == "potentially_vulnerable" for v in versions)
+    indicators = binary_indicators(data)
+    for symbol in (*metadata.get("defined_symbols", []), *metadata.get("imported_symbols", [])):
+        if symbol not in indicators:
+            indicators.append(symbol)
+    status, reason = code.patch_status, code.reason
+    kind = "decoder_code_match" if code.matches else "binary_candidate"
+    linkage = "embedded_code" if code.matches else "unknown"
+    if not code.matches:
+        if metadata.get("defined_symbols"):
+            kind, linkage = "decoder_symbol_candidate", "defined_decoder_symbols"
+            reason = "Decoder API definitions found; compiled reference did not match."
+        elif metadata.get("imported_symbols"):
+            kind, linkage = "decoder_import_candidate", "decoder_import"
+            reason = "Decoder API imports found; inspect the library providing these imports."
+        elif {symbol.decode("ascii") for symbol in DECODER_SYMBOLS}.intersection(indicators):
+            kind = "decoder_symbol_candidate"
+            reason = "Decoder symbol/string found; implementation and patch status unresolved."
+        if versions:
+            reason += " Reported decoder version is metadata, not proof of a fix."
+    if old_version and status not in {"vulnerable_code_match", "mixed_code_matches"}:
+        status, kind = "potentially_vulnerable", "binary_version_candidate"
+        reason = (
+            "Statically read decoder version precedes the upstream fix. Update or verify a "
+            "vendor backport; version evidence does not prove the code is vulnerable."
+        )
+    return {
+        "kind": kind,
+        "patch_status": status,
+        "reason": reason,
+        "linkage": linkage,
+        "indicators": indicators,
+        "decoder_metadata": metadata,
+        "code_matches": code.matches,
+        "code_assessment": code.reason,
+        "gaps": ([code.reason] if code.limited else [])
+        + ([metadata["reason"]] if metadata.get("limited") else []),
+    }
+
+
 class Inventory:
     def __init__(  # noqa: PLR0913 -- Traversal limits plus optional code references.
         self,
         registry: dict,
-        max_file_bytes: int,
-        max_total_bytes: int,
+        max_file_bytes: int | None,
+        max_total_bytes: int | None,
         max_files: int,
         archive_depth: int,
         *,
+        max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+        max_total_expanded_bytes: int = DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
+        max_text_bytes: int = DEFAULT_MAX_TEXT_BYTES,
         code_references: list[CodeReference] | None = None,
     ) -> None:
         self.fingerprints = {entry["sha256"]: entry for entry in registry["fingerprints"]}
@@ -375,12 +518,17 @@ class Inventory:
         self.max_total_bytes = max_total_bytes
         self.max_files = max_files
         self.archive_depth = archive_depth
+        self.max_expanded_bytes = max_expanded_bytes
+        self.max_total_expanded_bytes = max_total_expanded_bytes
+        self.max_text_bytes = max_text_bytes
         self.findings: list[dict] = []
         self.gaps: list[dict] = []
         self.gap_count = 0
         self.files_seen = 0
         self.files_read = 0
         self.bytes_read = 0
+        self.expanded_items_read = 0
+        self.expanded_bytes_read = 0
         self.archives_attempted = 0
         self.archives_opened = 0
         self.code_references = code_references
@@ -394,13 +542,12 @@ class Inventory:
             self.gaps.append({"path": path, "reason": reason})
 
     def exhausted(self) -> bool:
-        return self.files_seen >= self.max_files or self.bytes_read >= self.max_total_bytes
+        return self.files_seen >= self.max_files or (
+            self.max_total_bytes is not None and self.bytes_read >= self.max_total_bytes
+        )
 
-    def candidate_name(self, label: str) -> None:
-        name = leaf_name(label)
-        if "brotli" in name and (
-            Path(name).suffix in NATIVE_SUFFIXES | ZIP_SUFFIXES or ".so." in name
-        ):
+    def record_name_fallback(self, label: str, size_bytes: int | None = None) -> None:
+        if is_binary_name_candidate(label):
             self.findings.append(
                 finding(
                     label,
@@ -410,35 +557,96 @@ class Inventory:
                         "Artifact name suggests a Brotli component; contents, linkage, and "
                         "patch status need review."
                     ),
+                    size_bytes=size_bytes,
                 )
             )
 
-    def read(self, stream: BinaryReader, size: int, label: str, depth: int) -> None:
+    def _read_limit(self, *, expanded: bool) -> int | None:
+        limits = []
+        if self.max_file_bytes is not None:
+            limits.append(self.max_file_bytes)
+        if self.max_total_bytes is not None:
+            limits.append(max(0, self.max_total_bytes - self.bytes_read))
+        if expanded:
+            limits.extend(
+                (
+                    self.max_expanded_bytes,
+                    max(0, self.max_total_expanded_bytes - self.expanded_bytes_read),
+                )
+            )
+        return min(limits) if limits else None
+
+    def _account_read(self, size: int, *, expanded: bool) -> None:
+        self.bytes_read += size
+        if expanded:
+            self.expanded_bytes_read += size
+
+    def _limit_gap(self, label: str, limit: int | None, *, expanded: bool) -> None:
+        scope = "Expanded member/stream" if expanded else "File/member"
+        rendered = "active byte limits" if limit is None else f"the active {limit}-byte limit"
+        self.gap(label, f"{scope} exceeds {rendered}.")
+
+    @contextmanager
+    def _load_data(
+        self,
+        stream: BinaryIO,
+        size: int,
+        label: str,
+        *,
+        expanded: bool,
+        record_fallback: bool = True,
+    ) -> Generator[Buffer | None]:
+        limit = self._read_limit(expanded=expanded)
+        if size >= 0 and limit is not None and size > limit:
+            if record_fallback:
+                self.record_name_fallback(label, size)
+            self._limit_gap(label, limit, expanded=expanded)
+            yield None
+            return
+        entered = False
+        try:
+            with read_data(stream, limit) as data:
+                entered = True
+                self._account_read(len(data), expanded=expanded)
+                if expanded:
+                    self.expanded_items_read += 1
+                yield data
+        except DataLimitError as error:
+            if entered:
+                raise
+            self._account_read(error.bytes_read, expanded=expanded)
+            if record_fallback:
+                self.record_name_fallback(label, size if size >= 0 else None)
+            self._limit_gap(label, error.limit, expanded=expanded)
+            yield None
+
+    def read(
+        self,
+        stream: BinaryIO,
+        size: int,
+        label: str,
+        depth: int,
+        *,
+        expanded: bool = False,
+    ) -> None:
         self.files_seen += 1
-        self.candidate_name(label)
         if self.files_seen > self.max_files:
+            self.record_name_fallback(label, size)
             self.gap(label, "File/member count limit reached.")
             return
-        remaining = min(self.max_file_bytes, self.max_total_bytes - self.bytes_read)
-        if size > remaining:
-            self.gap(label, "File/member exceeds size or remaining total-byte limit.")
-            return
-        data = stream.read(remaining + 1)
-        self.bytes_read += len(data)
-        if len(data) > remaining:
-            self.gap(label, "Expanded content exceeded the byte limit.")
-            return
-        self.files_read += 1
-        self.inspect(data, label, depth)
+        with self._load_data(stream, size, label, expanded=expanded) as data:
+            if data is not None:
+                self.files_read += 1
+                self.inspect(data, label, depth)
 
-    def inspect(self, data: bytes, label: str, depth: int) -> None:
+    def inspect(self, data: Buffer, label: str, depth: int) -> None:
+        digest = sha256_data(data)
         if data.startswith(b"\x7fELF") and self.code_references is not None:
-            self._inspect_elf(data, label, self.code_references)
+            self._inspect_elf(data, label, digest)
             kind = archive_kind(data, label)
             if kind is not None:
-                self._inspect_container(data, label, depth, kind)
+                self._inspect_container(data, label, depth, kind, digest)
             return
-        digest = hashlib.sha256(data).hexdigest()
         if digest in self.fingerprints:
             entry = self.fingerprints[digest]
             self.findings.append(
@@ -456,33 +664,74 @@ class Inventory:
             return
         kind = archive_kind(data, label)
         if kind is not None:
-            self._inspect_container(data, label, depth, kind)
+            first_finding = len(self.findings)
+            self._inspect_container(data, label, depth, kind, digest)
+            if len(self.findings) == first_finding:
+                self.record_name_fallback(label, len(data))
             return
+        self._inspect_noncontainer(data, label, digest)
+
+    def _text(self, data: Buffer, label: str) -> str:
+        if b"\0" in data[: min(TEXT_PROBE_BYTES, len(data))]:
+            return ""
+        if len(data) > self.max_text_bytes:
+            self.gap(
+                label,
+                f"Text classification exceeds the {self.max_text_bytes}-byte text limit; "
+                "binary analysis still completed.",
+            )
+            return ""
+        raw = data if isinstance(data, bytes) else data[:]
+        if b"\0" in raw:
+            return ""
+        return raw.decode("utf-8", errors="replace")
+
+    def _inspect_noncontainer(self, data: Buffer, label: str, digest: str) -> None:
         name = leaf_name(label)
-        text = data.decode("utf-8", errors="replace") if b"\0" not in data else ""
+        text = self._text(data, label)
         if self._inspect_source(text, label, digest):
             return
+        first_finding = len(self.findings)
         self._inspect_fetch(text, label)
+        indicators = []
         if text and (
             name in MANIFEST_NAMES or name.endswith((".cmake", ".spdx.json", ".cdx.json"))
         ):
             self._inspect_manifest(text, label)
         elif not python_bytecode(data, name):
-            self._inspect_symbols(data, text, label, digest)
+            indicators = binary_indicators(data)
+            self._inspect_symbols(indicators, text, label, digest)
+        if is_binary_name_candidate(label) and len(self.findings) == first_finding:
+            self.findings.append(
+                finding(
+                    label,
+                    "artifact_name_candidate",
+                    "unknown",
+                    "Filename suggests Brotli; implementation and patch status unresolved.",
+                    sha256=digest,
+                    indicators=indicators,
+                )
+            )
 
-    def _inspect_elf(self, data: bytes, label: str, references: list[CodeReference]) -> None:
-        assessment = match_code(data, references)
-        if assessment.limited:
-            self.gap(label, assessment.reason)
+    def _inspect_elf(self, data: Buffer, label: str, digest: str) -> None:
+        references = self.code_references
+        if references is None:
+            return
+        assessment = assess_binary(data, references)
+        for reason in assessment["gaps"]:
+            self.gap(label, reason)
         self.findings.append(
             finding(
                 label,
-                "decoder_code_match" if assessment.matches else "binary_candidate",
-                assessment.patch_status,
-                assessment.reason,
-                sha256=hashlib.sha256(data).hexdigest(),
-                code_matches=assessment.matches,
-                linkage="embedded_code" if assessment.matches else "unknown",
+                assessment["kind"],
+                assessment["patch_status"],
+                assessment["reason"],
+                sha256=digest,
+                code_matches=assessment["code_matches"],
+                code_assessment=assessment["code_assessment"],
+                indicators=assessment["indicators"],
+                decoder_metadata=assessment["decoder_metadata"],
+                linkage=assessment["linkage"],
             )
         )
 
@@ -559,11 +808,11 @@ class Inventory:
                 )
             )
 
-    def _inspect_symbols(self, data: bytes, text: str, label: str, digest: str) -> None:
+    def _inspect_symbols(self, indicators: list[str], text: str, label: str, digest: str) -> None:
         name = leaf_name(label)
         if text and Path(name).suffix not in NATIVE_SUFFIXES and ".so." not in name:
             return
-        if any(symbol in data for symbol in DECODER_SYMBOLS):
+        if {symbol.decode("ascii") for symbol in DECODER_SYMBOLS}.intersection(indicators):
             self.findings.append(
                 finding(
                     label,
@@ -575,7 +824,9 @@ class Inventory:
                 )
             )
 
-    def _inspect_container(self, data: bytes, label: str, depth: int, kind: str) -> None:
+    def _inspect_container(
+        self, data: Buffer, label: str, depth: int, kind: str, digest: str
+    ) -> None:
         previous_gaps = self.gap_count
         if kind == "unsupported":
             self.gap(label, "Unsupported archive or compression format; provide unpacked files.")
@@ -583,7 +834,8 @@ class Inventory:
             self.gap(label, "Archive nesting limit reached; members not inspected.")
         else:
             self.inspect_archive(data, label, depth, kind)
-        if self.gap_count > previous_gaps and any(symbol in data for symbol in DECODER_SYMBOLS):
+        indicators = binary_indicators(data) if self.gap_count > previous_gaps else []
+        if {symbol.decode("ascii") for symbol in DECODER_SYMBOLS}.intersection(indicators):
             self.findings.append(
                 finding(
                     label,
@@ -591,13 +843,14 @@ class Inventory:
                     "unknown",
                     "Decoder marker in container bytes with incomplete member coverage; "
                     "it may come from a member already reported, not an independent decoder copy.",
-                    sha256=hashlib.sha256(data).hexdigest(),
+                    sha256=digest,
+                    indicators=indicators,
                     evidence_scope="container",
                     member_coverage="incomplete",
                 )
             )
 
-    def inspect_archive(self, data: bytes, label: str, depth: int, kind: str) -> None:
+    def inspect_archive(self, data: Buffer, label: str, depth: int, kind: str) -> None:
         self.archives_attempted += 1
         try:
             if kind == "zip":
@@ -617,8 +870,8 @@ class Inventory:
         ) as error:
             self.gap(label, f"Cannot inspect archive: {error}")
 
-    def _inspect_zip(self, data: bytes, label: str, depth: int) -> None:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+    def _inspect_zip(self, data: Buffer, label: str, depth: int) -> None:
+        with buffer_stream(data) as stream, zipfile.ZipFile(stream) as archive:
             self.archives_opened += 1
             for info in archive.infolist():
                 if info.is_dir():
@@ -628,11 +881,18 @@ class Inventory:
                     self.gap(label, "Budget exhausted; remaining archive members not inspected.")
                     break
                 if stat.S_ISLNK(info.external_attr >> 16):
+                    self.record_name_fallback(member, info.file_size)
                     self.gap(member, "Archive symlink not followed.")
                     continue
                 try:
-                    with archive.open(info) as stream:
-                        self.read(stream, info.file_size, member, depth + 1)
+                    with archive.open(info) as member_stream:
+                        self.read(
+                            cast("BinaryIO", member_stream),
+                            info.file_size,
+                            member,
+                            depth + 1,
+                            expanded=True,
+                        )
                 except (
                     OSError,
                     RuntimeError,
@@ -642,43 +902,52 @@ class Inventory:
                     zlib.error,
                     lzma.LZMAError,
                 ) as error:
+                    self.record_name_fallback(member, info.file_size)
                     self.gap(member, f"Cannot inspect archive member: {error}")
 
-    def _expand_compressed(self, data: bytes, label: str, kind: str) -> bytes | None:
+    def _inspect_compressed(self, data: Buffer, label: str, depth: int, kind: str) -> None:
         open_compressed = {"gzip": gzip.open, "bzip2": bz2.open, "xz": lzma.open}[kind]
-        remaining = min(self.max_file_bytes, self.max_total_bytes - self.bytes_read)
-        with open_compressed(io.BytesIO(data), "rb") as stream:
-            expanded = stream.read(remaining + 1)
-        self.archives_opened += 1
-        self.bytes_read += len(expanded)
-        if len(expanded) > remaining:
-            self.gap(label, "Expanded content exceeds size or remaining total-byte limit.")
-            return None
-        return expanded
-
-    def _inspect_compressed(self, data: bytes, label: str, depth: int, kind: str) -> None:
-        expanded = self._expand_compressed(data, label, kind)
-        if expanded is None:
-            return
-        name = leaf_name(label)
-        if tar_content(expanded) or name.endswith(
-            (
-                ".tar.gz",
-                ".tar.bz2",
-                ".tar.xz",
-                ".tgz",
-                ".txz",
-                ".tbz",
-                ".tbz2",
-            )
+        with (
+            buffer_stream(data) as source,
+            open_compressed(source, "rb") as expanded_stream,
+            self._load_data(
+                cast("BinaryIO", expanded_stream),
+                -1,
+                label,
+                expanded=True,
+                record_fallback=False,
+            ) as expanded,
         ):
-            self._inspect_tar(expanded, label, depth, count_open=False)
-        else:
+            if expanded is None:
+                return
+            self.archives_opened += 1
+            name = leaf_name(label)
+            if tar_content(expanded) or name.endswith(
+                (
+                    ".tar.gz",
+                    ".tar.bz2",
+                    ".tar.xz",
+                    ".tgz",
+                    ".txz",
+                    ".tbz",
+                    ".tbz2",
+                )
+            ):
+                self._inspect_tar(expanded, label, depth, count_open=False)
+                return
             member = f"{label}!{Path(name).stem or 'decompressed'}"
-            self.read(io.BytesIO(expanded), len(expanded), member, depth + 1)
+            self.files_seen += 1
+            if self.files_seen > self.max_files:
+                self.record_name_fallback(member, len(expanded))
+                self.gap(member, "File/member count limit reached.")
+                return
+            self.files_read += 1
+            self.inspect(expanded, member, depth + 1)
 
-    def _inspect_tar(self, data: bytes, label: str, depth: int, *, count_open: bool = True) -> None:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r|") as archive:
+    def _inspect_tar(
+        self, data: Buffer, label: str, depth: int, *, count_open: bool = True
+    ) -> None:
+        with buffer_stream(data) as stream, tarfile.open(fileobj=stream, mode="r|") as archive:
             if count_open:
                 self.archives_opened += 1
             for info in archive:
@@ -689,14 +958,21 @@ class Inventory:
                     self.gap(label, "Budget exhausted; remaining archive members not inspected.")
                     break
                 if not info.isfile():
+                    self.record_name_fallback(member, info.size)
                     self.gap(member, "Nonregular archive member not followed.")
                     continue
-                stream = archive.extractfile(info)
-                if stream is not None:
-                    with stream:
-                        self.read(stream, info.size, member, depth + 1)
+                member_stream = archive.extractfile(info)
+                if member_stream is not None:
+                    with member_stream:
+                        self.read(
+                            cast("BinaryIO", member_stream),
+                            info.size,
+                            member,
+                            depth + 1,
+                            expanded=True,
+                        )
 
-    def scan_file(self, path: Path) -> None:
+    def scan_file(self, path: Path) -> None:  # noqa: C901 -- Stable-fd lifecycle is one operation.
         label = str(path)
         try:
             metadata = path.lstat()
@@ -704,6 +980,7 @@ class Inventory:
                 self._record_symlink(path)
                 return
             if not stat.S_ISREG(metadata.st_mode):
+                self.record_name_fallback(label)
                 self.gap(label, "Nonregular file not read.")
                 return
             descriptor = os.open(
@@ -713,11 +990,61 @@ class Inventory:
             with os.fdopen(descriptor, "rb") as stream:
                 metadata = os.fstat(stream.fileno())
                 if not stat.S_ISREG(metadata.st_mode):
+                    self.record_name_fallback(label)
                     self.gap(label, "Nonregular file not read.")
                     return
-                self.read(stream, metadata.st_size, label, 0)
+                checkpoint = (
+                    len(self.findings),
+                    len(self.gaps),
+                    self.gap_count,
+                    self.files_seen,
+                    self.files_read,
+                    self.bytes_read,
+                    self.expanded_items_read,
+                    self.expanded_bytes_read,
+                    self.archives_attempted,
+                    self.archives_opened,
+                )
+                self.files_seen += 1
+                if self.files_seen > self.max_files:
+                    self.record_name_fallback(label, metadata.st_size)
+                    self.gap(label, "File/member count limit reached.")
+                    return
+                limit = self._read_limit(expanded=False)
+                if limit is not None and metadata.st_size > limit:
+                    self.record_name_fallback(label, metadata.st_size)
+                    self._limit_gap(label, limit, expanded=False)
+                    return
+                try:
+                    with file_data(stream, limit) as data:
+                        self._account_read(len(data), expanded=False)
+                        self.files_read += 1
+                        self.inspect(data, label, 0)
+                except (DataChangedError, DataLimitError) as error:
+                    (
+                        findings,
+                        gaps,
+                        self.gap_count,
+                        seen,
+                        self.files_read,
+                        self.bytes_read,
+                        self.expanded_items_read,
+                        self.expanded_bytes_read,
+                        self.archives_attempted,
+                        self.archives_opened,
+                    ) = checkpoint
+                    del self.findings[findings:]
+                    del self.gaps[gaps:]
+                    self.files_seen = seen + 1
+                    self.record_name_fallback(label, metadata.st_size)
+                    if isinstance(error, DataLimitError):
+                        self._limit_gap(label, error.limit, expanded=False)
+                    else:
+                        self.gap(label, str(error))
+                    return
                 self.checked_paths.add(path.resolve())
         except OSError as error:
+            self.record_name_fallback(label)
             self.gap(label, f"Cannot read file: {error}")
 
     def scan_root(self, root: Path) -> None:
@@ -804,6 +1131,42 @@ def positive(value: str) -> int:
     return number
 
 
+def explain_possible(item: dict) -> dict:
+    evidence = item["evidence"]
+    if item["kind"] == "binary_version_candidate":
+        versions = evidence["decoder_metadata"]["versions"]
+        affected = [v for v in versions if v["upstream_status"] == "potentially_vulnerable"]
+        labels = ", ".join(sorted({v["version"] for v in affected}))
+        fixes = ", ".join(sorted({v["fixed_branch_version"] for v in affected}))
+        return {
+            "result": f"Embedded decoder reports Brotli {labels}; update review needed",
+            "next_action": (
+                f"Update to the corresponding fixed branch release ({fixes}) or verify a "
+                "vendor backport for this exact build. The version was read statically, "
+                "not by running the binary; it does not prove vulnerable behavior."
+            ),
+        }
+    if item["kind"] == "supplied_version":
+        component = "Node.js" if evidence["component"] == "node" else "Brotli"
+        minimum = evidence["fixed_branch_version"]
+        return {
+            "result": f"The supplied {component} version may need an update",
+            "next_action": (
+                f"Ask the maintainer to update {component} to {minimum} or a later "
+                "fixed release on that branch, or confirm a vendor-supplied fix. "
+                "Check the version actually used by the running app."
+            ),
+        }
+    return {
+        "result": "Possible vulnerable Brotli source",
+        "next_action": (
+            "Ask the maintainer to check the changes in this copy against the "
+            "Brotli fix and update it if needed. Confirm whether the running app "
+            "uses this copy."
+        ),
+    }
+
+
 def explain_finding(item: dict) -> dict:  # noqa: PLR0911 -- Explicit per-evidence guidance.
     status = item["patch_status"]
     if status in {"vulnerable_code_match", "mixed_code_matches", "fixed_code_match"}:
@@ -827,26 +1190,7 @@ def explain_finding(item: dict) -> dict:  # noqa: PLR0911 -- Explicit per-eviden
             ),
         }
     if status == "potentially_vulnerable":
-        evidence = item["evidence"]
-        if item["kind"] == "supplied_version":
-            component = "Node.js" if evidence["component"] == "node" else "Brotli"
-            minimum = evidence["fixed_branch_version"]
-            return {
-                "result": f"The supplied {component} version may need an update",
-                "next_action": (
-                    f"Ask the maintainer to update {component} to {minimum} or a later "
-                    "fixed release on that branch, or confirm a vendor-supplied fix. "
-                    "Check the version actually used by the running app."
-                ),
-            }
-        return {
-            "result": "Possible vulnerable Brotli source",
-            "next_action": (
-                "Ask the maintainer to check the changes in this copy against the "
-                "Brotli fix and update it if needed. Confirm whether the running app "
-                "uses this copy."
-            ),
-        }
+        return explain_possible(item)
     if status == "fixed_source":
         return {
             "result": "Fix identified in this source file",
@@ -861,6 +1205,22 @@ def explain_finding(item: dict) -> dict:  # noqa: PLR0911 -- Explicit per-eviden
             "next_action": (
                 "Confirm that this version belongs to the running app, and check any "
                 "additional Brotli copies bundled inside it."
+            ),
+        }
+    if item["kind"] == "decoder_import_candidate":
+        return {
+            "result": "Brotli decoder imported from another library",
+            "next_action": (
+                "Scan the actual library providing this decoder in the deployment; "
+                "an import does not identify its patch state."
+            ),
+        }
+    if item["evidence"].get("decoder_metadata", {}).get("defined_symbols"):
+        return {
+            "result": "Brotli decoder definitions found; patch state unresolved",
+            "next_action": (
+                "Verify a vendor fix for this exact build or provide matching code references. "
+                "A reported fixed version alone does not clear embedded copies."
             ),
         }
     return (
@@ -916,6 +1276,13 @@ def explain_lead(item: dict) -> dict:
             ),
         }
     advice = {
+        "binary_candidate": (
+            "Unclassified native binary",
+            (
+                "No supported decoder code matched. Use build records or scoped disassembly "
+                "if this binary may embed Brotli; this is not evidence of absence."
+            ),
+        ),
         "dependency_candidate": (
             "Dependency or metadata mention",
             (
@@ -1035,7 +1402,7 @@ def attention_summary(statuses: set[str]) -> dict:
             "status": "needs_attention",
             "title": "A Brotli update may be needed",
             "meaning": (
-                "Some checked code or supplied versions may be affected. A "
+                "Some checked code or decoder versions may be affected. A "
                 "maintainer needs to confirm which copy the app uses and whether its "
                 "vendor has already fixed it."
             ),
@@ -1263,19 +1630,37 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--code-references",
         type=Path,
         default=REFERENCES,
-        help="compiled ELF decoder references; unmatched binaries remain unknown",
+        help="compiled ELF decoder references; unmatched code remains unidentified",
     )
     parser.add_argument(
         "--max-file-bytes",
         type=positive,
-        default=16 * 1024 * 1024,
-        help="maximum bytes per file, archive member, or decompressed stream (16 MiB)",
+        default=DEFAULT_MAX_FILE_BYTES,
+        help="optional maximum bytes read from one file/member (default: no cap)",
     )
     parser.add_argument(
         "--max-total-bytes",
         type=positive,
-        default=256 * 1024 * 1024,
-        help="total read budget including archives, expansion, and members (256 MiB)",
+        default=DEFAULT_MAX_TOTAL_BYTES,
+        help="optional maximum cumulative bytes read (default: no cap)",
+    )
+    parser.add_argument(
+        "--max-expanded-bytes",
+        type=positive,
+        default=DEFAULT_MAX_EXPANDED_BYTES,
+        help="maximum expanded bytes read from one archive member/stream",
+    )
+    parser.add_argument(
+        "--max-total-expanded-bytes",
+        type=positive,
+        default=DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
+        help="maximum cumulative expanded archive/member bytes",
+    )
+    parser.add_argument(
+        "--max-text-bytes",
+        type=positive,
+        default=DEFAULT_MAX_TEXT_BYTES,
+        help="maximum bytes decoded for source/manifest text classification",
     )
     parser.add_argument(
         "--max-files",
@@ -1308,6 +1693,9 @@ def main(argv: list[str] | None = None) -> int:
         args.max_total_bytes,
         args.max_files,
         args.archive_depth,
+        max_expanded_bytes=args.max_expanded_bytes,
+        max_total_expanded_bytes=args.max_total_expanded_bytes,
+        max_text_bytes=args.max_text_bytes,
         code_references=code_references,
     )
     inventory.scan_roots([root.expanduser().absolute() for root in roots])
@@ -1351,6 +1739,8 @@ def make_report(
             "files_seen": inventory.files_seen,
             "files_read": inventory.files_read,
             "bytes_read": inventory.bytes_read,
+            "expanded_items_read": inventory.expanded_items_read,
+            "expanded_bytes_read": inventory.expanded_bytes_read,
             "archives_attempted": inventory.archives_attempted,
             "archives_opened": inventory.archives_opened,
             "gap_count": inventory.gap_count,
@@ -1365,6 +1755,9 @@ def make_report(
                 for key in (
                     "max_file_bytes",
                     "max_total_bytes",
+                    "max_expanded_bytes",
+                    "max_total_expanded_bytes",
+                    "max_text_bytes",
                     "max_files",
                     "archive_depth",
                 )

@@ -64,7 +64,7 @@ cache = false
 report = ["json", "html"]
 coverage_timeout = 120
 mutant_timeout = 10
-max_pardons = 2  # Only the two standalone CLI bootstrap guards; checked again in CI.
+max_pardons = 3  # Only the three standalone CLI bootstrap guards; checked again in CI.
 
 [tool.coverage.run]
 branch = true

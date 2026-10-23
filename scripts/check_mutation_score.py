@@ -12,13 +12,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "skills/brotli-checker/scripts"
 MINIMUM_SCORE = 80
-MAX_CLI_PARDONS = 2
+MAX_CLI_PARDONS = 3
 STATUSES = ("zapped", "survived", "timeout", "error", "pardoned")
 
 
 def cli_guard_pardon(row: dict) -> bool:
     path = Path(row["file_path"]).resolve()
-    if path not in {SOURCE / "brotli_inventory.py", SOURCE / "brotli_binary_inventory.py"}:
+    if path not in {
+        SOURCE / "brotli_inventory.py",
+        SOURCE / "brotli_binary_inventory.py",
+        SOURCE / "brotli_binary_triage.py",
+    }:
         return False
     lines = path.read_text(encoding="utf-8").splitlines()
     line = row["line_number"]

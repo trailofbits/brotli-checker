@@ -14,11 +14,37 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
+import brotli_binary_match as matcher
 import brotli_inventory as inventory
 import pytest
+from brotli_binary_match import CodeAssessment
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts/brotli_inventory.py"
+
+
+def linked_elf(payload: bytes) -> bytes:
+    header = matcher.ELF_HEADER.pack(
+        b"\x7fELF\x02\x01\x01" + bytes(9),
+        3,
+        matcher.EM_AARCH64,
+        1,
+        0,
+        matcher.ELF_HEADER.size,
+        0,
+        0,
+        matcher.ELF_HEADER.size,
+        matcher.PROGRAM_HEADER.size,
+        1,
+        0,
+        0,
+        0,
+    )
+    program = matcher.PROGRAM_HEADER.pack(
+        1, 5, 120, 0x401000, 0x401000, len(payload), len(payload), 1
+    )
+    return header + program + payload
 
 
 def tar_bytes(name, content):
@@ -60,6 +86,13 @@ class TestInventory:
             defaults["max_total_bytes"],
             defaults["max_files"],
             defaults["archive_depth"],
+            max_expanded_bytes=defaults.get(
+                "max_expanded_bytes", inventory.DEFAULT_MAX_EXPANDED_BYTES
+            ),
+            max_total_expanded_bytes=defaults.get(
+                "max_total_expanded_bytes", inventory.DEFAULT_MAX_TOTAL_EXPANDED_BYTES
+            ),
+            max_text_bytes=defaults.get("max_text_bytes", inventory.DEFAULT_MAX_TEXT_BYTES),
         )
         result.scan_root(path or self.root)
         return result
@@ -201,6 +234,78 @@ class TestInventory:
         assert code == 3
         assert result["findings"][0]["patch_status"] == "unknown"
 
+    def test_unmatched_elf_retains_decoder_symbol_evidence(self):
+        target = self.root / "application"
+        target.write_bytes(linked_elf(b"BrotliDecoderDecompress\0"))
+        with patch.object(
+            inventory,
+            "match_code",
+            return_value=CodeAssessment([], "No supported reference matched"),
+        ):
+            code, report = self.run_cli(target)
+        assert code == 3
+        assert len(report["findings"]) == 1
+        finding = report["findings"][0]
+        assert finding["kind"] == "decoder_symbol_candidate"
+        assert finding["evidence"]["indicators"] == ["BrotliDecoderDecompress"]
+
+    def test_elf_indicator_scan_excludes_non_load_overlay(self):
+        marker = b"BrotliDecoderDecompress"
+        assert marker.decode() in inventory.binary_indicators(linked_elf(marker))
+        assert inventory.binary_indicators(linked_elf(b"instructions") + marker) == []
+
+    def test_elf_metadata_symbols_are_merged_with_load_indicators(self):
+        metadata = {
+            "defined_symbols": ["BrotliDecoderVersion"],
+            "imported_symbols": ["BrotliDecoderDecompress"],
+            "versions": [],
+            "reason": "fixture",
+            "limited": False,
+        }
+        with (
+            patch.object(inventory, "decoder_metadata", return_value=metadata),
+            patch.object(
+                inventory,
+                "match_code",
+                return_value=CodeAssessment([], "No supported reference matched"),
+            ),
+        ):
+            assessment = inventory.assess_binary(linked_elf(b"instructions"), [])
+        assert assessment["indicators"] == [
+            "BrotliDecoderVersion",
+            "BrotliDecoderDecompress",
+        ]
+
+    def test_changed_regular_file_discards_partial_evidence(self, monkeypatch):
+        target = self.root / "libbrotli.dll"
+        target.write_bytes(b"MZ\0BrotliDecoderDecompress")
+        original_hash = inventory.sha256_data
+
+        def mutate(data):
+            digest = original_hash(data)
+            target.write_bytes(b"changed")
+            return digest
+
+        monkeypatch.setattr(inventory, "sha256_data", mutate)
+        result = self.scan(target)
+        assert len(result.findings) == 1
+        assert result.findings[0]["kind"] == "artifact_name_candidate"
+        assert result.files_seen == 1
+        assert result.files_read == 0
+        assert result.gap_count == 1
+        assert "changed while it was being inspected" in result.gaps[0]["reason"]
+
+    def test_named_fixed_code_match_is_single_and_visible(self):
+        target = self.root / "libbrotli.so"
+        target.write_bytes(b"\x7fELF fixed decoder fixture")
+        assessment = CodeAssessment([{"state": "fixed", "id": "fixture"}], "Fixed fixture")
+        with patch.object(inventory, "match_code", return_value=assessment):
+            code, report = self.run_cli(target)
+        assert code == 3
+        assert len(report["findings"]) == 1
+        assert report["findings"][0]["patch_status"] == "fixed_code_match"
+        assert "Fixed decoder code matched in this binary" in inventory.render_text(report)
+
     def test_cli_version_exit_codes_and_result_scope(self):
         code, result = self.run_cli("--brotli-version", "1.1.1")
         assert code == 0
@@ -211,6 +316,18 @@ class TestInventory:
         assert result["result"] == "affected_evidence_found"
         code, result = self.run_cli("--brotli-version", "1.0.9-vendor-fix")
         assert code == 3
+
+    def test_cli_records_aligned_read_limits(self):
+        _, report = self.run_cli(self.root)
+        assert report["coverage"]["limits"] == {
+            "max_file_bytes": None,
+            "max_total_bytes": None,
+            "max_expanded_bytes": 8 * 1024 * 1024 * 1024,
+            "max_total_expanded_bytes": 64 * 1024 * 1024 * 1024,
+            "max_text_bytes": 128 * 1024 * 1024,
+            "max_files": 50000,
+            "archive_depth": 2,
+        }
 
     def test_byte_budget_and_count_gaps(self):
         for name in ("a", "b", "c"):
@@ -332,6 +449,15 @@ class TestInventory:
         result = self.scan(max_file_bytes=1024)
         assert result.gap_count == 1
         assert result.bytes_read < 2048
+
+        result = self.scan(
+            max_file_bytes=None,
+            max_total_bytes=None,
+            max_expanded_bytes=1024,
+        )
+        assert result.gap_count == 1
+        assert result.expanded_items_read == 0
+        assert result.expanded_bytes_read == 1025
 
     @pytest.mark.parametrize(
         "signature",
@@ -456,7 +582,7 @@ class TestInventory:
         assert "inside this component" not in output
 
     def test_native_binary_renamed_pyc_still_produces_a_decoder_lead(self):
-        (self.root / "renamed.pyc").write_bytes(b"\x7fELF\0BrotliDecoderDecompress")
+        (self.root / "renamed.pyc").write_bytes(linked_elf(b"BrotliDecoderDecompress"))
         result = self.scan()
         assert result.findings[0]["kind"] == "decoder_symbol_candidate"
 
@@ -478,8 +604,42 @@ class TestInventory:
             inventory.main(["--help"])
         assert stopped.value.code == 0
         output = capsys.readouterr().out
-        for text in ("16 MiB", "256 MiB", "50000", "default: 2", "0 disables"):
-            assert text in output
+        for text in (
+            "default: no cap",
+            "--max-expanded-bytes",
+            "--max-total-expanded-bytes",
+            "--max-text-bytes",
+            "50000",
+            "default: 2",
+            "0 disables",
+        ):
+            assert text in " ".join(output.split())
+
+    def test_expansion_limits_are_independent_from_regular_file_limits(self):
+        target = self.root / "bundle.zip"
+        with zipfile.ZipFile(target, "w") as archive:
+            archive.writestr("first", b"a" * 600)
+            archive.writestr("second", b"b" * 600)
+        result = self.scan(
+            target,
+            max_file_bytes=None,
+            max_total_bytes=None,
+            max_expanded_bytes=700,
+            max_total_expanded_bytes=1000,
+        )
+        assert result.files_read == 2  # Container plus first member.
+        assert result.expanded_items_read == 1
+        assert result.expanded_bytes_read == 600
+        assert result.gap_count == 1
+        assert "Expanded member/stream" in result.gaps[0]["reason"]
+
+    def test_text_limit_does_not_block_binary_evidence(self):
+        target = self.root / "libbrotli.dll"
+        target.write_bytes(b"MZ-BrotliDecoderDecompress-text")
+        result = self.scan(target, max_text_bytes=4)
+        assert result.gap_count == 1
+        assert result.findings[0]["kind"] == "decoder_symbol_candidate"
+        assert "binary analysis still completed" in result.gaps[0]["reason"]
 
     def test_skill_copy_runs_outside_the_repository(self):
         installed = self.root / "installed/brotli-checker"
@@ -722,7 +882,7 @@ class TestInventory:
     def stored_nested_archive(self):
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_STORED) as archive:
-            archive.writestr("native/libbrotli.so", b"\x7fELF\0BrotliDecoderDecompressStream\0")
+            archive.writestr("native/libbrotli.so", linked_elf(b"BrotliDecoderDecompressStream\0"))
         target = self.root / "app.war"
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
             archive.writestr("WEB-INF/lib/provider.jar", stream.getvalue())
@@ -732,17 +892,26 @@ class TestInventory:
         target = self.stored_nested_archive()
         code, report = self.run_cli(target)
         assert code == 3
-        assert len(report["findings"]) == 2
-        assert {row["kind"] for row in report["findings"]} == {
-            "artifact_name_candidate",
-            "binary_candidate",
-        }
+        assert len(report["findings"]) == 1
+        assert report["findings"][0]["kind"] == "decoder_symbol_candidate"
+        assert "BrotliDecoderDecompress" in report["findings"][0]["evidence"]["indicators"]
         assert all(
             row["path"].endswith("provider.jar!native/libbrotli.so") for row in report["findings"]
         )
         output = inventory.render_text(report)
         assert len([line for line in output.splitlines() if line.startswith("- Possible")]) == 1
         assert "Containers needing inspection" not in output
+
+    def test_empty_named_container_retains_unresolved_name_evidence(self):
+        target = self.root / "libbrotli.whl"
+        with zipfile.ZipFile(target, "w"):
+            pass
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 3
+        candidates = [row for row in report["findings"] if row["path"] == str(target)]
+        assert len(candidates) == 1
+        assert candidates[0]["kind"] == "artifact_name_candidate"
+        assert candidates[0]["patch_status"] == "unknown"
 
     @pytest.mark.parametrize(
         "limits",

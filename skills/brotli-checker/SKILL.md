@@ -60,6 +60,11 @@ status, or establish an absence of Brotli. Supply extracted image filesystems
 or additional artifact roots as needed. Filesystem symlink targets visited
 directly do not add a gap; other targets still need checking. If a resource limit
 is reached, scan a smaller relevant folder or adjust the limit shown by `--help`.
+Regular files have no default per-file or total byte cap. ELF analysis uses
+sparse offset reads; full-artifact SHA-256 is streamed. Archive expansion is
+separately budgeted at 8 GiB/member or stream and 64 GiB total; override with
+`--max-expanded-bytes` and `--max-total-expanded-bytes` as needed. Optional
+`--max-file-bytes` and `--max-total-bytes` still impose explicit input caps.
 
 For independently obtained upstream versions, optional flags are:
 
@@ -82,10 +87,60 @@ compiler/flags, state, and file offset. `vulnerable_code_match` and
 only matched decoder code, leaves other copies unresolved, and does not by itself
 produce exit 0. Version strings/imports do not determine code state. Matching
 excludes relocated address fields and does not verify their targets or referenced
-data. Packaged references cover AArch64 GCC 16.2.1 `-O2` PIC/non-PIC builds of the
-three affected/fixed release pairs; other compilers/options and x86-64 require
+data. Packaged references cover AArch64 GCC 16.2.1 `-O2` and `-O3` PIC/non-PIC
+builds of the three affected/fixed release pairs; other compilers/options and x86-64 require
 corresponding trusted references via `--code-references`. No match remains unknown.
 Do not present this as compiler-independent semantic or CFG patch verification.
+
+The inventory also reads bounded ELF symbol tables without executing the target.
+It distinguishes decoder API definitions from imports. For an exactly defined
+`BrotliDecoderVersion`, it accepts only supported straight-line constant-return
+instruction forms. A reported old supported-branch version is
+`potentially_vulnerable` and produces the normal exit 1 unless stronger evidence
+already applies. A reported fixed version is metadata only and never clears the
+binary. Code-reference matches remain code-identity evidence; metadata does not
+upgrade an unmatched binary to `fixed_code_match`.
+
+For an unresolved local ELF with decoder name, symbol, version, or code evidence,
+collect bounded disassembly for model review instead of stopping at a generic
+unknown. Do not disassemble every unrelated ELF. Run this only with a trusted
+local `objdump`; the helper rejects target
+symlinks, streams the original artifact hash, reads ELF structures by offset,
+and passes only bounded code-fragment snapshots to `objdump`. It never executes
+or loads target code and does not copy the full target. Detected input mutation
+makes the report incomplete:
+
+```sh
+python3 scripts/brotli_binary_triage.py /absolute/target > triage.json
+```
+
+The default mode selects defined `Decode*BlockSwitch`,
+`SafeDecode*BlockSwitch`, and `ProcessCommands*` symbols, with
+`BrotliDecoderDecompressStream` as a public-symbol fallback. It records the target
+SHA-256, exact commands, selected scope, limits, symbols, and bounded output.
+Fragment hashes and source offsets bind the assembly to selected bytes; raw
+objdump output uses `.data`, not original section names. Resolve numeric call
+targets using the reported symbol addresses and original ELF scope. Exit
+0 means evidence collection completed, not that the binary is fixed. Exit 3 means
+the evidence is incomplete. For stripped code, use only a range derived from
+trusted link/map or scanner evidence, for example `--file-offset OFFSET --length
+BYTES`, or `--start-address START --stop-address STOP [--section .text]`. Do not
+guess a range from a string location. Symbol and explicit-range modes both enforce
+`--max-range-bytes`; raise that bound deliberately when a trusted symbol is larger.
+If a trusted tool or defensible code scope is unavailable, keep the result unknown
+and state that missing evidence and the exact next request.
+
+Review triage evidence against the reviewed affected and fixed `decode.c` sources,
+not against mnemonic or string presence. Trace each literal, command, and distance
+block-switch path. The fixed design returns `BrotliDecoderErrorCode`, produces
+`BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH` for the invalid switch, and propagates
+that status through `ProcessCommands*`; the old design uses boolean/void handling
+that can lose the specific failure. Confirm the safe and non-safe callers and the
+error propagation, not merely a helper body. A version constant, import/export,
+function name, or nearby error string cannot establish the fix. If optimization,
+inlining, missing callers, output limits, multiple copies, or unfamiliar control
+flow prevents that trace, preserve `unknown`. One fixed-looking range never clears
+other copies or establishes runtime use.
 
 For artifact hashes and rollout inventory, optionally use:
 

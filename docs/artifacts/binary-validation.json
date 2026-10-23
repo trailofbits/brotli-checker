@@ -1,0 +1,306 @@
+{
+  "date": "2026-10-23",
+  "target_execution": false,
+  "platform": "Linux AArch64",
+  "reference_catalog_sha256": "b067216c952a881ebb73877ada2c791c21ad2ce5f39a42027d1a6f589ec9614c",
+  "results": {
+    "brotli_inventory.py": {
+      "exit_code": 1,
+      "files_read": 13,
+      "gap_count": 0,
+      "limits": {
+        "max_file_bytes": null,
+        "max_total_bytes": null,
+        "max_expanded_bytes": 8589934592,
+        "max_total_expanded_bytes": 68719476736,
+        "max_text_bytes": 134217728,
+        "max_files": 50000,
+        "archive_depth": 2
+      },
+      "findings": [
+        {
+          "artifact": "brotli-1.0.9",
+          "sha256": "bfd9b3f771ffdc5a3ee58a79016e96cf0926b7adbb9a2dd89c829717a703c49e",
+          "kind": "decoder_code_match",
+          "patch_status": "vulnerable_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "vulnerable"
+          ]
+        },
+        {
+          "artifact": "brotli-1.0.10",
+          "sha256": "de0d1301d9fb19c7b2ba4eac0198b0e9a84a5e4caf20cfd42b937d7588a3ac0c",
+          "kind": "decoder_code_match",
+          "patch_status": "fixed_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "fixed"
+          ]
+        },
+        {
+          "artifact": "brotli-1.1.0",
+          "sha256": "5fbbaef24f0580fb2bb75be8a1e623651bf6776b1c3ed6945607f52e39e241af",
+          "kind": "decoder_code_match",
+          "patch_status": "vulnerable_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "vulnerable"
+          ]
+        },
+        {
+          "artifact": "brotli-1.1.1",
+          "sha256": "a354a627b9c678eb6df4810745ad26b111405b65ee30ae9c496a2cde0d2649b8",
+          "kind": "decoder_code_match",
+          "patch_status": "fixed_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "fixed"
+          ]
+        },
+        {
+          "artifact": "brotli-1.2.0",
+          "sha256": "23625f9389f0c2b224de87e74f52b862d37bfb2d745fbebbbec86d37eab5bf16",
+          "kind": "decoder_code_match",
+          "patch_status": "vulnerable_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "vulnerable"
+          ]
+        },
+        {
+          "artifact": "brotli-1.2.1",
+          "sha256": "5a66ddd09f37b5a410dc9cbda272bd7c8e68ccf18534091cb2e0e5f732f5e889",
+          "kind": "decoder_code_match",
+          "patch_status": "fixed_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "fixed"
+          ]
+        },
+        {
+          "artifact": "libbrotlidec.so.1.2.0",
+          "sha256": "ebbfaffb1c0572c5c78d7534ad56cb7b61219788836e76299c4be7ec4a1c61c0",
+          "kind": "binary_version_candidate",
+          "patch_status": "potentially_vulnerable",
+          "linkage": "defined_decoder_symbols",
+          "reported_versions": [
+            "1.2.0"
+          ],
+          "matched_states": []
+        },
+        {
+          "artifact": "node",
+          "sha256": "f15053488b3c49d16eb4b0da25593b459a79839248381f6aa61a876bcce54966",
+          "kind": "binary_version_candidate",
+          "patch_status": "potentially_vulnerable",
+          "linkage": "defined_decoder_symbols",
+          "reported_versions": [
+            "1.1.0"
+          ],
+          "matched_states": []
+        },
+        {
+          "artifact": "libwoff2dec.so.1.0.2",
+          "sha256": "98391635a0cf3b15435784e34e76a1a29e4aef2c832fbaeb0d079d2b05256907",
+          "kind": "decoder_import_candidate",
+          "patch_status": "unknown",
+          "linkage": "decoder_import",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libbrotlienc.so.1.2.0",
+          "sha256": "784bb8e9d6229154f83566ca7da158bea51b826a12393083f5d551547043ac98",
+          "kind": "binary_candidate",
+          "patch_status": "unknown",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "python3.14",
+          "sha256": "ef59e677fa67d883e7f6d2a5aabbb99f1a14dd77dad74ada90d613202843cb80",
+          "kind": "binary_candidate",
+          "patch_status": "unknown",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libxul.so",
+          "sha256": "5d5b97d61872cbc08f4b5b61321722c2348d7d57382b46c0c5b35c468a2233d4",
+          "kind": "binary_candidate",
+          "patch_status": "unknown",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libQt6WebEngineCore.so.6.11.2",
+          "sha256": "5742a7695237b22fadff8a5e981308436917887da47430b05746d961d78315b6",
+          "kind": "binary_candidate",
+          "patch_status": "unknown",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        }
+      ]
+    },
+    "brotli_binary_inventory.py": {
+      "exit_code": 1,
+      "files_read": 13,
+      "gap_count": 0,
+      "limits": {
+        "max_file_bytes": null,
+        "max_total_bytes": null,
+        "max_expanded_bytes": 8589934592,
+        "max_total_expanded_bytes": 68719476736,
+        "max_files": 100000,
+        "archive_depth": 2
+      },
+      "findings": [
+        {
+          "artifact": "brotli-1.0.9",
+          "sha256": "bfd9b3f771ffdc5a3ee58a79016e96cf0926b7adbb9a2dd89c829717a703c49e",
+          "kind": "decoder_code_match",
+          "patch_status": "vulnerable_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "vulnerable"
+          ]
+        },
+        {
+          "artifact": "brotli-1.0.10",
+          "sha256": "de0d1301d9fb19c7b2ba4eac0198b0e9a84a5e4caf20cfd42b937d7588a3ac0c",
+          "kind": "decoder_code_match",
+          "patch_status": "fixed_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "fixed"
+          ]
+        },
+        {
+          "artifact": "brotli-1.1.0",
+          "sha256": "5fbbaef24f0580fb2bb75be8a1e623651bf6776b1c3ed6945607f52e39e241af",
+          "kind": "decoder_code_match",
+          "patch_status": "vulnerable_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "vulnerable"
+          ]
+        },
+        {
+          "artifact": "brotli-1.1.1",
+          "sha256": "a354a627b9c678eb6df4810745ad26b111405b65ee30ae9c496a2cde0d2649b8",
+          "kind": "decoder_code_match",
+          "patch_status": "fixed_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "fixed"
+          ]
+        },
+        {
+          "artifact": "brotli-1.2.0",
+          "sha256": "23625f9389f0c2b224de87e74f52b862d37bfb2d745fbebbbec86d37eab5bf16",
+          "kind": "decoder_code_match",
+          "patch_status": "vulnerable_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "vulnerable"
+          ]
+        },
+        {
+          "artifact": "brotli-1.2.1",
+          "sha256": "5a66ddd09f37b5a410dc9cbda272bd7c8e68ccf18534091cb2e0e5f732f5e889",
+          "kind": "decoder_code_match",
+          "patch_status": "fixed_code_match",
+          "linkage": "embedded_code",
+          "reported_versions": [],
+          "matched_states": [
+            "fixed"
+          ]
+        },
+        {
+          "artifact": "libbrotlidec.so.1.2.0",
+          "sha256": "ebbfaffb1c0572c5c78d7534ad56cb7b61219788836e76299c4be7ec4a1c61c0",
+          "kind": "binary_version_candidate",
+          "patch_status": "potentially_vulnerable",
+          "linkage": "defined_decoder_symbols",
+          "reported_versions": [
+            "1.2.0"
+          ],
+          "matched_states": []
+        },
+        {
+          "artifact": "node",
+          "sha256": "f15053488b3c49d16eb4b0da25593b459a79839248381f6aa61a876bcce54966",
+          "kind": "binary_version_candidate",
+          "patch_status": "potentially_vulnerable",
+          "linkage": "defined_decoder_symbols",
+          "reported_versions": [
+            "1.1.0"
+          ],
+          "matched_states": []
+        },
+        {
+          "artifact": "libwoff2dec.so.1.0.2",
+          "sha256": "98391635a0cf3b15435784e34e76a1a29e4aef2c832fbaeb0d079d2b05256907",
+          "kind": "decoder_import_candidate",
+          "patch_status": "not_assessed",
+          "linkage": "decoder_import",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libbrotlienc.so.1.2.0",
+          "sha256": "784bb8e9d6229154f83566ca7da158bea51b826a12393083f5d551547043ac98",
+          "kind": "binary_candidate",
+          "patch_status": "not_assessed",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "python3.14",
+          "sha256": "ef59e677fa67d883e7f6d2a5aabbb99f1a14dd77dad74ada90d613202843cb80",
+          "kind": "binary_candidate",
+          "patch_status": "not_assessed",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libxul.so",
+          "sha256": "5d5b97d61872cbc08f4b5b61321722c2348d7d57382b46c0c5b35c468a2233d4",
+          "kind": "binary_candidate",
+          "patch_status": "not_assessed",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        },
+        {
+          "artifact": "libQt6WebEngineCore.so.6.11.2",
+          "sha256": "5742a7695237b22fadff8a5e981308436917887da47430b05746d961d78315b6",
+          "kind": "binary_candidate",
+          "patch_status": "not_assessed",
+          "linkage": "unknown",
+          "reported_versions": [],
+          "matched_states": []
+        }
+      ]
+    }
+  },
+  "interpretation": "Old reported versions are potentially affected evidence, not proof of vulnerability. Unknown is not absence. Independent package code matches are not claimed."
+}

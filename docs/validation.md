@@ -210,26 +210,27 @@ These checks retain all the limits described above.
 ## Mutation testing
 
 `make mutations` runs pytest-gremlins 1.12.2 with all default operators against
-all three Python scanner modules. Tests use normal imports so the plugin can
+all Python scanner modules. Tests use normal imports so the plugin can
 instrument the code being exercised. Mutation subprocesses use a 10-second
 limit, CI uses two workers, and cached verdicts are disabled. JSON/HTML evidence
 is uploaded even when the job fails.
 
 The score gate recomputes the score from individual verdicts and rejects missing,
 empty, inconsistent, or partially instrumented reports, any runner errors, and
-missing scanner modules. It requires at least 80%. Only the two standalone CLI
+missing scanner modules. It requires at least 80%. Only the three standalone CLI
 guards have `out_of_scope` pardons: reversing `__name__ == "__main__"` launches
 argparse during import and is classified as a runner error by this plugin version.
 The gate checks those exact source locations and comparison operators, permits
-at most those two pardons, and excludes them from the denominator. Standalone
-help tests verify both real entry points. No scanner logic is pardoned.
+at most those three pardons, and excludes them from the denominator. Standalone
+help tests verify all three real entry points. No scanner logic is pardoned.
 
 Confirmed mutation-induced timeouts count as detections under the plugin's
 scoring; a timeout that cannot be confirmed against an unmutated control remains
 an error and fails the gate. A passing score still leaves surviving mutants and
 does not establish that every bug or vulnerability would be detected.
 
-The local Python 3.12 run with four workers assessed **388 mutants**: **329
+Before the binary-scanner follow-up, the local Python 3.12 run with four workers
+assessed **388 mutants**: **329
 zapped, 55 survived, two confirmed timeouts, zero errors, and the two documented
 CLI-guard pardons**. The resulting score was **85.75%** (331 / 386). No source
 modules were skipped. Per-module scores were 86.36% for binary inventory, 93.38%

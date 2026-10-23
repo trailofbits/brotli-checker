@@ -97,15 +97,15 @@ def test_stream_expansion_respects_remaining_total_budget():
         archive_depth=2,
     )
     inventory.bytes_read = 10
-    expanded = inventory._expand_compressed(  # noqa: SLF001 -- Budget after earlier reads.
-        gzip.compress(b"a" * 15), "layer.gz", "gzip"
-    )
-    assert expanded is None
+    inventory.inspect_archive(gzip.compress(b"a" * 15), "layer.gz", 0, "gzip")
+    assert inventory.expanded_items_read == 0
     assert inventory.bytes_read == 21  # One extra byte establishes that the bound was exceeded.
     assert inventory.gap_count == 1
 
 
-@pytest.mark.parametrize("script", ["brotli_inventory.py", "brotli_binary_inventory.py"])
+@pytest.mark.parametrize(
+    "script", ["brotli_inventory.py", "brotli_binary_inventory.py", "brotli_binary_triage.py"]
+)
 def test_standalone_cli_bootstrap_displays_help(script):
     path = Path(scanner.__file__).parent / script
     result = subprocess.run(  # noqa: S603 -- Trusted maintainer CLI, never target artifacts.
@@ -116,4 +116,5 @@ def test_standalone_cli_bootstrap_displays_help(script):
     )
     assert result.returncode == 0
     assert "usage:" in result.stdout
-    assert "--code-references" in result.stdout
+    expected = "--max-range-bytes" if script == "brotli_binary_triage.py" else "--code-references"
+    assert expected in result.stdout

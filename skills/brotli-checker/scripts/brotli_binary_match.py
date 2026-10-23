@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from brotli_binary_data import Buffer, sha256_data
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -27,16 +29,33 @@ MIN_ANCHOR_BYTES = 32
 MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 MAX_MATCHES = 128
 MAX_CANDIDATES = 4096
+STRUCT_BATCH_BYTES = 1024 * 1024
 
 
-def checked_slice(data: bytes, offset: int, size: int) -> bytes:
+def checked_range(data: Buffer, offset: int, size: int) -> tuple[int, int]:
     if offset < 0 or size < 0 or offset > len(data) or size > len(data) - offset:
         msg = "ELF range outside file"
         raise ValueError(msg)
-    return data[offset : offset + size]
+    return offset, offset + size
 
 
-def elf_header(data: bytes) -> tuple:
+def checked_slice(data: Buffer, offset: int, size: int) -> bytes:
+    start, end = checked_range(data, offset, size)
+    return data[start:end]
+
+
+def iter_structs(data: Buffer, parser: struct.Struct, offset: int, size: int) -> Iterator[tuple]:
+    checked_range(data, offset, size)
+    if size % parser.size:
+        msg = "ELF structure table has a partial entry"
+        raise ValueError(msg)
+    batch_size = max(parser.size, STRUCT_BATCH_BYTES // parser.size * parser.size)
+    end = offset + size
+    for start in range(offset, end, batch_size):
+        yield from parser.iter_unpack(checked_slice(data, start, min(batch_size, end - start)))
+
+
+def elf_header(data: Buffer) -> tuple:
     header = ELF_HEADER.unpack(checked_slice(data, 0, ELF_HEADER.size))
     ident, _, machine, version = header[:4]
     if (
@@ -50,7 +69,7 @@ def elf_header(data: bytes) -> tuple:
     return header
 
 
-def executable_ranges(data: bytes) -> tuple[int, list[tuple[int, int]]]:
+def _file_backed_load_segments(data: Buffer) -> tuple[int, list[tuple[int, int, int]]]:
     header = elf_header(data)
     if header[1] not in (2, 3):
         msg = "Code matching requires a linked ELF executable or shared object"
@@ -60,19 +79,34 @@ def executable_ranges(data: bytes) -> tuple[int, list[tuple[int, int]]]:
         msg = "Unsupported ELF program header table"
         raise ValueError(msg)
     table = checked_slice(data, offset, count * entry_size)
-    ranges = []
+    segments = []
     for kind, flags, start, _, _, size, memory_size, _ in PROGRAM_HEADER.iter_unpack(table):
         if kind == 1:
-            checked_slice(data, start, size)
+            checked_range(data, start, size)
             if size > memory_size:
                 msg = "ELF segment file size exceeds memory size"
                 raise ValueError(msg)
-            if flags & 1 and size:
-                ranges.append((start, size))
+            if size:
+                segments.append((start, size, flags))
+    return header[2], sorted(set(segments))
+
+
+def file_backed_ranges(data: Buffer) -> tuple[int, list[tuple[int, int]]]:
+    machine, segments = _file_backed_load_segments(data)
+    ranges = sorted({(start, size) for start, size, _ in segments})
+    if not ranges:
+        msg = "No file-backed ELF load segment"
+        raise ValueError(msg)
+    return machine, ranges
+
+
+def executable_ranges(data: Buffer) -> tuple[int, list[tuple[int, int]]]:
+    machine, segments = _file_backed_load_segments(data)
+    ranges = sorted({(start, size) for start, size, flags in segments if flags & 1})
     if not ranges:
         msg = "No file-backed executable ELF load segment"
         raise ValueError(msg)
-    return header[2], sorted(set(ranges))
+    return machine, ranges
 
 
 def validate_metadata(entry: dict) -> None:
@@ -155,7 +189,7 @@ def load_references(path: Path) -> list[CodeReference]:
 
 
 def candidate_offsets(
-    data: bytes, reference: CodeReference, start: int, size: int
+    data: Buffer, reference: CodeReference, start: int, size: int
 ) -> Iterator[int]:
     end = start + size
     cursor = start + reference.anchor_offset
@@ -186,7 +220,7 @@ class CodeAssessment:
 
 
 def match_code(  # noqa: C901 -- Bounded reference/segment/candidate search with explicit limits.
-    data: bytes, references: list[CodeReference]
+    data: Buffer, references: list[CodeReference]
 ) -> CodeAssessment:
     try:
         machine, ranges = executable_ranges(data)
@@ -261,7 +295,7 @@ def relocation_mask(machine: int, kind: int) -> bytes:
 
 
 def apply_relocations(  # noqa: PLR0913 -- ELF section context and output mask.
-    data: bytes, sections: list[tuple], index: int, code: bytes, mask: bytearray, *, machine: int
+    data: Buffer, sections: list[tuple], index: int, code: bytes, mask: bytearray, *, machine: int
 ) -> None:
     for relocation in sections:
         if relocation[1] not in (4, 9) or relocation[7] != index:
@@ -280,7 +314,7 @@ def apply_relocations(  # noqa: PLR0913 -- ELF section context and output mask.
                 mask[offset + i] &= value
 
 
-def reference_from_object(data: bytes, metadata: dict) -> dict:
+def reference_from_object(data: Buffer, metadata: dict) -> dict:
     """Build a complete decoder .text signature, rejecting unsupported object layouts."""
     header = elf_header(data)
     if header[1] != 1 or header[11] != SECTION_HEADER.size or not header[12]:
@@ -301,7 +335,7 @@ def reference_from_object(data: bytes, metadata: dict) -> dict:
     entry = {
         **metadata,
         "machine": header[2],
-        "object_sha256": hashlib.sha256(data).hexdigest(),
+        "object_sha256": sha256_data(data),
         "code": code.hex(),
         "mask": mask.hex(),
     }

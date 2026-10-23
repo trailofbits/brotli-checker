@@ -167,6 +167,61 @@ policy alone does not establish this path's patch status or eliminate the
 pre-verification input surface. Do not claim universal unauthenticated server
 exposure: protocol role, negotiation, provider, buffering, and configuration matter.
 
+## Bounded binary patch triage
+
+When the inventory leaves a local ELF copy unknown, the skill can collect a
+bounded, read-only disassembly packet:
+
+Before disassembly, inspect `evidence.decoder_metadata`. The inventory reads ELF
+symbols and supported constant-return `BrotliDecoderVersion` definitions directly,
+without invoking target code. Defined decoder APIs establish embedded symbol
+evidence; imports point to another provider. An old supported-branch version is a
+`potentially_vulnerable` update lead. A fixed reported version, symbol definition,
+or import never establishes fixed code and does not clear other copies.
+
+```sh
+python3 scripts/brotli_binary_triage.py /absolute/target > triage.json
+```
+
+Use a trusted local `objdump`; never use a tool or script from the target. The
+helper rejects target symlinks and streams the original artifact SHA-256 while
+using sparse reads for ELF structures. Only bounded selected code fragments are
+copied for raw-binary objdump, with original virtual addresses preserved. It
+records each fragment's hash/source offset, exact command, scope, and limits.
+The original regular file is not copied or memory-mapped. Changes detected on the
+open input invalidate collection. It neither loads nor executes the target and
+removes all fragments afterward. Raw output's `.data` label is not the source ELF
+section; use recorded scopes and symbol addresses for numeric call targets.
+Treat exit 0 as successful
+evidence collection only. Treat exit 3, a timeout/output cap, unsupported ELF,
+missing relevant symbols, or truncated symbol selection as explicitly incomplete.
+
+Prefer the selected internal block-switch and `ProcessCommands*` symbols. The
+public `BrotliDecoderDecompressStream` fallback can orient a stripped or partially
+symbolized build but may be too large or may hide inlined callees. If relevant
+symbols are absent, request an address range from trusted link/map evidence, or
+translate a scanner-reported executable file offset with `--file-offset OFFSET
+--length BYTES`. Use `--start-address` and `--stop-address`, optionally constrained
+by `--section`, only when those addresses have trusted provenance. A string's file
+offset is not code provenance.
+
+Compare the packet with both reviewed sides of the decoder patch. Trace all three
+block-switch classes (literal, command, distance), including safe variants, from
+the invalid `max_block_type` condition to `ProcessCommands*` and its caller. The
+fixed path preserves `BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH` as a
+`BrotliDecoderErrorCode`; the affected path's boolean/void handling can lose that
+specific status. Check return-value tests and propagation in control flow rather
+than looking only for a constant, call target, symbol, or string. Compiler
+optimization can inline, clone, merge, or remove these functions.
+
+Keep patch status `unknown` when the packet omits a relevant caller/callee, the
+control-flow mapping is ambiguous, output was bounded early, or multiple decoder
+copies are not all accounted for. Report an affected conclusion only when the old
+status-loss behavior is affirmatively traced. Do not report a fixed binary merely
+from a version-return function, fixed-version string, import/export, or one
+fixed-looking range. Patch evidence, shipment, runtime selection, and reachability
+remain separate conclusions.
+
 ## Reporting unresolved cases
 
 If only source is present, leave build selection and shipment unknown. If an
