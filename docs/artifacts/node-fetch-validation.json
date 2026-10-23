@@ -1,0 +1,50 @@
+{
+  "node": "v20.9.0",
+  "brotli": "1.0.9",
+  "undici": "5.26.3",
+  "scope": "Valid Brotli responses from a loopback HTTP server; no exploit payload.",
+  "patch_status": "not_assessed",
+  "exploitability": "not_assessed",
+  "results": [
+    {
+      "case": "default_http",
+      "requests": [
+        {
+          "path": "/body",
+          "accept_encoding": "gzip, deflate"
+        }
+      ],
+      "decoded_body_matches": true,
+      "native_brotli_decoder_calls": 1,
+      "redirected": false
+    },
+    {
+      "case": "identity_http",
+      "requests": [
+        {
+          "path": "/body",
+          "accept_encoding": "identity"
+        }
+      ],
+      "decoded_body_matches": true,
+      "native_brotli_decoder_calls": 1,
+      "redirected": false
+    },
+    {
+      "case": "redirect_identity_http",
+      "requests": [
+        {
+          "path": "/redirect",
+          "accept_encoding": "identity"
+        },
+        {
+          "path": "/body",
+          "accept_encoding": "identity"
+        }
+      ],
+      "decoded_body_matches": true,
+      "native_brotli_decoder_calls": 1,
+      "redirected": true
+    }
+  ]
+}

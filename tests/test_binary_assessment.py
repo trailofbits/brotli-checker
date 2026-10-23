@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts"))
-import brotli_inventory as scanner  # noqa: E402
-from test_binary_inventory import run_scan  # noqa: E402
-from test_binary_metadata import elf_with_symbols, encoded_version, x86_return  # noqa: E402
+import brotli_inventory as scanner
+from test_binary_inventory import run_scan
+from test_binary_metadata import elf_with_symbols, encoded_version, x86_return
 
 
 @pytest.mark.parametrize(

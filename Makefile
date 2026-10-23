@@ -1,4 +1,4 @@
-.PHONY: dev lint format test verify-fingerprints
+.PHONY: dev lint format test verify-fingerprints verify-node-fetch
 
 dev:
 	uv sync --locked
@@ -17,3 +17,6 @@ test:
 
 verify-fingerprints:
 	uv run --locked python scripts/verify_fingerprints.py
+
+verify-node-fetch:
+	env -u NODE_OPTIONS -u NODE_PATH node skills/brotli-checker/scripts/verify_node_fetch.cjs

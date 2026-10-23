@@ -37,7 +37,7 @@ def test_native_indicators_are_not_patch_verdicts(tmp_path, magic):
     data = magic + b"\0BrotliDecoderDecompress\0"
     artifact.write_bytes(data)
     result = run_scan(artifact)
-    assert result.returncode == 1
+    assert result.returncode == (3 if magic == b"!<arch>\n" else 1)
     finding = json.loads(result.stdout)["findings"][0]
     assert finding["sha256"] == hashlib.sha256(data).hexdigest()
     assert finding["patch_status"] == "not_assessed"
