@@ -100,13 +100,27 @@ supply the embedded library's version rather than a wrapper package's version.
 A provider may also have fixed an older release without changing its upstream
 version number.
 
+End-of-life Node.js branches get advice to move to a supported fixed release.
+Their decoder patch status remains unknown without build or vendor evidence.
+This advice uses the dated advisory snapshot, so check current vendor guidance.
+
+Node's built-in `fetch()` can reach Brotli through automatic response decoding,
+even without a Brotli package in the app's dependencies. The skill investigates
+that route using the [Node/fetch guide](skills/brotli-checker/references/reachability.md#nodes-built-in-fetch).
+The offline scanner records fetch references in JavaScript/TypeScript and
+Undici imports or dependency declarations, with source locations and runtime
+verification steps. These are review leads: a browser, custom fetch binding,
+or unused dependency can produce a match. It does not trace URL ownership or
+discover the running Node version; provide that runtime's version with
+`--node-version`. A supplied fixed version does not clear an unresolved fetch lead.
+
 ### Exit codes
 
 For automation, use the exit code together with the JSON evidence:
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | The reported files or supplied versions meet a known fix rule. This does not confirm the running app is fixed. |
+| 0 | The reported files or supplied versions meet a known fix rule and no recognized scan gaps were recorded. This does not confirm the running app is fixed. |
 | 1 | Vulnerable source or potentially affected source/version evidence was found. |
 | 2 | Invalid command arguments. |
 | 3 | More checking is needed, including no matches, unresolved candidates, or skipped files. |
@@ -115,8 +129,24 @@ For automation, use the exit code together with the JSON evidence:
 
 The scanner checks file contents against reviewed source fingerprints, flags
 modified C decoder patterns, and collects dependency names and binary symbols
-as leads. It reads local folders and bounded ZIP/JAR, WAR, wheel, and TAR
-archives without extracting them or executing application code.
+as leads. It also flags fetch/Undici references in `.js`, `.mjs`, `.cjs`, `.jsx`,
+`.ts`, `.mts`, `.cts`, and `.tsx` files, including archive members. This bounded
+heuristic skips comments and ordinary string mentions; it preserves template
+literals to retain expressions, which can produce extra leads. It does not
+parse JavaScript, resolve bindings, or guarantee discovery of computed,
+obfuscated, bundled, or dynamically generated calls.
+
+It reads local folders and bounded ZIP/JAR, WAR, wheel, and TAR
+archives without extracting them or executing application code. Known content
+signatures identify renamed archives and extensionless container layers.
+Gzip, bzip2, and XZ streams are expanded within the same limits, including when
+their names do not identify their compression format.
+
+Recognized unsupported formats, including Debian/AR and RPM packages, Zstandard,
+7z, and RAR, are reported as gaps. Provide unpacked files to inspect their
+contents. Signature-free or unrecognized encodings can still be missed; an
+arbitrary file cannot always be identified as compressed. Container layer
+traversal does not reconstruct the final image filesystem or resolve whiteouts.
 
 An exact match identifies a decoder source file. Dependency names and binary
 symbols alone do not establish whether a component contains the affected code.
@@ -126,8 +156,24 @@ process uses or whether an attacker can reach it.
 
 Hidden folders, dependencies, and build outputs are included. The scanner
 excludes `.git`, skips symlinks, and reports files it could not inspect and
-limits it reached. It does not resolve remote build inputs, load native
-libraries, or send network probes.
+limits it reached. A filesystem symlink does not add a gap when its resolved
+target was checked directly among the supplied scan roots. External,
+broken, and otherwise unchecked targets remain gaps; archive links remain gaps.
+It does not resolve remote build inputs, load native libraries, or send network
+probes. Text output quotes paths and escapes control characters and non-ASCII
+characters; JSON retains the original labels as escaped strings.
+
+If a large tree hits a limit, scan a smaller relevant folder or use
+`--max-file-bytes`, `--max-total-bytes`, `--max-files`, or `--archive-depth`.
+The defaults are 16 MiB per file/expanded stream, 256 MiB total, 50,000 files or
+members, and two archive levels. The total includes reading the container,
+decompression, and reading its members. Increasing a limit increases resource
+use; skipped files keep the result incomplete.
+
+JSON records total, retained, and omitted gap-detail counts. It distinguishes
+archive inspection attempts from successful opens. Unresolved container markers
+are displayed separately from member candidates; a marker visible through a
+stored archive is not counted as another decoder copy.
 
 The offline advisory snapshot was verified on **2026-10-23**. It contains 17
 vulnerable decoder-file fingerprints and three fixed files, with source URLs and
@@ -139,10 +185,27 @@ guidance when online research is available.
 - [Investigating HTTP, Java, WOFF2, workerd, and TLS input paths](skills/brotli-checker/references/reachability.md)
 - [Skill instructions](skills/brotli-checker/SKILL.md)
 
+## Validation scope
+
+The vulnerable reference target was **Google Brotli v1.2.0's `c/dec/decode.c`**,
+with v1.0.10's fixed decoder source as a control. Both classified as expected.
+The full fingerprint verifier checks 20 source files and modified variants.
+
+An additional benign loopback probe confirmed that built-in Node fetch invokes
+the Brotli decoder for valid HTTP responses, including with an identity request
+header and after a redirect.
+
+**No deployed application or binary was tested, and no malformed or exploit
+payload was executed.** Automated archive tests use synthetic packaging fixtures.
+These checks establish source detection, scanner behavior, and the local fetch
+decoding route. They do not establish application exposure, exploitability,
+or inventory completeness.
+See [the validation record](docs/validation.md) for hashes, commands, and limits.
+
 ## Development
 
 Use uv for development. The committed lockfile pins the development tools;
-the installed skill still uses only Python's standard library.
+the installed inventory helper still uses only Python's standard library.
 Dependency resolution waits one week before accepting new package uploads.
 
 ```sh
@@ -154,6 +217,7 @@ make test
 CI runs the offline tests on Python 3.12, 3.13, 3.14, and 3.15, with an 80%
 minimum for line and branch coverage combined. `make lint` checks Ruff formatting,
 Ruff lint rules, and ty types; `make format` applies formatting and lint fixes.
+CI also runs the benign built-in fetch probe on Node.js 24.22.1.
 The underlying uv commands and tool settings are in the [Makefile](Makefile)
 and [pyproject.toml](pyproject.toml).
 
@@ -161,10 +225,21 @@ The inventory script declares its supported Python versions with PEP 723
 metadata. It can also run through `uv run --script` after the skill is copied
 elsewhere.
 
+The repository and the independently installed skill are distributed under the
+[MIT license](LICENSE).
+
 To recheck the published source fingerprints and modified-source detection,
 run this optional maintainer check, which downloads reference source but never
 executes it:
 
 ```sh
 uv run --locked python scripts/verify_fingerprints.py
+```
+
+To repeat the benign built-in Node fetch check, use a Node runtime that provides
+fetch. It serves valid Brotli responses on loopback and checks both the decoded
+body and calls to Node's Brotli wrapper:
+
+```sh
+make verify-node-fetch
 ```

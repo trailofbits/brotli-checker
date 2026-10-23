@@ -42,14 +42,22 @@ Use JSON internally for the evidence; the default text output is for people:
 python3 scripts/brotli_inventory.py /absolute/target --json
 ```
 
-It reads files and bounded ZIP/JAR/WAR/wheel and TAR archives without extracting
-them or executing target code. It checks all eligible file bytes against source
-fingerprints, identifies modified C decoder patterns, and records dependency
-and native/Wasm candidates. Dependencies, build outputs, and hidden directories
+It reads files and bounded ZIP/JAR/WAR/wheel, TAR, gzip, bzip2, and XZ containers
+without extracting them or executing target code. Known signatures identify
+renamed archives and extensionless layers. Recognized unsupported formats such
+as Debian, RPM, and Zstandard produce coverage gaps; provide unpacked files.
+Signature-free or unrecognized encodings can be missed. Container traversal
+does not reconstruct a final image filesystem. It checks eligible file bytes
+against source fingerprints, identifies modified C decoder patterns, and records
+dependency, native/Wasm, and JavaScript/TypeScript fetch/Undici candidates.
+Fetch references include source locations; they are heuristic leads, not
+confirmed Node calls or attacker-controlled inputs. Dependencies, build outputs, and hidden directories
 are included; `.git` is excluded. Read its coverage gaps. It does not scan an
 entire host, resolve remote dependencies, follow symlinks, prove binary patch
 status, or establish an absence of Brotli. Supply extracted image filesystems
-or additional artifact roots as needed.
+or additional artifact roots as needed. Filesystem symlink targets visited
+directly do not add a gap; other targets still need checking. If a resource limit
+is reached, scan a smaller relevant folder or adjust the limit shown by `--help`.
 
 For independently obtained upstream versions, optional flags are:
 
@@ -65,6 +73,16 @@ outside the snapshot's rules remain unknown. Exit 1 means affected-source or
 version evidence; 3 means review/unknown; 0 means only the reported items meet
 a known source fingerprint or upstream fixed-version rule; 2 means CLI error.
 The helper never certifies the application safe.
+
+End-of-life Node.js versions get supported-branch upgrade advice, while decoder
+patch status remains unknown (exit 3) without build or vendor evidence.
+
+Validation has covered decoder source references, synthetic packaging fixtures,
+and a benign loopback test of built-in Node fetch response decompression.
+No deployed application or binary was tested, and no malformed or exploit
+payload was executed. The benign fetch test establishes a decoding route,
+not CVE triggerability or exploitation. Do not describe source classification
+as an end-to-end test of a vulnerable app.
 
 ## Establish patch status and reachability
 
@@ -87,6 +105,16 @@ input ownership, and process boundaries. Consider inbound requests, outbound
 responses, uploads and WOFF2/fonts, Java JNI stacks, workerd, and negotiated TLS
 certificate compression. Pure Java/Rust implementations require their own
 evidence; a language or algorithm name alone does not establish this C bug.
+
+For Node.js apps, explicitly investigate built-in `fetch()`, `globalThis.fetch`,
+and Undici wrappers, including attacker-controlled URLs and redirects. Automatic
+Brotli response decoding can reach the native decoder without an explicit
+Brotli dependency or `node:zlib` import. Establish the actual runtime's patch
+state. The offline helper records source-reference and dependency leads, but
+does not establish call paths, resolve fetch bindings, trace URL ownership,
+or discover the running Node version. Review its locations and continue with
+the Node/fetch section of the reachability guide. A fixed supplied version or
+standalone Brotli library does not clear an unresolved runtime lead.
 
 Report reachability as `confirmed`, `not_reachable_in_reviewed_configuration`,
 or `unknown`, with paths/lines or deployment evidence. A negative conclusion

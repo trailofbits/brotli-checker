@@ -15,7 +15,8 @@ decoding path when authorized; do not send malformed or exploit payloads.
 
 ## Node.js and HTTP services/clients
 
-Search for `brotliDecompress`, `createBrotliDecompress`, `node:zlib`,
+Search for `fetch`, `globalThis.fetch`, `undici`, `brotliDecompress`,
+`createBrotliDecompress`, `node:zlib`,
 `Content-Encoding`, `body-parser`, and request decoding middleware. Follow the
 actual middleware order: authentication in a handler can run after automatic
 decompression. Check body parsers and proxies at every receiving boundary.
@@ -27,6 +28,43 @@ attacker can control an origin, redirect target, fetched document, or intermedia
 input. Do not assume all clients decode automatically. Tie the executing Node
 binary and its bundled decoder to the deployment; a shell's default `node`
 can differ from a service, container, Electron embedder, or packaged executable.
+
+### Node's built-in fetch
+
+Node's [built-in `fetch()` uses Undici](https://nodejs.org/api/globals.html#fetch).
+The [bundled implementation in Node v24.22.0](https://github.com/nodejs/node/blob/v24.22.0/deps/undici/src/lib/web/fetch/index.js#L2028-L2088)
+pipes Brotli-encoded response bodies through `zlib.createBrotliDecompress()`.
+An attacker-controlled response can therefore reach the affected decoder on an
+unpatched runtime even when the app never imports Brotli or `node:zlib` itself.
+
+Trace URL inputs, redirects, wrappers, and the actual fetch implementation.
+Establish the deployed Node build and vendor patch state. A `fetch()` reference
+alone does not prove an attacker-controlled URL or an unpatched runtime.
+Changing `Accept-Encoding` alone does not disable response decompression: the
+reviewed implementation selects its decoder from response `Content-Encoding`.
+Its default HTTPS request advertises Brotli; its HTTP request does not, but a
+server can still return a Brotli-encoded body.
+
+The offline helper records JavaScript/TypeScript fetch references, global fetch
+property references, Undici imports, and Undici dependency declarations. Its
+JSON evidence includes source lines and columns, with at most 20 source matches
+per file and an explicit truncation flag. Each lead keeps patch status and
+reachability unknown until reviewed. Browser/custom bindings and literal template
+text can produce extra leads. Computed names, dynamic loading, bundler rewrites,
+and unavailable source can hide calls; the heuristic is not a JavaScript parser.
+
+The helper does not resolve bindings, trace URL ownership, or discover the running
+Node version. Its `--node-version` option assesses only a separately obtained
+version, and does not associate that version with an unresolved source lead.
+Identify the real binary/build and follow the call path through wrappers and
+redirects. An Undici import alone does not establish use of its fetch API or
+automatic response decoding.
+
+A [benign loopback probe](../scripts/verify_node_fetch.cjs) confirmed built-in
+fetch invoking Node's Brotli decoder for valid HTTP response bodies, including
+with an identity request header and after a redirect. It did not test malformed
+streams, deployment reachability, or exploitation; see the
+[validation record](https://github.com/trailofbits/brotli-checker/blob/main/docs/validation.md#benign-built-in-fetch-validation).
 
 ## Java HTTP stacks and native JNI providers
 

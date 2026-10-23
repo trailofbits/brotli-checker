@@ -20,15 +20,65 @@ import re
 import stat
 import sys
 import tarfile
+import tomllib
 import zipfile
 import zlib
+from itertools import islice
 from pathlib import Path
 from typing import Protocol
 
 REGISTRY = Path(__file__).resolve().parent.parent / "references" / "fingerprints.json"
 SOURCE_SUFFIXES = {"", ".c", ".cc", ".cpp", ".cxx", ".h", ".inc", ".inl", ".unbr"}
+JS_SUFFIXES = {".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".node", ".a", ".lib", ".wasm", ".exe"}
 ZIP_SUFFIXES = {".zip", ".jar", ".war", ".ear", ".whl", ".nupkg", ".apk"}
+COMPRESSED_SUFFIXES = {".gz": "gzip", ".bz2": "bzip2", ".xz": "xz"}
+TAR_SUFFIXES = (".tar", ".tgz", ".txz", ".tbz", ".tbz2")
+UNSUPPORTED_SUFFIXES = {
+    ".deb",
+    ".rpm",
+    ".zst",
+    ".zstd",
+    ".tzst",
+    ".7z",
+    ".rar",
+    ".br",
+    ".lz",
+    ".lz4",
+    ".lzma",
+    ".z",
+    ".cab",
+    ".iso",
+    ".dmg",
+    ".cpio",
+    ".ar",
+}
+ARCHIVE_SIGNATURES = (
+    (b"PK\x03\x04", "zip"),
+    (b"PK\x05\x06", "zip"),
+    (b"PK\x07\x08", "zip"),
+    (b"\x1f\x8b", "gzip"),
+    (b"BZh", "bzip2"),
+    (b"\xfd7zXZ\0", "xz"),
+    (b"!<arch>\n", "unsupported"),
+    (b"!<thin>\n", "unsupported"),
+    (b"\xed\xab\xee\xdb", "unsupported"),
+    (b"\x28\xb5\x2f\xfd", "unsupported"),
+    (b"7z\xbc\xaf\x27\x1c", "unsupported"),
+    (b"Rar!\x1a\x07", "unsupported"),
+    (b"\x04\x22\x4d\x18", "unsupported"),
+    (b"LZIP", "unsupported"),
+    (b"\x1f\x9d", "unsupported"),
+    (b"MSCF", "unsupported"),
+    (b"xar!", "unsupported"),
+    (b"070701", "unsupported"),
+    (b"070702", "unsupported"),
+    (b"070707", "unsupported"),
+)
+NODE_FIXES = {22: (22, 23, 4), 24: (24, 22, 1), 26: (26, 12, 1)}
+# Frozen from the Node.js release schedule on the advisory snapshot date.
+NODE_EOL_BRANCHES = {0, *range(4, 22), 23, 25}
+SKIPPABLE_FRAMES = tuple(bytes((first, 0x2A, 0x4D, 0x18)) for first in range(0x50, 0x60))
 MANIFEST_NAMES = {
     "package.json",
     "package-lock.json",
@@ -62,7 +112,22 @@ MANIFEST_NAMES = {
     "metadata",
     "pkg-info",
 }
-DEPENDENCY = re.compile(r"brotli(?:4j|dec|common|enc)?|woff2|workerd", re.IGNORECASE)
+UNDICI = re.compile(r"(?<![\w-])undici(?![\w-])", re.IGNORECASE)
+DEPENDENCY = re.compile(
+    r"brotli(?:4j|dec|common|enc)?|woff2|workerd|(?<![\w-])undici(?![\w-])",
+    re.IGNORECASE,
+)
+JS_NON_CODE = re.compile(
+    r"(?P<comment>//[^\n]*|/\*[\s\S]*?\*/)"
+    r"""|(?P<string>'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")"""
+    r"|(?P<template>\x60(?:\\.|[^\x60\\])*\x60)"
+)
+JS_FETCH_LEAD = re.compile(
+    r"""(?P<fetch_reference>(?<![\w$'"])fetch\b)"""
+    r"""|(?P<global_fetch_property>\b(?:globalThis|global)\s*\[\s*['"]fetch['"]\s*\])"""
+    r"""|(?P<undici_import>\b(?:from\s+|(?:require|import)\s*(?:\(\s*)?)"""
+    r"""['"]undici(?:/[^'"\\]*)?['"])"""
+)
 SWITCH_CALL = r"Decode(?:Literal|Command|Distance)BlockSwitch\s*\("
 OLD_CALL = re.compile(r"\bBROTLI_SAFE\s*\(\s*(" + SWITCH_CALL + r")")
 NEW_CALL = re.compile(r"\bBROTLI_SAFE_WITH_STATUS\s*\(\s*(" + SWITCH_CALL + r")")
@@ -73,6 +138,141 @@ WARNING = {"vulnerable_source", "potentially_vulnerable"}
 MAX_RECORDED_GAPS = 200
 MAX_DISPLAY_COPIES = 10
 MAX_DISPLAY_GAPS = 5
+MAX_SOURCE_MATCHES = 20
+PYC_HEADER_BYTES = 16
+DECODER_SYMBOLS = (
+    b"BrotliDecoderDecompress",
+    b"BrotliDecoderCreateInstance",
+    b"DecoderJNI",
+)
+
+
+def leaf_name(label: str) -> str:
+    return label.rsplit("!", 1)[-1].replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def tar_content(data: bytes) -> bool:
+    if data[257:262] == b"ustar":
+        return True
+    try:
+        tarfile.TarInfo.frombuf(data[: tarfile.BLOCKSIZE], "utf-8", "surrogateescape")
+    except tarfile.HeaderError:
+        return False
+    return True
+
+
+def archive_kind(data: bytes, label: str) -> str | None:
+    """Recognize containers by bytes, then use names to catch damaged/opaque ones."""
+    for signature, kind in ARCHIVE_SIGNATURES:
+        if data.startswith(signature):
+            return kind
+    if data.startswith(SKIPPABLE_FRAMES):
+        return "unsupported"  # Zstandard/LZ4 skippable frames.
+    if tar_content(data):
+        return "tar"
+    if zipfile.is_zipfile(io.BytesIO(data)):
+        return "zip"  # Also recognizes ZIPs with a prepended executable stub.
+    return named_archive_kind(label)
+
+
+def named_archive_kind(label: str) -> str | None:
+    name = leaf_name(label)
+    suffix = Path(name).suffix
+    if suffix in ZIP_SUFFIXES:
+        return "zip"
+    if suffix in COMPRESSED_SUFFIXES:
+        return COMPRESSED_SUFFIXES[suffix]
+    if name.endswith(TAR_SUFFIXES):
+        return {".tgz": "gzip", ".txz": "xz", ".tbz": "bzip2", ".tbz2": "bzip2"}.get(suffix, "tar")
+    return "unsupported" if suffix in UNSUPPORTED_SUFFIXES else None
+
+
+def safe_text(value: str) -> str:
+    """Quote untrusted display fields, escaping controls, bidi marks, and surrogates."""
+    return json.dumps(value, ensure_ascii=True)
+
+
+def python_bytecode(data: bytes, name: str) -> bool:
+    return (
+        Path(name).suffix in {".pyc", ".pyo"}
+        and len(data) >= PYC_HEADER_BYTES
+        and data[2:4] == b"\r\n"
+        and int.from_bytes(data[4:8], "little") in {0, 1, 3}
+    )
+
+
+def mask_js_non_code(match: re.Match[str]) -> str:
+    token = match.group()
+    # Keep templates so references in template expressions remain visible.
+    # Literal template text can produce extra leads; this is not a JS parser.
+    if match.lastgroup == "template":
+        return token
+    if match.lastgroup == "string" and (
+        token[1:-1] in {"fetch", "undici"} or token[1:-1].startswith("undici/")
+    ):
+        return token
+    return re.sub(r"[^\r\n]", " ", token)
+
+
+def fetch_references(text: str) -> tuple[list[dict], bool]:
+    code = JS_NON_CODE.sub(mask_js_non_code, text)
+    found = list(islice(JS_FETCH_LEAD.finditer(code), MAX_SOURCE_MATCHES + 1))
+    matches = []
+    line = 1
+    previous = 0
+    for match in found[:MAX_SOURCE_MATCHES]:
+        offset = match.start()
+        line += text.count("\n", previous, offset)
+        start = text.rfind("\n", 0, offset) + 1
+        end = text.find("\n", offset)
+        matches.append(
+            {
+                "line": line,
+                "column": offset - start + 1,
+                "signal": match.lastgroup,
+                "text": text[start : min(end if end >= 0 else len(text), start + 300)],
+            }
+        )
+        previous = offset
+    return matches, len(found) > MAX_SOURCE_MATCHES
+
+
+def dependency_matches(text: str, name: str) -> list[dict]:
+    if name != "pyproject.toml":
+        return [
+            {"line": i, "text": line[:300]}
+            for i, line in enumerate(text.splitlines(), 1)
+            if DEPENDENCY.search(line)
+        ]
+    try:
+        metadata = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        # Preserve a lead when malformed metadata cannot be parsed.
+        return (
+            [{"text": "Unparseable Python metadata mentioning Brotli-related components."}]
+            if DEPENDENCY.search(text)
+            else []
+        )
+    sections = (
+        "project.dependencies",
+        "project.optional-dependencies",
+        "dependency-groups",
+        "build-system.requires",
+        "tool.poetry.dependencies",
+        "tool.poetry.dev-dependencies",
+        "tool.poetry.group",
+        "tool.pdm.dev-dependencies",
+        "tool.uv.sources",
+    )
+    matches = []
+    for field in sections:
+        value = metadata
+        for key in field.split("."):
+            value = value.get(key, {}) if isinstance(value, dict) else {}
+        rendered = json.dumps(value, ensure_ascii=True)
+        if DEPENDENCY.search(rendered):
+            matches.append({"field": field, "text": rendered[:300]})
+    return matches
 
 
 class BinaryReader(Protocol):
@@ -96,37 +296,48 @@ def finding(path: str, kind: str, patch_status: str, reason: str, **evidence: ob
 def assess_version(component: str, value: str) -> dict:
     match = re.fullmatch(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value.strip())
     path = f"supplied:{component}:{value}"
+    evidence = {"component": component, "supplied_version": value}
     if not match:
         return finding(
             path,
             "supplied_version",
             "unknown",
             "Not an unambiguous upstream stable version.",
+            **evidence,
         )
     version = tuple(map(int, match.groups()))
-    if component == "brotli":
-        branch = (version[0], version[1])
-        fixes = {(1, 0): 10, (1, 1): 1, (1, 2): 1}
-        if branch not in fixes or version < (1, 0, 3):
-            return finding(
-                path,
-                "supplied_version",
-                "unknown",
-                "Outside snapshot patch rules; inspect the actual decoder.",
-            )
-        fixed = version[2] >= fixes[branch]
-        minimum = f"{branch[0]}.{branch[1]}.{fixes[branch]}"
-    else:
-        fixes = {22: (22, 23, 4), 24: (24, 22, 1), 26: (26, 12, 1)}
-        if version[0] not in fixes:
-            return finding(
-                path,
-                "supplied_version",
-                "unknown",
-                "No patch rule for this Node branch; inspect embedded Brotli or vendor guidance.",
-            )
-        fixed = version >= fixes[version[0]]
-        minimum = ".".join(map(str, fixes[version[0]]))
+    if component == "node":
+        return assess_node_version(path, version, evidence)
+    branch = (version[0], version[1])
+    fixes = {(1, 0): 10, (1, 1): 1, (1, 2): 1}
+    if branch not in fixes or version < (1, 0, 3):
+        return finding(
+            path,
+            "supplied_version",
+            "unknown",
+            "Outside snapshot patch rules; inspect the actual decoder.",
+            **evidence,
+        )
+    minimum = f"{branch[0]}.{branch[1]}.{fixes[branch]}"
+    return version_finding(path, minimum, evidence, fixed=version[2] >= fixes[branch])
+
+
+def assess_node_version(path: str, version: tuple[int, ...], evidence: dict) -> dict:
+    if version[0] not in NODE_FIXES:
+        return finding(
+            path,
+            "supplied_version",
+            "unknown",
+            "No upstream patch rule for this Node branch; "
+            "inspect embedded Brotli or vendor guidance.",
+            support_status="end_of_life" if version[0] in NODE_EOL_BRANCHES else "outside_snapshot",
+            **evidence,
+        )
+    minimum = ".".join(map(str, NODE_FIXES[version[0]]))
+    return version_finding(path, minimum, evidence, fixed=version >= NODE_FIXES[version[0]])
+
+
+def version_finding(path: str, minimum: str, evidence: dict, *, fixed: bool) -> dict:
     return finding(
         path,
         "supplied_version",
@@ -134,9 +345,8 @@ def assess_version(component: str, value: str) -> dict:
         "Supplied upstream version meets the branch fix; installed build unverified."
         if fixed
         else "Supplied upstream version precedes the branch fix; vendor backport status unknown.",
-        component=component,
-        supplied_version=value,
         fixed_branch_version=minimum,
+        **evidence,
     )
 
 
@@ -160,7 +370,11 @@ class Inventory:
         self.files_seen = 0
         self.files_read = 0
         self.bytes_read = 0
+        self.archives_attempted = 0
         self.archives_opened = 0
+        self.checked_paths: set[Path] = set()
+        self.pending_symlinks: list[Path] = []
+        self.covered_symlinks = 0
 
     def gap(self, path: str, reason: str) -> None:
         self.gap_count += 1
@@ -171,7 +385,7 @@ class Inventory:
         return self.files_seen >= self.max_files or self.bytes_read >= self.max_total_bytes
 
     def candidate_name(self, label: str) -> None:
-        name = label.rsplit("!", 1)[-1].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        name = leaf_name(label)
         if "brotli" in name and (
             Path(name).suffix in NATIVE_SUFFIXES | ZIP_SUFFIXES or ".so." in name
         ):
@@ -209,114 +423,155 @@ class Inventory:
         digest = hashlib.sha256(data).hexdigest()
         if digest in self.fingerprints:
             entry = self.fingerprints[digest]
-            fixed = entry["state"] == "fixed"
             self.findings.append(
                 finding(
                     label,
                     "exact_source_match",
-                    "fixed_source" if fixed else "vulnerable_source",
-                    (
-                        "Bytes match a reviewed decoder file; surrounding tree/build and "
-                        "runtime remain unverified."
-                    ),
+                    "fixed_source" if entry["state"] == "fixed" else "vulnerable_source",
+                    "Bytes match a reviewed decoder file; surrounding tree/build "
+                    "and runtime remain unverified.",
                     sha256=digest,
                     git_blob=entry["git_blob"],
                     sources=entry["sources"],
                 )
             )
             return
-        name = label.rsplit("!", 1)[-1].replace("\\", "/").rsplit("/", 1)[-1].lower()
-        suffix = Path(name).suffix
+        kind = archive_kind(data, label)
+        if kind is not None:
+            self._inspect_container(data, label, depth, kind)
+            return
+        name = leaf_name(label)
         text = data.decode("utf-8", errors="replace") if b"\0" not in data else ""
-        if text and suffix in SOURCE_SUFFIXES and "DecodeBlockTypeAndLength" in text:
-            code = COMMENTS.sub("", text)
-            if "ProcessCommandsInternal" in code and "BrotliDecoderDecompressStream" in code:
-                old = len(OLD_CALL.findall(code))
-                new = len(NEW_CALL.findall(code))
-                bad_guard = bool(BAD_GUARD.search(code))
-                potential = bool(old and bad_guard)
-                self.findings.append(
-                    finding(
-                        label,
-                        "modified_decoder_source",
-                        "potentially_vulnerable" if potential else "unknown",
-                        (
-                            "Old block-switch error handling detected; review the source against "
-                            "the fix."
-                        )
-                        if potential
-                        else (
-                            "Unrecognized decoder source; fix markers alone do not validate a "
-                            "backport."
-                        ),
-                        sha256=digest,
-                        old_switch_calls=old,
-                        status_switch_calls=new,
-                        false_on_invalid_switch=bad_guard,
-                        format_error_marker="BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH" in code,
-                    )
-                )
-                return
+        if self._inspect_source(text, label, digest):
+            return
+        self._inspect_fetch(text, label)
         if text and (
             name in MANIFEST_NAMES or name.endswith((".cmake", ".spdx.json", ".cdx.json"))
         ):
-            lines = [
-                {"line": i, "text": line[:300]}
-                for i, line in enumerate(text.splitlines(), 1)
-                if DEPENDENCY.search(line)
-            ]
-            if lines:
-                self.findings.append(
-                    finding(
-                        label,
-                        "dependency_candidate",
-                        "unknown",
-                        (
-                            "Declaration or metadata only; resolve the selected implementation "
-                            "and embedded version."
-                        ),
-                        matches=lines[:20],
-                        matching_lines=len(lines),
-                    )
-                )
-        elif any(
-            symbol in data
-            for symbol in (
-                b"BrotliDecoderDecompress",
-                b"BrotliDecoderCreateInstance",
-                b"DecoderJNI",
+            self._inspect_manifest(text, label)
+        elif not python_bytecode(data, name):
+            self._inspect_symbols(data, text, label, digest)
+
+    def _inspect_source(self, text: str, label: str, digest: str) -> bool:
+        if not text or Path(leaf_name(label)).suffix not in SOURCE_SUFFIXES:
+            return False
+        code = COMMENTS.sub("", text)
+        if not all(
+            marker in code
+            for marker in (
+                "DecodeBlockTypeAndLength",
+                "ProcessCommandsInternal",
+                "BrotliDecoderDecompressStream",
             )
         ):
-            if not text or suffix in NATIVE_SUFFIXES or ".so." in name:
-                self.findings.append(
-                    finding(
-                        label,
-                        "decoder_symbol_candidate",
-                        "unknown",
-                        (
-                            "Decoder symbol/string may identify imports, exports, or embedded "
-                            "code; patch status unknown."
-                        ),
-                        sha256=digest,
-                    )
-                )
-        archive = suffix in ZIP_SUFFIXES or name.endswith(
-            (".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2")
+            return False
+        old = len(OLD_CALL.findall(code))
+        new = len(NEW_CALL.findall(code))
+        bad_guard = bool(BAD_GUARD.search(code))
+        potential = bool(old and bad_guard)
+        self.findings.append(
+            finding(
+                label,
+                "modified_decoder_source",
+                "potentially_vulnerable" if potential else "unknown",
+                "Old block-switch error handling detected; review the source against the fix."
+                if potential
+                else "Unrecognized decoder source; fix markers alone do not validate a backport.",
+                sha256=digest,
+                old_switch_calls=old,
+                status_switch_calls=new,
+                false_on_invalid_switch=bad_guard,
+                format_error_marker="BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH" in code,
+            )
         )
-        if not archive:
-            return
-        if depth >= self.archive_depth:
-            self.gap(label, "Archive nesting limit reached; members not inspected.")
-            return
-        self.inspect_archive(data, label, depth)
+        return True
 
-    def inspect_archive(self, data: bytes, label: str, depth: int) -> None:
-        self.archives_opened += 1
+    def _inspect_fetch(self, text: str, label: str) -> None:
+        if not text or Path(leaf_name(label)).suffix not in JS_SUFFIXES:
+            return
+        matches, truncated = fetch_references(text)
+        if matches:
+            self.findings.append(
+                finding(
+                    label,
+                    "node_fetch_candidate",
+                    "unknown",
+                    "Fetch/Undici source reference; execution runtime, fetch binding, "
+                    "Node patch status, and attacker control of responses remain unverified.",
+                    matches=matches,
+                    matches_truncated=truncated,
+                    detection="javascript_typescript_reference_heuristic",
+                    required_checks=[
+                        "Identify the fetch implementation and executing Node.js build.",
+                        "Verify that runtime's security fix or vendor backport.",
+                        "Trace URL inputs, redirects, and who controls response bytes.",
+                    ],
+                )
+            )
+
+    def _inspect_manifest(self, text: str, label: str) -> None:
+        matches = dependency_matches(text, leaf_name(label))
+        if matches:
+            self.findings.append(
+                finding(
+                    label,
+                    "dependency_candidate",
+                    "unknown",
+                    "Declaration or metadata only; resolve the selected implementation "
+                    "and embedded version.",
+                    matches=matches[:20],
+                    matching_lines=len(matches),
+                    possible_node_http_client=any(UNDICI.search(row["text"]) for row in matches),
+                )
+            )
+
+    def _inspect_symbols(self, data: bytes, text: str, label: str, digest: str) -> None:
+        name = leaf_name(label)
+        if text and Path(name).suffix not in NATIVE_SUFFIXES and ".so." not in name:
+            return
+        if any(symbol in data for symbol in DECODER_SYMBOLS):
+            self.findings.append(
+                finding(
+                    label,
+                    "decoder_symbol_candidate",
+                    "unknown",
+                    "Decoder symbol/string may identify imports, exports, or embedded code; "
+                    "patch status unknown.",
+                    sha256=digest,
+                )
+            )
+
+    def _inspect_container(self, data: bytes, label: str, depth: int, kind: str) -> None:
+        previous_gaps = self.gap_count
+        if kind == "unsupported":
+            self.gap(label, "Unsupported archive or compression format; provide unpacked files.")
+        elif depth >= self.archive_depth:
+            self.gap(label, "Archive nesting limit reached; members not inspected.")
+        else:
+            self.inspect_archive(data, label, depth, kind)
+        if self.gap_count > previous_gaps and any(symbol in data for symbol in DECODER_SYMBOLS):
+            self.findings.append(
+                finding(
+                    label,
+                    "container_symbol_candidate",
+                    "unknown",
+                    "Decoder marker in container bytes with incomplete member coverage; "
+                    "it may come from a member already reported, not an independent decoder copy.",
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    evidence_scope="container",
+                    member_coverage="incomplete",
+                )
+            )
+
+    def inspect_archive(self, data: bytes, label: str, depth: int, kind: str) -> None:
+        self.archives_attempted += 1
         try:
-            if Path(label).suffix.lower() in ZIP_SUFFIXES:
+            if kind == "zip":
                 self._inspect_zip(data, label, depth)
-            else:
+            elif kind == "tar":
                 self._inspect_tar(data, label, depth)
+            else:
+                self._inspect_compressed(data, label, depth, kind)
         except (
             OSError,
             EOFError,
@@ -330,6 +585,7 @@ class Inventory:
 
     def _inspect_zip(self, data: bytes, label: str, depth: int) -> None:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            self.archives_opened += 1
             for info in archive.infolist():
                 if info.is_dir():
                     continue
@@ -354,30 +610,43 @@ class Inventory:
                 ) as error:
                     self.gap(member, f"Cannot inspect archive member: {error}")
 
-    def _expand_tar(self, data: bytes, label: str) -> bytes | None:
-        name = label.lower()
-        if name.endswith((".tar.gz", ".tgz")):
-            open_compressed = gzip.open
-        elif name.endswith((".tar.xz", ".txz")):
-            open_compressed = lzma.open
-        elif name.endswith(".tar.bz2"):
-            open_compressed = bz2.open
-        else:
-            return data
+    def _expand_compressed(self, data: bytes, label: str, kind: str) -> bytes | None:
+        open_compressed = {"gzip": gzip.open, "bzip2": bz2.open, "xz": lzma.open}[kind]
         remaining = min(self.max_file_bytes, self.max_total_bytes - self.bytes_read)
         with open_compressed(io.BytesIO(data), "rb") as stream:
             expanded = stream.read(remaining + 1)
+        self.archives_opened += 1
         self.bytes_read += len(expanded)
         if len(expanded) > remaining:
-            self.gap(label, "Expanded TAR exceeds size or remaining total-byte limit.")
+            self.gap(label, "Expanded content exceeds size or remaining total-byte limit.")
             return None
         return expanded
 
-    def _inspect_tar(self, data: bytes, label: str, depth: int) -> None:
-        expanded = self._expand_tar(data, label)
+    def _inspect_compressed(self, data: bytes, label: str, depth: int, kind: str) -> None:
+        expanded = self._expand_compressed(data, label, kind)
         if expanded is None:
             return
-        with tarfile.open(fileobj=io.BytesIO(expanded), mode="r|") as archive:
+        name = leaf_name(label)
+        if tar_content(expanded) or name.endswith(
+            (
+                ".tar.gz",
+                ".tar.bz2",
+                ".tar.xz",
+                ".tgz",
+                ".txz",
+                ".tbz",
+                ".tbz2",
+            )
+        ):
+            self._inspect_tar(expanded, label, depth, count_open=False)
+        else:
+            member = f"{label}!{Path(name).stem or 'decompressed'}"
+            self.read(io.BytesIO(expanded), len(expanded), member, depth + 1)
+
+    def _inspect_tar(self, data: bytes, label: str, depth: int, *, count_open: bool = True) -> None:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r|") as archive:
+            if count_open:
+                self.archives_opened += 1
             for info in archive:
                 if info.isdir():
                     continue
@@ -397,8 +666,11 @@ class Inventory:
         label = str(path)
         try:
             metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                self._record_symlink(path)
+                return
             if not stat.S_ISREG(metadata.st_mode):
-                self.gap(label, "Symlink or nonregular file not followed.")
+                self.gap(label, "Nonregular file not read.")
                 return
             descriptor = os.open(
                 path,
@@ -410,10 +682,46 @@ class Inventory:
                     self.gap(label, "Nonregular file not read.")
                     return
                 self.read(stream, metadata.st_size, label, 0)
+                self.checked_paths.add(path.resolve())
         except OSError as error:
             self.gap(label, f"Cannot read file: {error}")
 
     def scan_root(self, root: Path) -> None:
+        self.scan_roots([root])
+
+    def scan_roots(self, roots: list[Path]) -> None:
+        try:
+            for root in roots:
+                if self.exhausted():
+                    self.gap(str(root), "Budget exhausted; root not inspected.")
+                else:
+                    self._scan_root(root)
+        finally:
+            self._check_symlinks()
+
+    def _record_symlink(self, path: Path) -> None:
+        self.files_seen += 1
+        if self.files_seen > self.max_files:
+            self.gap(str(path), "File count limit reached; symlink target not checked.")
+        else:
+            self.pending_symlinks.append(path)
+
+    def _check_symlinks(self) -> None:
+        for path in self.pending_symlinks:
+            try:
+                target = path.resolve(strict=True)
+            except (OSError, RuntimeError):
+                target = None
+            if target in self.checked_paths:
+                self.covered_symlinks += 1
+            else:
+                self.gap(
+                    str(path),
+                    "Symlink target was not checked directly; scan the real target separately.",
+                )
+        self.pending_symlinks.clear()
+
+    def _scan_root(self, root: Path) -> None:
         if root.is_symlink() or not root.is_dir():
             self.scan_file(root)
             return
@@ -428,6 +736,7 @@ class Inventory:
                     "Budget exhausted; remaining filesystem paths not inspected.",
                 )
                 break
+            self.checked_paths.add(Path(directory).resolve())
             dirs[:] = self._filter_directories(Path(directory), dirs)
             for name in sorted(files):
                 if name == ".git":
@@ -447,7 +756,7 @@ class Inventory:
             if name == ".git":
                 continue
             if path.is_symlink():
-                self.gap(str(path), "Directory symlink not followed.")
+                self._record_symlink(path)
             else:
                 kept.append(name)
         return kept
@@ -509,19 +818,133 @@ def explain_finding(item: dict) -> dict:
                 "additional Brotli copies bundled inside it."
             ),
         }
+    return (
+        end_of_life_advice()
+        if item["evidence"].get("support_status") == "end_of_life"
+        else explain_lead(item)
+    )
+
+
+def end_of_life_advice() -> dict:
     return {
-        "result": "More information needed",
+        "result": "This Node.js release is end of life",
         "next_action": (
-            "Share this finding with the app's maintainer or hosting provider. "
-            "Ask them to identify the Brotli copy inside this component and "
-            "confirm whether it includes the fix."
+            "Upgrade to a supported Node.js branch: 22.23.4, 24.22.1, or 26.12.1 "
+            "or a later fixed release on that branch. Confirm the running app uses "
+            "the new build. This version alone does not identify its embedded Brotli."
         ),
     }
 
 
-def summarize(report: dict) -> dict:
-    findings = report["findings"]
-    statuses = {item["patch_status"] for item in findings}
+def fetch_related(item: dict) -> bool:
+    return item["kind"] == "node_fetch_candidate" or item["evidence"].get(
+        "possible_node_http_client", False
+    )
+
+
+def fetch_advice() -> dict:
+    return {
+        "result": "Possible Node.js fetch response-decoding path",
+        "next_action": (
+            "Confirm whether this uses Node's built-in fetch or Undici, a browser, or a "
+            "custom implementation. Identify the running app's Node.js build and check it "
+            "with --node-version and vendor patch records. Trace URL inputs and redirects "
+            "to establish who can supply response bytes. Node's built-in fetch and Undici's "
+            "fetch can decode Brotli responses through node:zlib without a Brotli package "
+            "declaration. "
+            "Update the actual Node.js runtime if affected; adding a Brotli npm package "
+            "does not patch that runtime. Review any other dependencies listed in this file."
+        ),
+    }
+
+
+def explain_lead(item: dict) -> dict:
+    if fetch_related(item):
+        return fetch_advice()
+    if item["kind"] == "supplied_version":
+        return {
+            "result": "Supplied version needs verification",
+            "next_action": (
+                f"{item['reason']} Obtain the running app's exact component build and vendor "
+                "security-patch records. A vendor suffix or prerelease cannot be assessed "
+                "as an upstream stable release."
+            ),
+        }
+    advice = {
+        "dependency_candidate": (
+            "Dependency or metadata mention",
+            (
+                "Check the matching declaration to see whether it selects a Brotli decoder. "
+                "Descriptions and package names alone do not establish an installed decoder. "
+                "If selected, identify its implementation and the build used by the running app."
+            ),
+        ),
+        "decoder_symbol_candidate": (
+            "Possible decoder in a binary",
+            (
+                "Have the maintainer identify the library that provides this decoder symbol "
+                "and its patch status, using build records or binary analysis. Confirm whether "
+                "the running app loads or embeds it."
+            ),
+        ),
+        "container_symbol_candidate": (
+            "Decoder marker in an incompletely checked container",
+            (
+                "Resolve this container's scan gaps or inspect its unpacked contents. "
+                "The marker may belong to members already listed; do not count the container "
+                "as another decoder copy. Identify the decoder and patch status in its members."
+            ),
+        ),
+        "artifact_name_candidate": (
+            "Possible Brotli component by filename",
+            (
+                "Check this package or library's contents and build records to identify its "
+                "decoder and patch status. The filename alone does not establish its version."
+            ),
+        ),
+        "modified_decoder_source": (
+            "Modified decoder source needs review",
+            (
+                "Compare this source and its surrounding headers against the upstream fix. "
+                "Fix markers alone do not validate a backport. Confirm whether the app builds it."
+            ),
+        ),
+    }
+    result, action = advice.get(
+        item["kind"],
+        (
+            "More information needed",
+            (
+                "Ask the maintainer to identify the decoder used by this component "
+                "and its patch status."
+            ),
+        ),
+    )
+    return {
+        "result": result,
+        "next_action": action,
+    }
+
+
+def end_of_life_summary() -> dict:
+    return {
+        "status": "needs_attention",
+        "title": "The supplied Node.js release is end of life",
+        "meaning": (
+            "This Node.js branch no longer receives upstream security fixes. Its version "
+            "alone does not establish the patch status of the embedded Brotli decoder."
+        ),
+        "next_steps": [
+            (
+                "Upgrade to Node.js 22.23.4, 24.22.1, or 26.12.1 or a later fixed release "
+                "on that branch, and confirm the running app uses it."
+            ),
+            "Resolve any unchecked files and review any other Brotli copies listed below.",
+        ],
+    }
+
+
+def attention_summary(statuses: set[str]) -> dict:
     if "vulnerable_source" in statuses:
         return {
             "status": "needs_attention",
@@ -560,6 +983,40 @@ def summarize(report: dict) -> dict:
                 "Confirm the running app uses the fixed copy after the update.",
             ],
         }
+    return {}
+
+
+def fetch_summary() -> dict:
+    return {
+        "status": "needs_more_information",
+        "title": "Check the runtime used for fetch responses",
+        "meaning": (
+            "Fetch or Undici references were found. If they run through Node.js, Brotli "
+            "responses can reach the runtime's native decoder. These references alone "
+            "do not identify the runtime, its patch status, or who controls responses."
+        ),
+        "next_steps": [
+            (
+                "Identify the actual fetch implementation and running Node.js build. "
+                "Supply that build's version with --node-version and check vendor patch records."
+            ),
+            "Trace URL inputs and redirects to determine who can supply response bytes.",
+            (
+                "If affected, update and redeploy the Node.js runtime, then confirm the "
+                "app uses it. A fixed standalone Brotli package does not clear this path."
+            ),
+        ],
+    }
+
+
+def summarize(report: dict) -> dict:
+    findings = report["findings"]
+    statuses = {item["patch_status"] for item in findings}
+    attention = attention_summary(statuses)
+    if attention:
+        return attention
+    if any(item["evidence"].get("support_status") == "end_of_life" for item in findings):
+        return end_of_life_summary()
     if report["coverage"]["gap_count"]:
         return {
             "status": "needs_more_information",
@@ -570,9 +1027,12 @@ def summarize(report: dict) -> dict:
             ),
             "next_steps": [
                 (
-                    "Share the skipped-file list with the app's maintainer and ask them "
-                    "to check those files or provide the app package for inspection."
-                )
+                    "For byte, file-count, or depth limits, rerun a smaller relevant folder "
+                    "or raise the named limit shown in --help."
+                ),
+                "For unsupported packages, provide unpacked files and scan them again.",
+                "For symlinks, scan the real target separately if it was not checked directly.",
+                "Ask the app's maintainer for any files or build records you cannot obtain.",
             ],
         }
     if findings and statuses <= GOOD:
@@ -589,6 +1049,8 @@ def summarize(report: dict) -> dict:
                 "Check any additional copies bundled inside the app or its packages.",
             ],
         }
+    if any(fetch_related(item) for item in findings):
+        return fetch_summary()
     return {
         "status": "needs_more_information",
         "title": "More information needed",
@@ -608,6 +1070,77 @@ def summarize(report: dict) -> dict:
     }
 
 
+def display_copies(findings: list[dict]) -> list[dict]:
+    # Merge evidence about the same file for display; full evidence stays in JSON.
+    priorities = {
+        "vulnerable_source": 0,
+        "potentially_vulnerable": 1,
+        "unknown": 2,
+        "fixed_source": 3,
+        "upstream_fixed_version": 3,
+    }
+    copies = {}
+    for item in findings:
+        previous = copies.get(item["path"])
+        if (
+            previous is None
+            or priorities[item["patch_status"]] < priorities[previous["patch_status"]]
+        ):
+            copies[item["path"]] = item
+    return sorted(copies.values(), key=lambda item: priorities[item["patch_status"]])
+
+
+def display_location(item: dict) -> str:
+    if item["kind"] == "supplied_version" and "supplied_version" in item["evidence"]:
+        evidence = item["evidence"]
+        component = "Node.js" if evidence["component"] == "node" else "Brotli"
+        return safe_text(f"{component} {evidence['supplied_version']} (version supplied)")
+    return safe_text(item["path"])
+
+
+def render_copies(findings: list[dict], *, containers: bool = False) -> list[str]:
+    ordered = display_copies(
+        [item for item in findings if (item["kind"] == "container_symbol_candidate") == containers]
+    )
+    if not ordered:
+        return []
+    lines = ["", "Containers needing inspection:" if containers else "Files and versions checked:"]
+    for item in ordered[:MAX_DISPLAY_COPIES]:
+        explanation = explain_finding(item)
+        lines.extend(
+            [
+                f"- {explanation['result']}: {display_location(item)}",
+                f"  Next: {explanation['next_action']}",
+            ]
+        )
+    if len(ordered) > MAX_DISPLAY_COPIES:
+        lines.append(
+            f"- {len(ordered) - MAX_DISPLAY_COPIES} more items are included "
+            "in the full report (--json)."
+        )
+    return lines
+
+
+def render_gaps(coverage: dict) -> list[str]:
+    gaps = coverage["gaps"]
+    if not gaps:
+        return []
+    lines = ["", "Could not check:"]
+    lines.extend(
+        f"- {safe_text(gap['path'])}: {safe_text(gap['reason'])}" for gap in gaps[:MAX_DISPLAY_GAPS]
+    )
+    remaining = len(gaps) - min(MAX_DISPLAY_GAPS, len(gaps))
+    if remaining:
+        lines.append(f"- {remaining} more recorded gap details are available with --json.")
+    omitted = coverage["gap_count"] - len(gaps)
+    if omitted:
+        lines.append(
+            f"- {omitted} additional gaps have no retained details "
+            f"({MAX_RECORDED_GAPS}-record limit). Rerun a smaller scope to inspect them."
+        )
+    return lines
+
+
 def render_text(report: dict) -> str:
     summary = report["user_summary"]
     lines = [
@@ -618,50 +1151,9 @@ def render_text(report: dict) -> str:
         "What to do next:",
     ]
     lines.extend(f"- {step}" for step in summary["next_steps"])
-    # Merge evidence about the same file for display; full evidence stays in JSON.
-    priorities = {
-        "vulnerable_source": 0,
-        "potentially_vulnerable": 1,
-        "unknown": 2,
-        "fixed_source": 3,
-        "upstream_fixed_version": 3,
-    }
-    copies = {}
-    for item in report["findings"]:
-        previous = copies.get(item["path"])
-        if (
-            previous is None
-            or priorities[item["patch_status"]] < priorities[previous["patch_status"]]
-        ):
-            copies[item["path"]] = item
-    if copies:
-        lines.extend(["", "Files and versions checked:"])
-        ordered = sorted(copies.values(), key=lambda item: priorities[item["patch_status"]])
-        for item in ordered[:MAX_DISPLAY_COPIES]:
-            explanation = explain_finding(item)
-            location = item["path"]
-            if item["kind"] == "supplied_version" and "supplied_version" in item["evidence"]:
-                evidence = item["evidence"]
-                component = "Node.js" if evidence["component"] == "node" else "Brotli"
-                location = f"{component} {evidence['supplied_version']} (version supplied)"
-            lines.extend(
-                [
-                    f"- {explanation['result']}: {location}",
-                    f"  Next: {explanation['next_action']}",
-                ]
-            )
-        if len(ordered) > MAX_DISPLAY_COPIES:
-            lines.append(
-                f"- {len(ordered) - MAX_DISPLAY_COPIES} more items are included "
-                "in the full report (--json)."
-            )
-    gaps = report["coverage"]["gaps"]
-    if gaps:
-        lines.extend(["", "Could not check:"])
-        lines.extend(f"- {gap['path']}: {gap['reason']}" for gap in gaps[:MAX_DISPLAY_GAPS])
-        remaining = report["coverage"]["gap_count"] - min(MAX_DISPLAY_GAPS, len(gaps))
-        if remaining:
-            lines.append(f"- {remaining} more gaps are included in the full report (--json).")
+    lines.extend(render_copies(report["findings"]))
+    lines.extend(render_copies(report["findings"], containers=True))
+    lines.extend(render_gaps(report["coverage"]))
     lines.extend(
         [
             "",
@@ -675,9 +1167,10 @@ def render_text(report: dict) -> str:
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Check local files for Brotli copies that may need a security update."
+        description="Check local files for Brotli copies that may need a security update.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "roots",
@@ -690,13 +1183,48 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="show full technical evidence for maintainers and automation",
     )
-    parser.add_argument("--brotli-version", action="append", default=[])
-    parser.add_argument("--node-version", action="append", default=[])
-    parser.add_argument("--max-file-bytes", type=positive, default=16 * 1024 * 1024)
-    parser.add_argument("--max-total-bytes", type=positive, default=256 * 1024 * 1024)
-    parser.add_argument("--max-files", type=positive, default=50000)
-    parser.add_argument("--archive-depth", type=int, choices=range(6), default=2)
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--brotli-version",
+        action="append",
+        default=[],
+        help="upstream Brotli version obtained separately; repeat for multiple copies",
+    )
+    parser.add_argument(
+        "--node-version",
+        action="append",
+        default=[],
+        help="upstream Node.js version obtained separately; repeat for multiple copies",
+    )
+    parser.add_argument(
+        "--max-file-bytes",
+        type=positive,
+        default=16 * 1024 * 1024,
+        help="maximum bytes per file, archive member, or decompressed stream (16 MiB)",
+    )
+    parser.add_argument(
+        "--max-total-bytes",
+        type=positive,
+        default=256 * 1024 * 1024,
+        help="total read budget including archives, expansion, and members (256 MiB)",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=positive,
+        default=50000,
+        help="maximum filesystem files, symlinks, and archive members checked",
+    )
+    parser.add_argument(
+        "--archive-depth",
+        type=int,
+        choices=range(6),
+        default=2,
+        help="maximum nested containers opened; 0 disables archive traversal",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     roots = args.roots or ([] if args.brotli_version or args.node_version else [Path.cwd()])
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     inventory = Inventory(
@@ -706,11 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
         args.max_files,
         args.archive_depth,
     )
-    for root in roots:
-        if inventory.exhausted():
-            inventory.gap(str(root), "Budget exhausted; root not inspected.")
-        else:
-            inventory.scan_root(root.expanduser().absolute())
+    inventory.scan_roots([root.expanduser().absolute() for root in roots])
     for component, versions in (
         ("brotli", args.brotli_version),
         ("node", args.node_version),
@@ -723,7 +1247,23 @@ def main(argv: list[str] | None = None) -> int:
         result, code = "review_required", 3
     else:
         result, code = "reported_items_meet_fix_rules", 0
-    report = {
+    report = make_report(inventory, roots, args, registry, result)
+    report["user_summary"] = summarize(report)
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=True))
+    else:
+        print(render_text(report))
+    return code
+
+
+def make_report(
+    inventory: Inventory,
+    roots: list[Path],
+    args: argparse.Namespace,
+    registry: dict,
+    result: str,
+) -> dict:
+    return {
         "schema_version": 1,
         "cve": "CVE-2026-111497",
         "result": result,
@@ -735,11 +1275,15 @@ def main(argv: list[str] | None = None) -> int:
             "files_seen": inventory.files_seen,
             "files_read": inventory.files_read,
             "bytes_read": inventory.bytes_read,
+            "archives_attempted": inventory.archives_attempted,
             "archives_opened": inventory.archives_opened,
             "gap_count": inventory.gap_count,
+            "gap_details_retained": len(inventory.gaps),
+            "gap_details_omitted": inventory.gap_count - len(inventory.gaps),
             "gaps": inventory.gaps,
             "excluded": [".git"],
             "symlinks_followed": False,
+            "symlink_targets_checked_directly": inventory.covered_symlinks,
             "limits": {
                 key: getattr(args, key)
                 for key in (
@@ -751,6 +1295,8 @@ def main(argv: list[str] | None = None) -> int:
             },
             "limitations": [
                 "No absence-of-Brotli guarantee.",
+                "Unrecognized or signature-free container/compression formats can be missed.",
+                "Container layers are inspected without reconstructing the final image filesystem.",
                 (
                     "Static/stripped binaries, encrypted archives, remote build inputs, "
                     "and unprovided artifacts require review."
@@ -762,12 +1308,6 @@ def main(argv: list[str] | None = None) -> int:
             ],
         },
     }
-    report["user_summary"] = summarize(report)
-    if args.json:
-        print(json.dumps(report, indent=2, ensure_ascii=True))
-    else:
-        print(render_text(report))
-    return code
 
 
 if __name__ == "__main__":
