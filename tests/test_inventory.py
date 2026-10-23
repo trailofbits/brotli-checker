@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts/brotli_inventory.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("inventory", SCRIPT)
 if spec is None or spec.loader is None:
     message = f"Cannot load the inventory helper at {SCRIPT}"

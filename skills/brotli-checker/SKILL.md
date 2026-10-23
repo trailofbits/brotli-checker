@@ -45,9 +45,11 @@ python3 scripts/brotli_inventory.py /absolute/target --json
 It reads files and bounded ZIP/JAR/WAR/wheel and TAR archives without extracting
 them or executing target code. It checks all eligible file bytes against source
 fingerprints, identifies modified C decoder patterns, and records dependency
-and native/Wasm candidates. Dependencies, build outputs, and hidden directories
+and native/Wasm candidates. For ELF64 x86-64/AArch64 it also matches complete
+compiled decoder text against the packaged reference corpus, including stripped
+and statically linked code. Dependencies, build outputs, and hidden directories
 are included; `.git` is excluded. Read its coverage gaps. It does not scan an
-entire host, resolve remote dependencies, follow symlinks, prove binary patch
+entire host, resolve remote dependencies, follow symlinks, prove whole-application patch
 status, or establish an absence of Brotli. Supply extracted image filesystems
 or additional artifact roots as needed.
 
@@ -65,6 +67,27 @@ outside the snapshot's rules remain unknown. Exit 1 means affected-source or
 version evidence; 3 means review/unknown; 0 means only the reported items meet
 a known source fingerprint or upstream fixed-version rule; 2 means CLI error.
 The helper never certifies the application safe.
+
+For ELF code findings, inspect `evidence.code_matches`: source/object hashes,
+compiler/flags, state, and file offset. `vulnerable_code_match` and
+`mixed_code_matches` warrant update review (exit 1). `fixed_code_match` concerns
+only matched decoder code, leaves other copies unresolved, and does not by itself
+produce exit 0. Version strings/imports do not determine code state. Matching
+excludes relocated address fields and does not verify their targets or referenced
+data. Packaged references cover AArch64 GCC 16.2.1 `-O2` PIC/non-PIC builds of the
+three affected/fixed release pairs; other compilers/options and x86-64 require
+corresponding trusted references via `--code-references`. No match remains unknown.
+Do not present this as compiler-independent semantic or CFG patch verification.
+
+For artifact hashes and rollout inventory, optionally use:
+
+```sh
+python3 scripts/brotli_binary_inventory.py /absolute/target
+```
+
+Its exit codes differ: 1 means inventory candidates (including fixed matches),
+3 means coverage gaps, and 0 means no candidates/gaps, not that an app is safe.
+
 
 ## Establish patch status and reachability
 

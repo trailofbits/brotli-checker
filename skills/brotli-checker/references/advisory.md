@@ -70,7 +70,10 @@ of absence. Do not use a changing repository count as a deployment count.
   partial backports, macros, amalgamations, and alternate fixes need review.
 - Library names, decoder strings, imports/exports, and manifest dependencies
   establish candidates, not vulnerable implementation identity. Static, stripped,
-  or renamed binaries can evade these clues. The helper does not disassemble,
+  or renamed binaries can evade these clues. Compiled ELF decoder references can
+  identify matching executable code without symbols, but only within the
+  documented architecture/compiler corpus. Relocation targets/data and other
+  copies remain unverified; unmatched code is unknown. The helper does not disassemble,
   load libraries, invoke interpreters, or execute target tools.
 - ZIP-family archives and TAR variants are bounded by file, total-read,
   nesting, and count limits. Unsupported/encrypted content, unreadable files,

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = ROOT / "skills/brotli-checker/scripts/brotli_inventory.py"
+sys.path.insert(0, str(CHECKER_PATH.parent))
 BLOCK_SWITCH_CALLS = 3
 
 
