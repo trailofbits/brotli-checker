@@ -1,8 +1,9 @@
 # Scanner guide
 
-Run these commands from the repository root with Python 3.12–3.15. The scanners
-use only the standard library. Keep the skill's scripts and reference catalogs
-together when copying them elsewhere.
+Run these commands from the repository root with Python 3.12–3.15. The inventory
+scanners use only the standard library; source discovery uses Trailmark through
+uv. Keep the skill's scripts and reference catalogs together when copying them
+elsewhere.
 
 ## Scan files and supplied versions
 
@@ -94,6 +95,41 @@ JSON records applied limits and total, retained, and omitted gap-detail counts.
 At most 200 gap details are retained; omitted paths cannot be recovered by
 switching output formats. `archives_attempted` counts inspection attempts;
 `archives_opened` counts successful opens, even if later member reads fail.
+
+## Discover source callers with Trailmark
+
+After inventory identifies relevant source, collect a call neighborhood for
+decoder and fetch APIs:
+
+```sh
+uv run --script skills/brotli-checker/scripts/brotli_source_discovery.py \
+  /path/to/source > discovery.json
+```
+
+The script pins Trailmark 0.7.0. First use may download its dependencies and
+parser grammars. It parses source without importing or executing the target.
+Choose a relevant source subtree: limits bound caller traversal and output,
+not initial parsing. Keep output outside the inspected tree.
+
+JSON includes candidate callsites, caller nodes and edges, entrypoint tags,
+resolution/confidence, parser diagnostics, and truncation. Follow these locations
+in source to review bindings, input ownership, and build selection. This report
+does not change the inventory's patch verdict or establish runtime reachability.
+Repository-configured links and entrypoints are declarations to verify.
+
+For a source-reviewed alias or wrapper, add `--symbol download` (repeatable).
+This searches its exact name without claiming it resolves to fetch or Brotli.
+Use `--language c` or `--language javascript,typescript` to narrow parsing.
+Defaults retain up to 32 candidates, 128 caller nodes, 256 call edges, six caller
+levels, and 100 parser diagnostics; see `--help` to adjust these limits.
+
+Exit 0 means collection completed, 3 means incomplete evidence, and 2 means
+invalid arguments. Neither a successful exit nor an empty neighborhood establishes
+that a decoder is fixed or unreachable. Trailmark excludes dependency, build,
+and hidden directories and can omit top-level JavaScript calls; keep the broader
+inventory and manual review. See the
+[source review workflow](../skills/brotli-checker/references/reachability.md#trailmark-source-discovery)
+for known gaps and how to interpret graph evidence.
 
 ## Compiled decoder evidence
 

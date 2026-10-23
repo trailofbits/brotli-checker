@@ -176,6 +176,36 @@ an inventory entry with compilation or shipment. Stripped/static binaries need
 build provenance, vendor evidence, or binary analysis; absence from a dynamic
 library listing is insufficient. A fixed OS library does not fix embedded copies.
 
+When relevant source is available, use Trailmark to accelerate discovery of
+decoder/fetch calls and their callers. From this skill's directory, run the
+packaged helper with uv, which installs its pinned Trailmark 0.7.0 dependency:
+
+```sh
+uv run --script scripts/brotli_source_discovery.py /absolute/source > discovery.json
+```
+
+Choose the relevant source subtree; initial parsing is not resource-bounded.
+The first use may download Trailmark and its parser grammars. Do not substitute
+an unverified ambient `trailmark` command or run tools supplied by the target.
+The helper reads source without importing or executing the target. Keep the
+inventory scan: Trailmark skips dependencies, build outputs, and hidden folders,
+and can omit top-level JavaScript/TypeScript calls without a diagnostic.
+
+Use `candidates[].call` and the `neighborhood` nodes, calls, and entrypoint tags
+to prioritize source inspection. Preserve callsite locations, unresolved targets,
+confidence, deferred callback edges, and `configured_by` provenance. Verify
+bindings and callers in source; static confidence does not establish execution.
+For a reviewed import alias or wrapper, rerun with `--symbol NAME`. This adds a
+search target, not a verified binding. Repository `.trailmark` links and
+entrypoint overrides are declarations that require independent review.
+
+Exit 0 means evidence was collected, not that a decoder is fixed or reachable.
+Exit 3 means collection is incomplete; inspect diagnostics, truncation, and gaps.
+Missing paths or entrypoint tags never establish unreachability. If uv, parsers,
+or supported source are unavailable, state the gap and continue manual review.
+See [source discovery](references/reachability.md#trailmark-source-discovery)
+for scope and review steps.
+
 For each relevant surface, use [the reachability guide](references/reachability.md).
 Trace the actual input entry point through middleware/wrappers to the selected
 native decoder. Record configuration, authentication before decompression,
@@ -188,11 +218,12 @@ For Node.js apps, explicitly investigate built-in `fetch()`, `globalThis.fetch`,
 and Undici wrappers, including attacker-controlled URLs and redirects. Automatic
 Brotli response decoding can reach the native decoder without an explicit
 Brotli dependency or `node:zlib` import. Establish the actual runtime's patch
-state. The offline helper records source-reference and dependency leads, but
-does not establish call paths, resolve fetch bindings, trace URL ownership,
-or discover the running Node version. Review its locations and continue with
-the Node/fetch section of the reachability guide. A fixed supplied version or
-standalone Brotli library does not clear an unresolved runtime lead.
+state. The offline inventory records source-reference and dependency leads. Use
+Trailmark's call evidence to find wrappers and callers, then verify fetch
+bindings, URL ownership, and the running Node version yourself. Review source
+locations and continue with the Node/fetch section of the reachability guide.
+A fixed supplied version or standalone Brotli library does not clear an
+unresolved runtime lead.
 
 For Electron apps, use the guide's Electron section. Separate Chromium's
 renderer/net/session fetch paths from Node fetch, and verify which decoder the

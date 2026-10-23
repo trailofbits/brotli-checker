@@ -1,8 +1,8 @@
 # Contributing
 
 Use Python 3.12–3.15 and [uv](https://docs.astral.sh/uv/) 0.13.5 or later. The
-scanner itself uses only the standard library. Development, security, and mutation
-tools are separate locked dependency groups.
+scanner itself uses only the standard library; source discovery uses pinned
+Trailmark. Development, security, and mutation tools are separate locked groups.
 
 ## Checks
 
@@ -26,7 +26,7 @@ access.
 `make mutations` uses pytest-gremlins with isolated subprocesses, fresh results,
 and all default mutation operators. The gate requires at least an 80% score,
 results from every scanner module, and no errors or skipped files. Only the
-three standalone CLI bootstrap guards have pardons: inverting them launches
+four standalone CLI bootstrap guards have pardons: inverting them launches
 argparse during test collection. The gate checks their exact locations and
 rejects other pardons. Standalone help tests cover the entry points. JSON and
 HTML reports go to `coverage/gremlins/`. Confirmed mutation-induced timeouts
@@ -68,6 +68,16 @@ inputs. It validates the finished catalog before atomically replacing output.
 Generate the packaged catalog with this tool rather than editing it by hand.
 
 ## Optional validation
+
+The ordinary suite tests source discovery with Trailmark graph models without
+downloading grammars. To exercise real C, JavaScript, and TypeScript parsing:
+
+```sh
+BROTLI_TRAILMARK_TESTS=1 uv run --locked pytest tests/test_source_discovery.py --no-cov
+```
+
+The first run can download parser grammars. A separate CI job runs these tests;
+they inspect synthetic source and never execute it.
 
 `make verify-fingerprints` downloads registered decoder sources, checks their
 hashes and classifications, and checks modified variants. Downloaded source is

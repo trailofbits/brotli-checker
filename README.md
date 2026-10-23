@@ -9,6 +9,11 @@ filesystems. It checks source fingerprints and supported ELF binary code,
 investigates which copies the app uses, and explains what to update or review.
 Each copy keeps its own result.
 
+For source review, [Trailmark](https://github.com/trailofbits/trailmark) maps calls
+to the decoder and fetch APIs, helping the assistant find callers to inspect.
+The scanner finds suspect parts; Trailmark helps show how the code connects.
+The assistant checks whether those connections apply to the running app.
+
 ## Install and use
 
 Ask Claude Code or Codex:
@@ -29,7 +34,8 @@ You can also name a folder or app package. With only a website address, the skil
 explains what is missing and prepares a request for your hosting provider.
 HTTP headers cannot establish the decoder's patch status.
 
-Requires **Python 3.12–3.15**. The scanner uses only the standard library.
+Requires **Python 3.12–3.15** and [uv](https://docs.astral.sh/uv/) for Trailmark
+source discovery. The standalone scanner uses only the standard library.
 
 ## Run the scanner directly
 
@@ -43,8 +49,8 @@ python3 skills/brotli-checker/scripts/brotli_inventory.py /path/to/application
 
 The default output explains findings and next steps. Add `--json` for per-copy
 evidence, coverage gaps, and a plain-language `user_summary`. See the
-[scanner guide](docs/usage.md) for flags, exit codes, binary inventory, and
-disassembly review.
+[scanner guide](docs/usage.md) for flags, exit codes, Trailmark source discovery,
+binary inventory, and disassembly review.
 
 ## Understand the result
 

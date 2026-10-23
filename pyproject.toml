@@ -64,7 +64,7 @@ cache = false
 report = ["json", "html"]
 coverage_timeout = 120
 mutant_timeout = 10
-max_pardons = 3  # Only the three standalone CLI bootstrap guards; checked again in CI.
+max_pardons = 4  # Only the four standalone CLI bootstrap guards; checked again in CI.
 
 [tool.coverage.run]
 branch = true
@@ -80,6 +80,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.17.2",
+    "trailmark==0.7.0",
     "ty>=0.0.91",
 ]
 security = ["pip-audit>=2.10.1", "zizmor>=1.31.1"]
