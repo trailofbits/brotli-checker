@@ -27,6 +27,12 @@ Run from the installed skill directory with trusted uv. This pins Trailmark
 source without executing the target. Select a focused source subtree because
 initial parsing and indexing are not bounded by the output limits.
 
+For patch review in a Brotli source tree, add `--language c` and repeated
+`--symbol` options for `DecodeLiteralBlockSwitchInternal`,
+`DecodeCommandBlockSwitchInternal`, `DecodeDistanceBlockSwitchInternal`, and
+`ProcessCommands`. This traces source callers independently of the compiled
+architecture; verify build selection and unresolved edges separately.
+
 Review `candidates[].call` for Brotli decoder calls (including zlib's Brotli
 APIs), or fetch/Undici. The `neighborhood` joins callers by full node IDs and
 records source spans, unresolved proxy targets, confidence, deferred edges, and relevant

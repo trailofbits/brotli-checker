@@ -8,6 +8,7 @@ compiles references and applications but never executes the applications.
 import json
 import os
 import runpy
+import shlex
 import shutil
 import struct
 import subprocess
@@ -20,6 +21,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills/brotli-checker/scripts"))
 import brotli_binary_match as matcher  # noqa: E402
+from brotli_binary_triage import file_offset_address  # noqa: E402
 from test_binary_inventory import run_scan  # noqa: E402
 
 SOURCE_ROOT = os.environ.get("BROTLI_TEST_SOURCES")
@@ -43,8 +45,10 @@ def invoke(command):
 
 def assert_packaged_match_if_compatible(data, reference, state):
     compatible = any(
-        packaged.metadata["compiler"] == reference.metadata["compiler"]
-        and packaged.metadata["machine"] == reference.metadata["machine"]
+        all(
+            packaged.metadata.get(key) == reference.metadata.get(key)
+            for key in ("compiler", "machine", "elf_class", "byteorder", "flags")
+        )
         for packaged in PACKAGED_REFERENCES
     )
     if not compatible:
@@ -67,13 +71,14 @@ def assert_packaged_match_if_compatible(data, reference, state):
 def test_real_static_decoder(tmp_path, release, state, optimization, pic):  # noqa: PLR0915 -- End-to-end build/link/scan boundary.
     assert SOURCE_ROOT
     tree = Path(SOURCE_ROOT) / f"brotli-{release}"
-    compiler = shutil.which("cc")
-    archiver = shutil.which("ar")
-    strip = shutil.which("strip")
+    compiler = shutil.which(os.environ.get("BROTLI_TEST_CC", "cc"))
+    archiver = shutil.which(os.environ.get("BROTLI_TEST_AR", "ar"))
+    strip = shutil.which(os.environ.get("BROTLI_TEST_STRIP", "strip"))
     assert compiler
     assert archiver
     assert strip
     flags = [optimization, "-fPIC"] if pic else [optimization, "-fno-pic", "-fno-PIE"]
+    flags.extend(shlex.split(os.environ.get("BROTLI_TEST_CFLAGS", "")))
     build = runpy.run_path(str(ROOT / "scripts/build_binary_references.py"))["build_references"]
     catalog = build([tree], compiler, flags)
     reference = matcher.CodeReference.from_json(catalog["references"][0])
@@ -93,12 +98,14 @@ def test_real_static_decoder(tmp_path, release, state, optimization, pic):  # no
         "int main(void) { unsigned char in[1] = {0}, out[1]; size_t n = 1;\n"
         "return (int)BrotliDecoderDecompress(1, in, &n, out); }\n"
     )
-    offsets = []
+    addresses = []
     for link_flag in ("-no-pie", "-pie") if pic else ("-no-pie",):
         app = tmp_path / ("app" + link_flag)
         invoke(
             [
                 compiler,
+                *flags,
+                *shlex.split(os.environ.get("BROTLI_TEST_LDFLAGS", "")),
                 link_flag,
                 "-I",
                 str(tree / "c/include"),
@@ -114,11 +121,18 @@ def test_real_static_decoder(tmp_path, release, state, optimization, pic):  # no
         assert not assessment.limited
         assert {m["state"] for m in assessment.matches} == {state}
         assert_packaged_match_if_compatible(data, reference, state)
-        offsets.append(assessment.matches[0]["file_offset"])
+        addresses.append(file_offset_address(data, assessment.matches[0]["file_offset"], 1))
         # Removing section headers must not change the answer.
         sectionless = bytearray(data)
-        struct.pack_into("<Q", sectionless, 40, 0)
-        sectionless[58:64] = bytes(6)
+        layout = matcher.ELFLayout.of(matcher.elf_header(data))
+        small = layout.bits == 32
+        struct.pack_into(
+            ("<" if layout.byteorder == "little" else ">") + ("I" if small else "Q"),
+            sectionless,
+            32 if small else 40,
+            0,
+        )
+        sectionless[46 if small else 58 : 52 if small else 64] = bytes(6)
         app.write_bytes(sectionless)
         result = run_scan(app, "--code-references", catalog_path)
         assert result.returncode == 1
@@ -134,4 +148,4 @@ def test_real_static_decoder(tmp_path, release, state, optimization, pic):  # no
         assert finding["path"].endswith("!bin/service")
         assert finding["patch_status"] == state + "_code_match"
     if pic:
-        assert offsets[0] != offsets[1]
+        assert addresses[0] != addresses[1]

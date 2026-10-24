@@ -8,6 +8,8 @@ coverage.xml
 htmlcov/
 coverage/
 .gremlins_cache/
+.coveragerc.gremlins
 artifacts/
 .DS_Store
 .serena/
+tests/known_answers/.deps/

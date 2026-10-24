@@ -63,7 +63,7 @@ workers = 2
 cache = false
 report = ["json", "html"]
 coverage_timeout = 120
-mutant_timeout = 10
+mutant_timeout = 60  # Module-level mutations can select the entire suite; keep 2x headroom.
 max_pardons = 4  # Only the four standalone CLI bootstrap guards; checked again in CI.
 
 [tool.coverage.run]

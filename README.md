@@ -60,9 +60,11 @@ copy does not clear other bundled copies, and an empty scan does not establish
 that an app is safe.
 
 The scanner reads files without executing application code or sending network
-probes. Packaged compiled references cover AArch64 GCC ELF64 builds; other
-builds can remain unmatched. Unsupported formats, skipped files, and resource
-limits produce coverage gaps. Finding affected code does not establish that a
+probes. Packaged compiled references cover x86, x86-64, ARM/Thumb, AArch64,
+RISC-V64, PowerPC64 little-endian, s390x, MIPS32/64 in both byte orders, and
+LoongArch64 ELF builds. Coverage depends on compiler and build flags; see the
+[build matrix](docs/usage.md#compiled-decoder-evidence). Unsupported formats,
+skipped files, and resource limits produce coverage gaps. Finding affected code does not establish that a
 running app uses it or that an attacker can reach it.
 
 Rules use an advisory snapshot dated **2026-10-23**. Check current vendor guidance

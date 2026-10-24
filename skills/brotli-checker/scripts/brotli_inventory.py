@@ -451,7 +451,7 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
     code = (
         match_code(data, references)
         if is_elf
-        else CodeAssessment([], "Code matching supports linked ELF64 x86_64/AArch64 only")
+        else CodeAssessment([], "Code matching requires a supported linked ELF32/ELF64 binary")
     )
     metadata = decoder_metadata(data) if is_elf else {}
     versions = metadata.get("versions", [])

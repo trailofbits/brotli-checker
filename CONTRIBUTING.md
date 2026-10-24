@@ -24,13 +24,22 @@ against the complete hashed lockfile export. Advisory queries require network
 access.
 
 `make mutations` uses pytest-gremlins with isolated subprocesses, fresh results,
-and all default mutation operators. The gate requires at least an 80% score,
+and all default mutation operators. It first runs `make known-answers`, which
+requires CMake 3.24+ and network access to download six checksum-pinned upstream
+releases. Only `tests/known_answers/{CMakeLists.txt,answers.json}` is committed;
+downloaded dependencies and build metadata stay in the ignored `.deps/` folder.
+Their known scan answers cover pristine and modified vulnerable/fixed sources.
+The ordinary offline suite skips these cases until dependencies are populated.
+The gate requires at least an 80% score,
 results from every scanner module, and no errors or skipped files. Only the
 four standalone CLI bootstrap guards have pardons: inverting them launches
 argparse during test collection. The gate checks their exact locations and
 rejects other pardons. Standalone help tests cover the entry points. JSON and
 HTML reports go to `coverage/gremlins/`. Confirmed mutation-induced timeouts
 count as detections under pytest-gremlins' scoring.
+The 60-second mutant timeout leaves headroom for module-level mutations that
+select the full suite; timeout detections must pass the harness's solo rerun
+and unmutated control confirmation.
 
 Keep tests on the normal Python import path so mutation instrumentation runs.
 Do not replace scanner imports with direct `exec_module` or `runpy.run_path`.
@@ -57,15 +66,33 @@ GCC-like compiler:
 
 ```sh
 python3 scripts/build_binary_references.py /sources/brotli-1.2.0 /sources/brotli-1.2.1 \
-  --cc cc --output compiled-references.json
+  --cc cc --output compiled-references.json.gz
 ```
 
 Defaults compile `-O2` and `-O3`, each with PIC and non-PIC flags. Repeat
 `--cflags='...'` for other profiles. The tool verifies `decode.c` against the
 reviewed source registry, compiles without executing target code, and rejects
 unsupported relocations/layouts. Headers, compiler, and flags remain trusted
-inputs. It validates the finished catalog before atomically replacing output.
+inputs; header paths and contents receive a separate aggregate hash. The tool
+handles ELF32/64, REL/RELA, either supported byte order, and split executable
+sections. Relocation masks in `elf-relocations.json` preserve instruction bits;
+unknown relocation types fail closed. Linker instruction rewrites need explicit
+handling and controls against real linked output. It validates the finished catalog
+before atomically replacing output. `.gz` output is deterministic gzip; plain JSON
+remains accepted. Merge independently built target catalogs with repeated
+`--merge target.json.gz` arguments, with no source-tree argument required.
 Generate the packaged catalog with this tool rather than editing it by hand.
+
+The [build matrix](docs/usage.md#compiled-decoder-evidence) records packaged
+coverage and toolchain limits. For GCC cross-compilers, repeat the four default
+profiles with `-marm`/`-mthumb` for ARM, `-mno-relax` for RISC-V, or `-EB` for
+big-endian MIPS. LoongArch uses Clang `--target=loongarch64-linux-gnu -mno-relax`;
+see the matrix for its declaration headers and upstream portability change.
+For Brotli 1.2.0/1.2.1, append `&& !defined(__loongarch__)` to the
+`BROTLI_GNUC_HAS_ATTRIBUTE(model, 3, 0, 3)` guard in `c/common/platform.h`.
+Keep `decode.c` unchanged and use `--build-note` to record this change and the
+declaration sysroot, as in the packaged LoongArch entries. Recompute headers'
+aggregate hash through the builder. No downloaded source trees belong in git.
 
 ## Optional validation
 
@@ -94,6 +121,8 @@ BROTLI_TEST_SOURCES=/sources uv run --locked pytest tests/test_binary_builds.py 
 Run on a Linux ELF build host. These tests exercise optimization/PIC profiles,
 PIE/non-PIE links, stripped binaries, removed section headers, and archive
 members. They never execute the resulting applications. Set
+`BROTLI_TEST_CC`, `BROTLI_TEST_AR`, and `BROTLI_TEST_STRIP` for cross tools;
+`BROTLI_TEST_CFLAGS` and `BROTLI_TEST_LDFLAGS` add target flags. Set
 `BROTLI_LARGE_FILE_TESTS=1` when running the full suite to include the optional
 multi-GiB hashing and CLI regressions.
 

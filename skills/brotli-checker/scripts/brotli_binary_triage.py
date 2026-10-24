@@ -22,14 +22,17 @@ from typing import TYPE_CHECKING
 
 from brotli_binary_data import Buffer, FileData, file_data, sha256_data
 from brotli_binary_match import (
-    EM_AARCH64,
-    PROGRAM_HEADER,
-    SECTION_HEADER,
-    checked_slice,
+    EM_ARM,
+    TARGETS,
+    ELFLayout,
     elf_header,
     executable_ranges,
+    program_headers,
+    section_headers,
+    symbol_rows,
+    target_identity,
 )
-from brotli_binary_metadata import MAX_SYMBOL_TABLES, MAX_SYMBOLS, SYMBOL
+from brotli_binary_metadata import MAX_SYMBOL_TABLES, MAX_SYMBOLS
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -198,8 +201,7 @@ def checked_range(data: Buffer, offset: int, size: int) -> tuple[int, int]:
 
 
 def function_offset(data: Buffer, header: tuple, address: int, size: int) -> int | None:
-    table = checked_slice(data, header[5], header[9] * header[10])
-    for kind, flags, start, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table):
+    for kind, flags, start, virtual, _, file_size, _, _ in program_headers(data, header):
         if (
             kind == PT_LOAD
             and flags & PF_X
@@ -216,11 +218,10 @@ def relevant_symbols(  # noqa: C901, PLR0911, PLR0912, PLR0915 -- Bounded ELF va
     header = elf_header(data)
     if not header[12]:
         return [], "No ELF section table; symbol-based triage is unavailable"
-    if header[11] != SECTION_HEADER.size:
+    if header[11] != ELFLayout.of(header).parser("section").size:
         return [], "Unsupported ELF section table"
-    sections = list(
-        SECTION_HEADER.iter_unpack(checked_slice(data, header[6], header[12] * header[11]))
-    )
+    sections = section_headers(data, header)
+    symbol = ELFLayout.of(header).parser("symbol")
     defined_symbols = []
     imported_symbols = []
     candidate_overflow = False
@@ -232,9 +233,9 @@ def relevant_symbols(  # noqa: C901, PLR0911, PLR0912, PLR0915 -- Bounded ELF va
         tables += 1
         if tables > MAX_SYMBOL_TABLES:
             return [*defined_symbols, *imported_symbols], "ELF symbol-table limit reached"
-        if table[9] != SYMBOL.size or table[5] % SYMBOL.size or table[6] >= len(sections):
+        if table[9] != symbol.size or table[5] % symbol.size or table[6] >= len(sections):
             return [*defined_symbols, *imported_symbols], "Malformed ELF symbol table"
-        scanned += table[5] // SYMBOL.size
+        scanned += table[5] // symbol.size
         if scanned > MAX_SYMBOLS:
             return [*defined_symbols, *imported_symbols], "ELF symbol limit reached"
         names = sections[table[6]]
@@ -243,9 +244,8 @@ def relevant_symbols(  # noqa: C901, PLR0911, PLR0912, PLR0915 -- Bounded ELF va
                 "ELF symbols do not reference a string table"
             )
         name_start, name_stop = checked_range(data, names[4], names[5])
-        entry_start, entry_stop = checked_range(data, table[4], table[5])
-        entries = data[entry_start:entry_stop]
-        for name_offset, info, _, index, address, size in SYMBOL.iter_unpack(entries):
+        for name_offset, info, _, index, symbol_address, size in symbol_rows(data, header, table):
+            address = symbol_address & (~1 if header[2] == EM_ARM else -1)
             if time.monotonic() >= deadline:
                 return [*defined_symbols, *imported_symbols], "ELF symbol scan timeout reached"
             if info & 0xF != STT_FUNC or name_offset >= names[5]:
@@ -293,6 +293,8 @@ def relevant_symbols(  # noqa: C901, PLR0911, PLR0912, PLR0915 -- Bounded ELF va
                 "section": section,
                 "defined": defined,
             }
+            if header[2] == EM_ARM:
+                item["thumb"] = bool(symbol_address & 1)
             bucket = defined_symbols if defined else imported_symbols
             if item in bucket:
                 continue
@@ -315,8 +317,7 @@ def symbol_priority(symbol: dict) -> tuple[int, int, int, str]:
 
 def file_offset_address(data: Buffer, file_offset: int, length: int) -> int:
     header = elf_header(data)
-    table = checked_slice(data, header[5], header[9] * header[10])
-    for kind, flags, start, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table):
+    for kind, flags, start, virtual, _, file_size, _, _ in program_headers(data, header):
         if (
             kind == PT_LOAD
             and flags & PF_X
@@ -330,8 +331,7 @@ def file_offset_address(data: Buffer, file_offset: int, length: int) -> int:
 
 def validate_address_range(data: Buffer, start: int, stop: int) -> None:
     header = elf_header(data)
-    table = checked_slice(data, header[5], header[9] * header[10])
-    for kind, flags, _, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table):
+    for kind, flags, _, virtual, _, file_size, _, _ in program_headers(data, header):
         if kind == PT_LOAD and flags & PF_X and virtual <= start < stop <= virtual + file_size:
             return
     message = "Address range is not inside one file-backed executable PT_LOAD segment"
@@ -408,6 +408,8 @@ def validate_scope(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("address and file-offset ranges are mutually exclusive")
     if args.section is not None and not address_range:
         parser.error("--section requires an explicit address range")
+    if args.thumb and not (address_range or offset_range):
+        parser.error("--thumb requires an explicit ARM range")
     return "address_range" if address_range else "file_offset_range" if offset_range else "symbols"
 
 
@@ -426,10 +428,8 @@ def explicit_range(data: Buffer, args: argparse.Namespace, mode: str) -> tuple[i
 
 def require_section(data: Buffer, name: str, start: int, stop: int) -> None:
     header = elf_header(data)
-    if header[11] == SECTION_HEADER.size and 0 < header[13] < header[12]:
-        sections = list(
-            SECTION_HEADER.iter_unpack(checked_slice(data, header[6], header[12] * header[11]))
-        )
+    if header[11] == ELFLayout.of(header).parser("section").size and 0 < header[13] < header[12]:
+        sections = section_headers(data, header)
         strings = sections[header[13]]
         checked_range(data, strings[4], strings[5])
         for section in sections:
@@ -451,9 +451,19 @@ def require_section(data: Buffer, name: str, start: int, stop: int) -> None:
 
 
 def fragment_command(  # noqa: PLR0913, PLR0917 -- Bound original addresses to a small tool input.
-    report: dict, data: Buffer, directory: Path, objdump: Path, start: int, stop: int
+    report: dict,
+    data: Buffer,
+    directory: Path,
+    objdump: Path,
+    start: int,
+    stop: int,
+    *,
+    thumb: bool = False,
 ) -> list[str]:
     header = elf_header(data)
+    if thumb and header[2] != EM_ARM:
+        message = "--thumb requires an ARM ELF"
+        raise TriageError(message)
     offset = function_offset(data, header, start, stop - start)
     if offset is None:
         message = "Code fragment is outside file-backed executable data"
@@ -474,14 +484,15 @@ def fragment_command(  # noqa: PLR0913, PLR0917 -- Bound original addresses to a
             "ephemeral": True,
         }
     )
-    architecture = "aarch64" if header[2] == EM_AARCH64 else "i386:x86-64"
+    architecture = TARGETS[target_identity(header)][1]
     return [
         str(objdump),
         "--disassemble-all",
         "--wide",
         "--target=binary",
         f"--architecture={architecture}",
-        "--endian=little",
+        f"--endian={ELFLayout.of(header).byteorder}",
+        *(["--disassembler-options=force-thumb"] if thumb else []),
         f"--adjust-vma=0x{start:x}",
         str(path),
     ]
@@ -509,7 +520,7 @@ def collect_ranges(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bounded
         if args.section:
             require_section(data, args.section, start, stop)
             report["scope"]["section"] = args.section
-        command = fragment_command(report, data, directory, objdump, start, stop)
+        command = fragment_command(report, data, directory, objdump, start, stop, thumb=args.thumb)
         used = command_evidence(report, command, dict(report["scope"]), deadline, output_left)
         output_left -= used
     else:
@@ -562,7 +573,9 @@ def collect_ranges(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bounded
             except TriageError as error:
                 report["collection"]["reasons"].append(f"Symbol {symbol['name']}: {error}")
                 continue
-            command = fragment_command(report, data, directory, objdump, start, stop)
+            command = fragment_command(
+                report, data, directory, objdump, start, stop, thumb=symbol.get("thumb", False)
+            )
             used = command_evidence(
                 report,
                 command,
@@ -655,6 +668,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-range-bytes", type=positive, default=DEFAULT_MAX_RANGE_BYTES)
     parser.add_argument("--timeout-seconds", type=positive, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--max-symbols", type=positive, default=DEFAULT_MAX_SYMBOLS)
+    parser.add_argument(
+        "--thumb", action="store_true", help="decode an explicit ARM range as Thumb code"
+    )
     return parser
 
 

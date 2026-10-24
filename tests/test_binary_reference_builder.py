@@ -60,12 +60,14 @@ def test_repeated_trees_and_profiles_produce_one_valid_reference(tmp_path, monke
             "tree",
             "--cflags=-O2",
             "--cflags=-O2",
+            "--build-note=trusted fixture headers",
             "--output",
             str(output),
         ],
     )
     assert main() == 0
     assert [item.metadata["id"] for item in load_references(output)] == [entry["id"]]
+    assert load_references(output)[0].metadata["build_note"] == "trusted fixture headers"
 
 
 def test_conflicting_profile_preserves_existing_output(tmp_path, monkeypatch):
@@ -110,3 +112,20 @@ def test_consumer_validation_precedes_output_replacement(tmp_path):
         )
     assert output.read_text() == "existing catalog\n"
     assert list(tmp_path.glob(".references.json.*.tmp")) == []
+
+
+def test_merge_preserves_sections_and_writes_deterministic_gzip(tmp_path, monkeypatch):
+    entry = {**reference(), "additional_sections": [{"code": "c3", "mask": "ff"}]}
+    first, output = tmp_path / "first.json", tmp_path / "merged.json.gz"
+    write_validated_catalog(first, {"schema_version": 1, "references": [entry]})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["builder", "--merge", str(first), "--merge", str(first), "--output", str(output)],
+    )
+    assert main() == 0
+    assert [ref.to_json() for ref in load_references(output)] == [entry]
+    compressed = output.read_bytes()
+    assert compressed[:2] == b"\x1f\x8b"
+    assert main() == 0
+    assert output.read_bytes() == compressed

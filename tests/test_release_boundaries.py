@@ -30,7 +30,7 @@ def test_elf_slices_enforce_exact_file_bounds():
 def test_each_unsupported_elf_header_field_is_rejected(offset, encoding, value):
     data = bytearray(elf(b"instructions"))
     struct.pack_into("<" + encoding, data, offset, value)
-    with pytest.raises(ValueError, match="Only little-endian"):
+    with pytest.raises(ValueError, match="ELF"):
         matcher.elf_header(bytes(data))
 
 
