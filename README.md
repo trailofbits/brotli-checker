@@ -78,6 +78,7 @@ for updates and backports.
 - [Reachability](skills/brotli-checker/references/reachability.md): investigating
   Node, Electron, Java, fonts, TLS, and compiled code.
 - [Contributing](CONTRIBUTING.md): development setup and checks.
+- [Changelog](CHANGELOG.md): release history.
 - [Security policy](SECURITY.md): private vulnerability reporting.
 
 [MIT](LICENSE). Compiled Brotli references retain their

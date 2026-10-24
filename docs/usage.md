@@ -195,8 +195,8 @@ On unmatched ELF inputs, metadata distinguishes defined decoder APIs from import
 and reads supported constant-return `BrotliDecoderVersion` functions without
 executing them. Old versions support an update warning; a fixed version never
 clears a binary. Missing symbols or unsupported instruction forms leave the
-version unresolved. PE, Mach-O, ELF32, big-endian ELF, and relocatable objects
-are not classified by the code matcher.
+version unresolved. PE, Mach-O, and relocatable objects are not classified by the
+code matcher.
 
 ### Binary rollout inventory
 
