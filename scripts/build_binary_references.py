@@ -8,6 +8,7 @@ only decode.c is compiled, with source identity/state from the reviewed registry
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import shlex
@@ -40,6 +41,10 @@ def build_references(trees: list[Path], compiler: str, flags: list[str]) -> dict
                 msg = f"Unreviewed decoder source: {source} ({digest})"
                 raise ValueError(msg)
             entry = sources[digest]
+            headers = hashlib.sha256()
+            for path in sorted((tree.resolve() / "c").rglob("*.h")):
+                headers.update(path.relative_to(tree.resolve()).as_posix().encode() + b"\0")
+                headers.update(hashlib.sha256(path.read_bytes()).digest())
             command = [
                 compiler_path,
                 *flags,
@@ -51,19 +56,22 @@ def build_references(trees: list[Path], compiler: str, flags: list[str]) -> dict
                 str(output),
             ]
             subprocess.run(command, check=True, capture_output=True)  # noqa: S603
-            references.append(
-                reference_from_object(
-                    output.read_bytes(),
-                    {
-                        "id": f"{entry['sources'][0]['label']}:{version}:{shlex.join(flags)}",
-                        "source_sha256": digest,
-                        "source": entry["sources"][0]["url"],
-                        "state": entry["state"],
-                        "compiler": version,
-                        "flags": shlex.join(flags),
-                    },
-                )
+            reference = reference_from_object(
+                output.read_bytes(),
+                {
+                    "id": f"{entry['sources'][0]['label']}:{version}:{shlex.join(flags)}",
+                    "source_sha256": digest,
+                    "source": entry["sources"][0]["url"],
+                    "state": entry["state"],
+                    "compiler": version,
+                    "flags": shlex.join(flags),
+                    "headers_sha256": headers.hexdigest(),
+                },
             )
+            reference["id"] = (
+                f"{reference['machine']}:{reference['elf_class']}:{reference['byteorder']}:{reference['id']}"
+            )
+            references.append(reference)
     return {"schema_version": 1, "references": references}
 
 
@@ -87,16 +95,15 @@ def write_validated_catalog(output: Path, catalog: dict) -> None:
     temporary_path = None
     try:
         with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
+            "wb",
             dir=output.parent,
             prefix=f".{output.name}.",
             suffix=".tmp",
             delete=False,
         ) as stream:
             temporary_path = Path(stream.name)
-            json.dump(catalog, stream, indent=2)
-            stream.write("\n")
+            data = (json.dumps(catalog, indent=2) + "\n").encode()
+            stream.write(gzip.compress(data, mtime=0) if output.suffix == ".gz" else data)
         load_references(temporary_path)
         temporary_path.replace(output)
     finally:
@@ -106,11 +113,17 @@ def write_validated_catalog(output: Path, catalog: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("trees", nargs="+", type=Path)
+    parser.add_argument("trees", nargs="*", type=Path)
     parser.add_argument("--cc", default="cc")
     parser.add_argument("--cflags", action="append", help="repeat for multiple build profiles")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--build-note", help="record provenance on newly compiled references")
+    parser.add_argument(
+        "--merge", action="append", default=[], type=Path, help="merge a validated catalog"
+    )
     args = parser.parse_args()
+    if not args.trees and not args.merge:
+        parser.error("provide source trees or --merge catalogs")
     try:
         profiles = args.cflags or [
             "-O2 -fno-pic -fno-PIE",
@@ -119,10 +132,15 @@ def main() -> int:
             "-O3 -fPIC",
         ]
         result = {"schema_version": 1, "references": []}
-        for profile in profiles:
+        for profile in profiles if args.trees else []:
             result["references"].extend(
                 build_references(args.trees, args.cc, shlex.split(profile))["references"]
             )
+        if args.build_note:
+            for reference in result["references"]:
+                reference["build_note"] = args.build_note
+        for catalog in args.merge:
+            result["references"].extend(ref.to_json() for ref in load_references(catalog))
         result["references"] = unique_references(result["references"])
         write_validated_catalog(args.output, result)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

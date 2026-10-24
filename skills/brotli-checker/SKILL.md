@@ -51,7 +51,7 @@ does not reconstruct a final image filesystem. It checks eligible file bytes
 against source fingerprints, identifies modified C decoder patterns, and records
 dependency, native/Wasm, and JavaScript/TypeScript fetch/Undici candidates.
 Fetch references include source locations; they are heuristic leads, not
-confirmed Node calls or attacker-controlled inputs. For ELF64 x86-64/AArch64 it also
+confirmed Node calls or attacker-controlled inputs. For supported ELF32/ELF64 targets it also
 matches compiled decoder text, including stripped and statically linked code.
 Dependencies, build outputs, and hidden directories
 are included; `.git` is excluded. Read its coverage gaps. It does not scan an
@@ -87,9 +87,15 @@ compiler/flags, state, and file offset. `vulnerable_code_match` and
 only matched decoder code, leaves other copies unresolved, and does not by itself
 produce exit 0. Version strings/imports do not determine code state. Matching
 excludes relocated address fields and does not verify their targets or referenced
-data. Packaged references cover AArch64 GCC 16.2.1 `-O2` and `-O3` PIC/non-PIC
-builds of the three affected/fixed release pairs; other compilers/options and x86-64 require
-corresponding trusted references via `--code-references`. No match remains unknown.
+data or associate separately matched executable sections. Packaged references cover
+x86, x86-64, ARM/Thumb, AArch64, RISC-V64, PowerPC64 little-endian, s390x,
+MIPS32/64 in both byte orders, and LoongArch64. They cover `-O2`/`-O3` PIC/non-PIC
+builds of three affected/fixed release pairs with GCC 14.2, the original AArch64
+GCC 16.2.1 builds, and Clang 19 LoongArch builds. LoongArch uses a documented
+upstream header portability change and LP64 declaration headers; inspect
+`build_note`, `headers_sha256`, and flags. Other compiler/options require
+corresponding trusted references via `--code-references`. No match remains unknown;
+a supported target with no references produces an explicit coverage gap.
 Do not present this as compiler-independent semantic or CFG patch verification.
 
 The inventory also reads bounded ELF symbol tables without executing the target.

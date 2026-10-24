@@ -217,7 +217,7 @@ def test_aarch64_rejects_unallocated_move_wide_halfwords():
         (b"\xb8\x01\x00\x00\x00\xc3\x90", matcher.EM_X86_64),
         (words([move_wide(0x52800000, 1, register=1), 0xD65F03C0]), matcher.EM_AARCH64),
         (words([move_wide(0x52800000, 1), 0xD503201F, 0xD65F03C0]), matcher.EM_AARCH64),
-        (b"\xb8\x01\x00\x00\x00\xc3", 3),
+        (b"\xb8\x01\x00\x00\x00\xc3", 999),
     ],
 )
 def test_unknown_code_forms_are_rejected(code, machine):

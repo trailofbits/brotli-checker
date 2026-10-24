@@ -6,15 +6,18 @@ import struct
 from typing import TYPE_CHECKING
 
 from brotli_binary_match import (
+    EM_386,
     EM_AARCH64,
+    EM_ARM,
     EM_X86_64,
-    PROGRAM_HEADER,
-    SECTION_HEADER,
+    ELFLayout,
     checked_range,
     checked_slice,
     elf_header,
     executable_ranges,
-    iter_structs,
+    program_headers,
+    section_headers,
+    symbol_rows,
 )
 
 if TYPE_CHECKING:
@@ -56,8 +59,8 @@ def constant_version(  # noqa: C901, PLR0911 -- Strict instruction-form decoder.
     code: bytes, machine: int
 ) -> int | None:
     """Recognize only complete, straight-line constant-return function forms."""
-    if machine == EM_X86_64:
-        code = code.removeprefix(bytes.fromhex("f30f1efa"))  # CET ENDBR64.
+    if machine in (EM_X86_64, EM_386):
+        code = code.removeprefix(bytes.fromhex("f30f1efa" if machine == EM_X86_64 else "f30f1efb"))
         if code.startswith(bytes.fromhex("554889e5")) and code.endswith(b"\x5d\xc3"):
             code = code[4:-2] + b"\xc3"
         if (
@@ -107,10 +110,9 @@ class FunctionOffsets:
     """Parse mappings once and bound work across all distinct function lookups."""
 
     def __init__(self, data: Buffer, header: tuple) -> None:
-        table = checked_slice(data, header[5], header[9] * header[10])
         self.segments = [
             (start, virtual, file_size)
-            for kind, flags, start, virtual, _, file_size, _, _ in PROGRAM_HEADER.iter_unpack(table)
+            for kind, flags, start, virtual, _, file_size, _, _ in program_headers(data, header)
             if kind == 1 and flags & 1
         ]
         self.cache: dict[tuple[int, int], int | None] = {}
@@ -167,12 +169,8 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
     if not header[12]:
         result["reason"] = "No ELF section table; symbol-based decoder evidence unavailable"
         return
-    if header[11] != SECTION_HEADER.size:
-        msg = "Unsupported ELF section table"
-        raise ValueError(msg)
-    sections = list(
-        SECTION_HEADER.iter_unpack(checked_slice(data, header[6], header[12] * header[11]))
-    )
+    sections = section_headers(data, header)
+    symbol = ELFLayout.of(header).parser("symbol")
     seen = 0
     tables_seen = 0
     offsets = FunctionOffsets(data, header)
@@ -184,10 +182,10 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
         if tables_seen > MAX_SYMBOL_TABLES:
             result.update(reason="Decoder symbol-table limit reached", limited=True)
             return
-        if section[9] != SYMBOL.size or section[5] % SYMBOL.size or section[6] >= len(sections):
+        if section[9] != symbol.size or section[5] % symbol.size or section[6] >= len(sections):
             msg = "Malformed ELF symbol table"
             raise ValueError(msg)
-        seen += section[5] // SYMBOL.size
+        seen += section[5] // symbol.size
         if seen > MAX_SYMBOLS:
             result.update(reason="Decoder symbol limit reached", limited=True)
             return
@@ -196,9 +194,7 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
             msg = "ELF symbol names do not reference a string table"
             raise ValueError(msg)
         string_start, string_end = checked_range(data, string_section[4], string_section[5])
-        for name_offset, info, _, index, address, size in iter_structs(
-            data, SYMBOL, section[4], section[5]
-        ):
+        for name_offset, info, _, index, symbol_address, size in symbol_rows(data, header, section):
             if name_offset >= string_section[5]:
                 msg = "ELF symbol name outside string table"
                 raise ValueError(msg)
@@ -214,6 +210,8 @@ def _read_symbols(  # noqa: C901, PLR0912, PLR0915 -- Bounded ELF table walk.
                 if index >= len(sections):
                     continue
                 owner = sections[index]
+                # ARM function pointers mark Thumb state in bit zero.
+                address = symbol_address & (~1 if header[2] == EM_ARM else -1)
                 offset = offsets.resolve(address, max(size, 1))
                 if (
                     owner[1] != 1

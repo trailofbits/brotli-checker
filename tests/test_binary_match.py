@@ -32,27 +32,44 @@ def reference(state="fixed", machine=183, salt=b"fixed"):
     }
 
 
-def elf(payload, machine=183, *, flags=5, kind=2, prefix=b""):
-    header = matcher.ELF_HEADER.pack(
-        b"\x7fELF\x02\x01\x01" + bytes(9),
+def elf(payload, machine=183, *, flags=5, kind=2, prefix=b"", elf_class=64, byteorder="little"):  # noqa: PLR0913 -- Independent ELF fixture controls.
+    order = "<" if byteorder == "little" else ">"
+    header_struct = struct.Struct(
+        order + ("16sHHIQQQIHHHHHH" if elf_class == 64 else "16sHHIIIIIHHHHHH")
+    )
+    program_struct = struct.Struct(order + ("IIQQQQQQ" if elf_class == 64 else "IIIIIIII"))
+    header = header_struct.pack(
+        b"\x7fELF"
+        + bytes((2 if elf_class == 64 else 1, 1 if byteorder == "little" else 2, 1))
+        + bytes(9),
         kind,
         machine,
         1,
         0,
-        64,
+        header_struct.size,
         0,
         0,
-        64,
-        56,
+        header_struct.size,
+        program_struct.size,
         1,
         0,
         0,
         0,
     )
     contents = prefix + payload
-    program = matcher.PROGRAM_HEADER.pack(
-        1, flags, 120, 0x401000, 0x401000, len(contents), len(contents), 1
+    fields = (
+        1,
+        flags,
+        len(header) + program_struct.size,
+        0x401000,
+        0x401000,
+        len(contents),
+        len(contents),
+        1,
     )
+    if elf_class == 32:
+        fields = (fields[0], *fields[2:6], fields[6], fields[1], fields[7])
+    program = program_struct.pack(*fields)
     return header + program + contents
 
 
@@ -279,7 +296,16 @@ def test_packaged_references_are_reviewed_and_discriminating():
     assert {r.metadata["state"] for r in refs} == {"fixed", "vulnerable"}
     for ref in refs:
         assert source_states[ref.metadata["source_sha256"]] == ref.metadata["state"]
-        matches = matcher.match_code(elf(ref.code, ref.metadata["machine"]), refs).matches
+        payload = ref.code + b"".join(part.code for part in ref.additional_sections)
+        matches = matcher.match_code(
+            elf(
+                payload,
+                ref.metadata["machine"],
+                elf_class=ref.metadata.get("elf_class", 64),
+                byteorder=ref.metadata.get("byteorder", "little"),
+            ),
+            refs,
+        ).matches
         assert matches
         assert {m["state"] for m in matches} == {ref.metadata["state"]}
 

@@ -133,16 +133,48 @@ for known gaps and how to interpret graph evidence.
 
 ## Compiled decoder evidence
 
-The main scanner already includes code matching for little-endian ELF64
-executables and shared libraries on AArch64 and x86-64. It compares complete
-compiled decoder text with reviewed references, masking supported linker
-relocation fields. It uses executable load segments, so stripped symbols and
+The main scanner includes code matching for ELF32 and ELF64 executables and
+shared libraries in supported byte orders. It compares compiled decoder text
+with reviewed references, masking supported relocation fields and documented
+linker instruction rewrites. Every executable section of the reference must
+match, including split hot/cold sections and compiler thunks. Sections can move
+independently; their association and relocation targets are not verified.
+It uses executable load segments, so stripped symbols and
 missing section headers do not prevent a match. Evidence includes source/object
 hashes, compiler flags, reference state, and file offsets.
 
-The packaged catalog contains 24 AArch64 GCC 16.2.1 references: Brotli
-1.0.9/1.0.10, 1.1.0/1.1.1, and 1.2.0/1.2.1, each at `-O2` and `-O3` with PIC
-and non-PIC profiles. x86-64 matching requires corresponding trusted references.
+The packaged catalog contains 336 references for Brotli 1.0.9/1.0.10,
+1.1.0/1.1.1, and 1.2.0/1.2.1, each at `-O2` and `-O3` with PIC and non-PIC
+profiles:
+
+| Architecture | Toolchain / additional options |
+| --- | --- |
+| x86-64, x86 | GCC 14.2.0 |
+| AArch64 | GCC 14.2.0 and the original GCC 16.2.1 corpus |
+| ARMv7 ARM and Thumb | GCC 14.2.0, `-marm` / `-mthumb` |
+| RISC-V64 | GCC 14.2.0, `-mno-relax` |
+| PowerPC64 little-endian | GCC 14.2.0 |
+| s390x (big-endian) | GCC 14.2.0 |
+| MIPS32/64, little- and big-endian | GCC 14.2.0, `-EB` for big-endian |
+| LoongArch64 | Clang 19.1.7, `-mno-relax`; portability details below |
+
+LoongArch references apply the `BROTLI_MODEL` header guard from upstream
+[e230f47](https://github.com/google/brotli/commit/e230f474b87134e8c6c85b630084c612057f253e)
+and use AArch64 LP64 glibc headers for C declarations. Decoder source is unchanged;
+`build_note` and `headers_sha256` record these build inputs. These profiles do
+not establish coverage for other LoongArch toolchains/sysroots.
+
+Linker CPU erratum fixes and inserted veneers can also leave these compiler
+profiles unmatched, depending on code placement (including Cortex-A8/A53 fixes).
+Custom x86 builds using older non-relaxable GOT relocation types can miss linker
+rewrites too. Unmatched code remains unknown; compiler identity alone does not
+guarantee a match.
+
+ELF class and byte order are part of reference identity. RISC-V32 and big-endian
+PowerPC64 parsing is supported, but they need additional trusted references.
+A target absent from the selected catalog produces an explicit coverage gap.
+The gzip catalog is bounded to 64 MiB after decompression; plain JSON catalogs
+remain accepted.
 Both inventory commands accept `--code-references compiled-references.json` to
 replace the packaged catalog. See [reference generation](../CONTRIBUTING.md#compiled-references).
 
@@ -229,7 +261,9 @@ decoder entry points. For stripped code, explicit address or file-offset ranges
 require trusted map/link or scanner evidence; see `--help`. It hashes the input
 and records commands, selected ranges, fragment identities, truncation, and gaps.
 Only bounded code fragments are copied for disassembly. The target is never
-loaded or executed.
+loaded or executed. The host `objdump` must support the target architecture.
+ARM Thumb symbols select Thumb decoding automatically; for a trusted explicit
+Thumb range add `--thumb`. An architecture/tool mismatch leaves collection incomplete.
 
 Exit 0 means evidence collection completed; exit 3 means it is incomplete.
 Neither is a patch verdict. Review affected and fixed control flow, including
