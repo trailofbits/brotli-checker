@@ -232,21 +232,20 @@ zlib = "*"
 
 
 @pytest.mark.parametrize(
-    ("name", "text", "kind"),
+    ("name", "parser_module", "text", "kind"),
     [
-        (
-            "pipfile",
-            "[packages]\nzlib = " + "[" * 2_000 + "0" + "]" * 2_000,
-            "Pipfile TOML",
-        ),
-        (
-            "pipfile.lock",
-            '{"default":{"zlib":' + "[" * 50_000 + "0" + "]" * 50_000 + "}}",
-            "Pipfile lock JSON",
-        ),
+        ("pipfile", dependencies.tomllib, '[packages]\nzlib="*"', "Pipfile TOML"),
+        ("pipfile.lock", dependencies.json, '{"default":{"zlib":{}}}', "Pipfile lock JSON"),
     ],
+    ids=["toml-depth-error", "json-depth-error"],
 )
-def test_recursive_structured_metadata_fails_closed_without_a_brotli_token(name, text, kind):
+def test_recursive_structured_metadata_fails_closed_without_a_brotli_token(
+    name, parser_module, text, kind, monkeypatch
+):
+    def depth_error(_text):
+        raise RecursionError
+
+    monkeypatch.setattr(parser_module, "loads", depth_error)
     assert dependencies.dependency_matches(text, name) == [
         {
             "text": (
@@ -256,6 +255,20 @@ def test_recursive_structured_metadata_fails_closed_without_a_brotli_token(name,
             "parse_incomplete": True,
         }
     ]
+
+
+def test_deep_json_preserves_dependency_when_parser_accepts_it():
+    # JSON nesting capacity differs between Python builds. Successful parsing is
+    # valid; a decoder that rejects it must still produce incomplete evidence.
+    text = '{"default":{"zlib":' + "[" * 50_000 + "0" + "]" * 50_000
+    text += ',"brotli":{"version":"==1.2.1"}}}'
+    try:
+        dependencies.json.loads(text)
+    except RecursionError:
+        assert dependencies.dependency_matches(text, "pipfile.lock")[0]["parse_incomplete"]
+    else:
+        rows = dependencies.dependency_matches(text, "pipfile.lock")
+        assert [row["field"] for row in rows] == ["default.brotli"]
 
 
 def test_deep_dotnet_dependency_graph_uses_iterative_traversal():

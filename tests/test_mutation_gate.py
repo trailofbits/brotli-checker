@@ -31,6 +31,25 @@ def test_gate_accepts_exact_floor_and_rejects_lower_score(report):
         gate.check_report(report, set())
 
 
+def test_shards_preserve_global_score_and_reject_overlap_or_missing_modules(report):
+    first = copy.deepcopy(report)
+    second = copy.deepcopy(report)
+    names = ["brotli_inventory.py", "brotli_dependencies.py"]
+    for shard, name in zip((first, second), names, strict=True):
+        for row in shard["results"]:
+            row["file_path"] = "/other/runner/" + name
+    merged = gate.combine_reports([first, second])
+    expected = {gate.SOURCE / name for name in names}
+    assert gate.check_report(merged, expected) == 80
+    with pytest.raises(ValueError, match="overlap"):
+        gate.combine_reports([first, first])
+    with pytest.raises(ValueError, match="every scanner module"):
+        gate.check_report(merged, expected | {gate.SOURCE / "brotli_source_leads.py"})
+    second["skipped_files"] = {names[1]: "failed instrumentation"}
+    with pytest.raises(ValueError, match="instrumented"):
+        gate.combine_reports([first, second])
+
+
 @pytest.mark.parametrize("status", ["error", "pardoned", "unknown"])
 def test_runner_errors_and_unapproved_verdicts_cannot_pass(report, status):
     report["results"][0]["status"] = status

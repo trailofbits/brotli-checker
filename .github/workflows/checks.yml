@@ -2,6 +2,7 @@ name: Checks
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -86,9 +87,22 @@ jobs:
         run: make verify-node-fetch
 
   mutation:
-    name: Scanner mutation tests
+    name: Mutations (${{ matrix.module }})
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - brotli_binary_data
+          - brotli_binary_inventory
+          - brotli_binary_match
+          - brotli_binary_metadata
+          - brotli_binary_triage
+          - brotli_dependencies
+          - brotli_inventory
+          - brotli_source_discovery
+          - brotli_source_leads
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,13 +111,42 @@ jobs:
         with:
           version: '0.13.5'
           python-version: '3.12'
-      - name: Run mutation tests and enforce score
-        run: make mutations
+      - name: Run module mutation tests
+        env:
+          MUTATION_MODULE: ${{ matrix.module }}
+        run: |
+          make known-answers
+          uv run --locked --group mutation pytest --gremlins --no-cov --gremlin-executor=subprocess --gremlin-targets="skills/brotli-checker/scripts/${MUTATION_MODULE}.py"
       - name: Retain mutation evidence
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: scanner-mutation-report
+          name: scanner-mutation-${{ matrix.module }}
           path: coverage/gremlins/
           if-no-files-found: error
           retention-days: 14
+
+  mutation-gate:
+    name: Scanner mutation tests
+    needs: mutation
+    permissions:
+      contents: read
+      actions: read # Download mutation artifacts from this workflow run.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require every shard to finish
+        env:
+          SHARD_RESULT: ${{ needs.mutation.result }}
+        run: test "$SHARD_RESULT" = success
+      - name: Download per-module results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run download "$RUN_ID" --pattern 'scanner-mutation-*' --dir mutation-reports
+      - name: Enforce complete aggregate score
+        run: python3 scripts/check_mutation_score.py mutation-reports/*/gremlins.json
