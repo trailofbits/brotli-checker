@@ -1,6 +1,7 @@
 import copy
 import gzip
 import hashlib
+import json
 import runpy
 import sys
 from pathlib import Path
@@ -14,6 +15,31 @@ main = BUILDER["main"]
 scoped_reference_id = BUILDER["scoped_reference_id"]
 unique_references = BUILDER["unique_references"]
 write_validated_catalog = BUILDER["write_validated_catalog"]
+
+
+def test_independent_port_identity_cannot_authorize_c_reference_build(tmp_path, monkeypatch):
+    build = BUILDER["build_references"]
+    payload = b"reviewed independent port source"
+    registry_path = tmp_path / "skills/brotli-checker/references/fingerprints.json"
+    registry_path.parent.mkdir(parents=True)
+    registry_path.write_text(
+        json.dumps(
+            {
+                "fingerprints": [
+                    {
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "implementation": "andybalholm_brotli_go",
+                    }
+                ]
+            }
+        )
+    )
+    source = tmp_path / "tree/c/dec/decode.c"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(payload)
+    monkeypatch.setitem(build.__globals__, "ROOT", tmp_path)
+    with pytest.raises(ValueError, match="Unreviewed decoder source"):
+        build([tmp_path / "tree"], sys.executable, [])
 
 
 def reference(identifier: str = "fixture") -> dict:

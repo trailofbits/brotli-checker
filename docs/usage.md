@@ -58,6 +58,45 @@ functions, and unused dependencies can match. Computed or bundled calls can be
 missed. See the [Node/fetch guide](../skills/brotli-checker/references/reachability.md#nodes-built-in-fetch)
 to investigate the actual runtime and input path.
 
+Language-scoped imports and decoder API references are also collected as
+`decoder_source_candidate` findings, with line/column locations and a bounded
+sample of matches. These cover Python, JVM source, .NET source, Rust, Go,
+Ruby, PHP, and JavaScript/TypeScript integrations. An `implementation_hint`
+describes the expected upstream family, not the selected implementation: local
+modules, aliases, package replacements, compatibility runtimes, and build flags
+can change the provider. Every such lead remains `unknown` even alongside a
+separately supplied fixed Brotli version.
+
+See the [ecosystem guide](../skills/brotli-checker/references/ecosystems.md)
+for concrete native bindings, runtime decoders, independent ports, and WASM
+examples. Trace the import to the resolved package/runtime, shipped decoder,
+and input owner. Do not apply C library release rules to a wrapper's version or
+an independent implementation. Source collection is lexical, not binding or
+data-flow analysis; computed imports, generated code, renamed local wrappers,
+and unrepresented language syntax can be missed. Use reviewed aliases with
+source discovery's `--symbol` option when following call paths.
+
+Exact source matching also includes independently reviewed Go and Rust
+block-switch error-handling fixes: Go `andybalholm/brotli` v1.2.7 and Rust
+`brotli-decompressor` 6.2.0, with recorded pre-fix source revisions. Findings
+retain the implementation and upstream fix, and explicitly do not infer the C
+advisory's impact. A modified source file or dependency declaration does not
+inherit that exact-source verdict. See [fingerprint provenance](../skills/brotli-checker/references/advisory.md#analogous-independent-port-fixes).
+
+Independent-port exact matches use `affected_port_source` (exit 1) or
+`fixed_port_source` (exit 0 only when no other unresolved evidence/gaps remain).
+A report containing only those matches has `cve: null` and a port-specific result
+and summary, rather than assigning the C CVE to the port. Mixed reports retain
+each finding's implementation and issue scope; one fixed file never clears
+another unresolved or affected copy.
+
+Source and dependency evidence retains at most 20 matches per file, with explicit
+`matches_truncated` flags. A truncated dependency `matching_lines` count is a
+lower bound, marked by `matching_lines_is_lower_bound`. Structured-parser depth
+failures or traversal limits produce incomplete evidence and a coverage gap.
+Complex interpolation, nested template syntax, and generated bindings still
+require manual review; this is not a complete language parser.
+
 Hidden folders, dependencies, and build outputs are included; `.git` is excluded.
 Symlinks are skipped. A filesystem alias adds no gap when its resolved target was
 checked directly among the supplied roots; unchecked targets and archive links
@@ -81,6 +120,12 @@ Dockerfile/Containerfile names, dotted variants such as `Dockerfile.production`,
 and `.bzl` files use the existing dependency-declaration analysis. Their matches
 are leads only: they do not establish that a package was selected, built, shipped,
 or loaded at runtime.
+
+Additional dependency inputs include Python setup/Pipfile and requirements
+variants, Ruby Gemfile/gemspec files, Composer manifests/locks, and .NET project,
+NuGet, and dependency metadata. These records are dependency leads, not proof
+that the named code is installed or selected. Runtime-provided APIs such as
+`.NET BrotliStream` need not have a Brotli package declaration at all.
 
 ### Resource limits
 

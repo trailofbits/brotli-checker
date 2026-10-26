@@ -27,6 +27,12 @@ DECODER_SYMBOLS = frozenset(
         "brotliDecompress",
         "brotliDecompressSync",
         "createBrotliDecompress",
+        "BrotliInputStream",
+        "BrotliStream",
+        "BrotliDecoder",
+        "BrotliDecompress",
+        "brotli_decompress",
+        "brotli_uncompress",
     }
 )
 LIMITATIONS = [
@@ -116,7 +122,9 @@ def candidate_symbol(edge: CodeEdge, graph: CodeGraph, symbols: tuple[str, ...])
         return requested
     if label in DECODER_SYMBOLS:
         return label
-    if label == "decompress" and "brotli" in raw.lower():
+    if label in {"decompress", "Decompress", "TryDecompress", "Decompressor", "NewReader"} and (
+        "brotli" in raw.lower()
+    ):
         return raw
     return fetch_symbol(label, raw, target, attributes)
 
