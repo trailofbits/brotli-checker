@@ -276,6 +276,13 @@ exposure: protocol role, negotiation, provider, buffering, and configuration mat
 
 ## Bounded binary patch triage
 
+Stable [decoder-data signatures](binary-signatures.md) can identify useful
+starting points even when stripping or LTO defeats compiled-code matching.
+Use their recorded data addresses to find code cross-references in trusted
+static tools; do not pass a lookup table to objdump as executable instructions.
+Select the actual referencing functions for bounded code review. Table presence
+does not itself prove patch state, one coherent decoder instance, or runtime use.
+
 When the inventory leaves a local ELF copy unknown, the skill can collect a
 bounded, read-only disassembly packet:
 

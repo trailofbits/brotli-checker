@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Recognize compiler-independent Brotli decoder table signatures in binaries,
+  including stripped/LTO builds. Report recognition strength and table offsets
+  separately from patch state; encoder dictionaries alone do not qualify.
+- Scope ELF table evidence to load segments, report malformed-layout gaps, and
+  preserve bounded streaming/sparse access. Non-ELF table evidence is explicitly
+  file-content-only, without loader or execution claims.
+
 - Add 14 reviewed Go/Rust source fingerprints for analogous block-switch
   error-handling fixes, with explicit implementation and upstream-fix provenance.
   Do not infer the C advisory's memory-corruption impact for independent ports.

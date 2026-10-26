@@ -137,7 +137,17 @@ provider does not prove which file the deployed loader selects. Keep selection
 and reachability unknown until deployment-specific evidence closes them. See
 [dynamic ELF providers](references/reachability.md#dynamically-linked-elf-providers).
 
-For an unresolved local ELF with decoder name, symbol, version, or code evidence,
+For `decoder_data_signature`, use the [stable signature guide](references/binary-signatures.md).
+The full command table or complete code-length table set is stronger recognition
+evidence than a string, but occurs in both affected and fixed builds. Report
+`detection_status` separately from patch state. Preserve file offsets, ELF virtual
+addresses, and mapping scope; locate code cross-references to these **data** tables,
+then inspect bounded executable ranges and error propagation. Do not disassemble
+table bytes as if they were code or promote a table match to an affected/fixed
+verdict. PE/Mach-O/WASM table evidence is not loader validated. Dictionary-only
+presence does not establish a decoder, and unmatched signatures do not prove absence.
+
+For an unresolved local ELF with decoder table, name, symbol, version, or code evidence,
 collect bounded disassembly for model review instead of stopping at a generic
 unknown. Do not disassemble every unrelated ELF. Run this only with a trusted
 local `objdump`; the helper rejects target
