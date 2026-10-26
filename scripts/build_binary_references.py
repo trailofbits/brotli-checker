@@ -23,6 +23,16 @@ sys.path.insert(0, str(ROOT / "skills/brotli-checker/scripts"))
 from brotli_binary_match import load_references, reference_from_object  # noqa: E402
 
 
+def scoped_reference_id(reference: dict) -> str:
+    identifier = (
+        f"{reference['machine']}:{reference['elf_class']}:"
+        f"{reference['byteorder']}:{reference['id']}"
+    )
+    if scope := reference.get("code_scope"):
+        identifier += f":scope={scope}"
+    return identifier
+
+
 def build_references(trees: list[Path], compiler: str, flags: list[str]) -> dict:
     registry = json.loads((ROOT / "skills/brotli-checker/references/fingerprints.json").read_text())
     sources = {entry["sha256"]: entry for entry in registry["fingerprints"]}
@@ -67,10 +77,9 @@ def build_references(trees: list[Path], compiler: str, flags: list[str]) -> dict
                     "flags": shlex.join(flags),
                     "headers_sha256": headers.hexdigest(),
                 },
+                section_scope="auto",
             )
-            reference["id"] = (
-                f"{reference['machine']}:{reference['elf_class']}:{reference['byteorder']}:{reference['id']}"
-            )
+            reference["id"] = scoped_reference_id(reference)
             references.append(reference)
     return {"schema_version": 1, "references": references}
 

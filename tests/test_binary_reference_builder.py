@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILDER = runpy.run_path(str(ROOT / "scripts/build_binary_references.py"))
 load_references = BUILDER["load_references"]
 main = BUILDER["main"]
+scoped_reference_id = BUILDER["scoped_reference_id"]
 unique_references = BUILDER["unique_references"]
 write_validated_catalog = BUILDER["write_validated_catalog"]
 
@@ -41,6 +42,16 @@ def test_conflicting_generated_reference_ids_are_rejected():
     second = {**first, "object_sha256": hashlib.sha256(b"different").hexdigest()}
     with pytest.raises(ValueError, match="Conflicting generated code reference id"):
         unique_references([first, second])
+
+
+def test_subset_reference_id_is_scope_qualified_without_changing_legacy_ids():
+    entry = reference("source-profile")
+    entry.update(elf_class=64, byteorder="little")
+    assert scoped_reference_id(entry) == "183:64:little:source-profile"
+    entry["code_scope"] = "patch_bearing_sections_v1"
+    assert scoped_reference_id(entry) == (
+        "183:64:little:source-profile:scope=patch_bearing_sections_v1"
+    )
 
 
 def test_repeated_trees_and_profiles_produce_one_valid_reference(tmp_path, monkeypatch):

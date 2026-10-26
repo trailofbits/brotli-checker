@@ -57,6 +57,8 @@ MAX_REFERENCE_BYTES = 64 * 1024 * 1024
 MAX_MATCHES = 128
 MAX_CANDIDATES = 4096
 MAX_CODE_SECTIONS = 16
+MAX_REFERENCE_SYMBOLS = 1_000_000
+MAX_REFERENCE_SYMBOL_NAME_BYTES = 256
 STRUCT_BATCH_BYTES = 1024 * 1024
 ELF32_BITS = 32
 ELF64_BITS = 64
@@ -70,6 +72,26 @@ R_PPC64_REL24 = 10
 R_PPC64_GOT16_LO_DS = 59
 R_PPC64_TOC16_LO_DS = 64
 R_PPC64_REL16_HA = 252
+SHT_SYMTAB = 2
+SHT_DYNSYM = 11
+SHT_STRTAB = 3
+SHT_PROGBITS = 1
+STT_FUNC = 2
+SHF_ALLOC = 2
+SHF_EXECINSTR = 4
+REFERENCE_SCOPE_COMPLETE = "complete_decoder_text"
+REFERENCE_SCOPE_PATCH = "patch_bearing_sections_v1"
+PATCH_ROLE_PATTERNS = {
+    "literal": re.compile(r"^DecodeLiteralBlockSwitch(?:Internal)?(?:[.$].*)?$"),
+    "command": re.compile(r"^DecodeCommandBlockSwitch(?:Internal)?(?:[.$].*)?$"),
+    "distance": re.compile(r"^DecodeDistanceBlockSwitch(?:Internal)?(?:[.$].*)?$"),
+    "safe_literal": re.compile(r"^SafeDecodeLiteralBlockSwitch(?:Internal)?(?:[.$].*)?$"),
+    "safe_command": re.compile(r"^SafeDecodeCommandBlockSwitch(?:Internal)?(?:[.$].*)?$"),
+    "safe_distance": re.compile(r"^SafeDecodeDistanceBlockSwitch(?:Internal)?(?:[.$].*)?$"),
+    "process": re.compile(r"^ProcessCommands(?:Internal)?(?:[.$].*)?$"),
+    "safe_process": re.compile(r"^SafeProcessCommands(?:Internal)?(?:[.$].*)?$"),
+}
+PATCH_HELPER_PATTERN = re.compile(r"^(?:Safe)?DecodeBlockTypeAndLength(?:Internal)?(?:[.$].*)?$")
 
 
 @dataclass(frozen=True)
@@ -93,6 +115,12 @@ class ELFLayout:
         return struct.Struct(
             ("<" if self.byteorder == "little" else ">") + formats[kind][self.bits == ELF64_BITS]
         )
+
+
+@dataclass(frozen=True)
+class PatchSectionScope:
+    functions: dict[str, list[str]]
+    section_functions: dict[int, list[str]]
 
 
 def target_identity(header: tuple) -> tuple[int, int, str]:
@@ -209,7 +237,57 @@ def executable_ranges(data: Buffer) -> tuple[int, list[tuple[int, int]]]:
     return machine, ranges
 
 
-def validate_metadata(entry: dict) -> None:
+def valid_patch_functions(functions: object) -> bool:
+    if not isinstance(functions, dict) or set(functions) != {*PATCH_ROLE_PATTERNS, "helpers"}:
+        return False
+    for role, names in functions.items():
+        if (
+            not isinstance(names, list)
+            or (role != "helpers" and not names)
+            or any(not isinstance(name, str) or not name for name in names)
+        ):
+            return False
+        pattern = PATCH_HELPER_PATTERN if role == "helpers" else PATCH_ROLE_PATTERNS[role]
+        if any(pattern.fullmatch(name) is None for name in names):
+            return False
+    return True
+
+
+def valid_patch_section_population(entry: dict, functions: dict) -> bool:
+    extra = entry.get("additional_sections", [])
+    section_functions = entry.get("section_functions")
+    return (
+        isinstance(extra, list)
+        and isinstance(section_functions, list)
+        and len(section_functions) == 1 + len(extra)
+        and all(
+            isinstance(names, list)
+            and names
+            and all(isinstance(name, str) and name for name in names)
+            for names in section_functions
+        )
+        and {name for names in section_functions for name in names}
+        == {name for names in functions.values() for name in names}
+    )
+
+
+def validate_reference_scope(entry: dict, *, fragment: bool) -> None:
+    scope = entry.get("code_scope", REFERENCE_SCOPE_COMPLETE)
+    if scope not in (REFERENCE_SCOPE_COMPLETE, REFERENCE_SCOPE_PATCH):
+        msg = "Invalid code reference scope"
+        raise ValueError(msg)
+    if scope != REFERENCE_SCOPE_PATCH:
+        return
+    functions = entry.get("patch_functions")
+    if not isinstance(functions, dict) or not valid_patch_functions(functions):
+        msg = "Invalid patch-bearing function scope"
+        raise ValueError(msg)
+    if not fragment and not valid_patch_section_population(entry, functions):
+        msg = "Invalid patch-bearing section population"
+        raise ValueError(msg)
+
+
+def validate_metadata(entry: dict, *, fragment: bool = False) -> None:
     for field in ("id", "source_sha256", "object_sha256", "source", "compiler", "flags"):
         if not isinstance(entry.get(field), str) or not entry[field].strip():
             msg = f"Invalid code reference {field}"
@@ -231,6 +309,7 @@ def validate_metadata(entry: dict) -> None:
     ):
         msg = "Invalid code reference state or machine"
         raise ValueError(msg)
+    validate_reference_scope(entry, fragment=fragment)
 
 
 @dataclass(frozen=True)
@@ -247,7 +326,7 @@ class CodeReference:
         if not isinstance(entry, dict):
             msg = "Code reference must be an object"
             raise ValueError(msg)  # noqa: TRY004 -- Malformed catalog is a CLI value error.
-        validate_metadata(entry)
+        validate_metadata(entry, fragment=fragment)
         try:
             code = bytes.fromhex(entry["code"])
             mask = bytes.fromhex(entry["mask"])
@@ -431,7 +510,11 @@ def match_code(  # noqa: C901 -- Bounded reference/segment/candidate search with
                         **reference.metadata,
                         "file_offset": offset,
                         "size_bytes": len(reference.code),
-                        "method": "relocation_masked_decoder_text",
+                        "method": (
+                            "relocation_masked_patch_sections"
+                            if reference.metadata.get("code_scope") == REFERENCE_SCOPE_PATCH
+                            else "relocation_masked_decoder_text"
+                        ),
                         "additional_section_offsets": extra_offsets,
                     }
                 )
@@ -541,27 +624,155 @@ def mips64_relocation(info: int, byteorder: Literal["little", "big"]) -> int:
     return third or first
 
 
-def reference_from_object(data: Buffer, metadata: dict) -> dict:
-    """Build a complete decoder .text signature, rejecting unsupported object layouts."""
+def reference_symbol_tables(
+    data: Buffer, header: tuple, sections: list[tuple]
+) -> list[tuple[tuple, tuple, int, int]]:
+    symbol_parser = ELFLayout.of(header).parser("symbol")
+    tables: list[tuple[tuple, tuple, int, int]] = []
+    symbols_seen = 0
+    for table in sections:
+        if table[1] not in (SHT_SYMTAB, SHT_DYNSYM):
+            continue
+        if table[9] != symbol_parser.size or table[5] % symbol_parser.size:
+            msg = "Malformed ELF symbol table"
+            raise ValueError(msg)
+        if table[6] >= len(sections) or sections[table[6]][1] != SHT_STRTAB:
+            msg = "ELF symbols do not reference a string table"
+            raise ValueError(msg)
+        strings = sections[table[6]]
+        string_start, string_end = checked_range(data, strings[4], strings[5])
+        symbols_seen += table[5] // symbol_parser.size
+        if symbols_seen > MAX_REFERENCE_SYMBOLS:
+            msg = "Reference symbol limit reached"
+            raise ValueError(msg)
+        tables.append((table, strings, string_start, string_end))
+    return tables
+
+
+def valid_reference_function_owner(owner: tuple, address: int, size: int) -> bool:
+    return (
+        owner[1] == SHT_PROGBITS
+        and owner[2] & (SHF_ALLOC | SHF_EXECINSTR) == (SHF_ALLOC | SHF_EXECINSTR)
+        and bool(size)
+        and address >= owner[3]
+        and address + size <= owner[3] + owner[5]
+    )
+
+
+def reference_symbol_name(
+    data: Buffer, name_offset: int, strings: tuple, string_start: int, string_end: int
+) -> str | None:
+    if name_offset >= strings[5]:
+        return None
+    start = string_start + name_offset
+    end = data.find(b"\0", start, min(start + MAX_REFERENCE_SYMBOL_NAME_BYTES, string_end))
+    if end < 0:
+        return None
+    try:
+        return data[start:end].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+
+
+def reference_function_symbols(
+    data: Buffer, header: tuple, sections: list[tuple]
+) -> Iterator[tuple[str, int]]:
+    for table, strings, string_start, string_end in reference_symbol_tables(data, header, sections):
+        for name_offset, info, _, index, symbol_address, size in symbol_rows(data, header, table):
+            if info & 0xF != STT_FUNC or index == 0 or index >= len(sections):
+                continue
+            address = symbol_address & (~1 if header[2] == EM_ARM else -1)
+            if not valid_reference_function_owner(sections[index], address, size):
+                continue
+            name = reference_symbol_name(data, name_offset, strings, string_start, string_end)
+            if name is not None:
+                yield name, index
+
+
+def patch_section_scope(data: Buffer, header: tuple, sections: list[tuple]) -> PatchSectionScope:
+    role_sections = {role: set() for role in PATCH_ROLE_PATTERNS}
+    role_functions = {role: set() for role in PATCH_ROLE_PATTERNS}
+    helper_sections = set()
+    helper_functions = set()
+    section_functions: dict[int, set[str]] = {}
+    for name, index in reference_function_symbols(data, header, sections):
+        for role, pattern in PATCH_ROLE_PATTERNS.items():
+            if pattern.fullmatch(name):
+                role_sections[role].add(index)
+                role_functions[role].add(name)
+                section_functions.setdefault(index, set()).add(name)
+                break
+        if PATCH_HELPER_PATTERN.fullmatch(name):
+            helper_sections.add(index)
+            helper_functions.add(name)
+            section_functions.setdefault(index, set()).add(name)
+    missing = sorted(role for role, indices in role_sections.items() if not indices)
+    if missing:
+        msg = "Cannot establish required patch-bearing functions: " + ", ".join(missing)
+        raise ValueError(msg)
+    selected = helper_sections.union(*(indices for indices in role_sections.values()))
+    return PatchSectionScope(
+        functions={
+            **{role: sorted(role_functions[role]) for role in PATCH_ROLE_PATTERNS},
+            "helpers": sorted(helper_functions),
+        },
+        section_functions={index: sorted(section_functions[index]) for index in selected},
+    )
+
+
+def selected_code_sections(
+    data: Buffer,
+    header: tuple,
+    sections: list[tuple],
+    section_scope: Literal["complete", "auto", "patch"],
+) -> tuple[list[tuple[int, tuple]], PatchSectionScope | None]:
+    code_sections = [
+        (i, section) for i, section in enumerate(sections) if section[2] & 4 and section[5]
+    ]
+    if not code_sections:
+        msg = (
+            "Expected one complete executable section or bounded code sections; LTO is unsupported"
+        )
+        raise ValueError(msg)
+    if section_scope == "complete":
+        if len(code_sections) > MAX_CODE_SECTIONS:
+            msg = "Complete executable section population exceeds the reference limit"
+            raise ValueError(msg)
+        return code_sections, None
+    if section_scope not in ("auto", "patch"):
+        msg = f"Unsupported reference section scope: {section_scope}"
+        raise ValueError(msg)
+    if section_scope == "auto" and len(code_sections) == 1:
+        return code_sections, None
+    patch_scope = patch_section_scope(data, header, sections)
+    selected = set(patch_scope.section_functions)
+    if section_scope == "auto" and len(selected) == 1 and len(code_sections) <= MAX_CODE_SECTIONS:
+        return code_sections, None
+    if not selected or len(selected) > MAX_CODE_SECTIONS:
+        msg = "Patch-bearing executable section population exceeds the reference limit"
+        raise ValueError(msg)
+    return [(index, sections[index]) for index in sorted(selected)], patch_scope
+
+
+def reference_from_object(
+    data: Buffer,
+    metadata: dict,
+    *,
+    section_scope: Literal["complete", "auto", "patch"] = "complete",
+) -> dict:
+    """Build a bounded complete or patch-bearing decoder code signature."""
     header = elf_header(data)
     if header[1] != 1 or not header[12]:
         msg = "Expected ELF relocatable object with section headers"
         raise ValueError(msg)
     sections = section_headers(data, header)
-    code_sections = [
-        (i, section) for i, section in enumerate(sections) if section[2] & 4 and section[5]
-    ]
-    if not code_sections or len(code_sections) > MAX_CODE_SECTIONS:
-        msg = (
-            "Expected one complete executable section or bounded code sections; LTO is unsupported"
-        )
-        raise ValueError(msg)
-    code_sections.sort(key=lambda pair: pair[1][5], reverse=True)
+    code_sections, patch_scope = selected_code_sections(data, header, sections, section_scope)
+    code_sections.sort(key=lambda pair: (-pair[1][5], pair[0]))
     index, section = code_sections[0]
     code = checked_slice(data, section[4], section[5])
     mask = bytearray(b"\xff" * len(code))
     apply_relocations(data, sections, index, code, mask, machine=header[2])
-    entry = {
+    entry: dict = {
         **metadata,
         "machine": header[2],
         "elf_class": ELFLayout.of(header).bits,
@@ -570,6 +781,12 @@ def reference_from_object(data: Buffer, metadata: dict) -> dict:
         "code": code.hex(),
         "mask": mask.hex(),
     }
+    if patch_scope is not None:
+        entry["code_scope"] = REFERENCE_SCOPE_PATCH
+        entry["patch_functions"] = patch_scope.functions
+        entry["section_functions"] = [
+            patch_scope.section_functions[section_index] for section_index, _ in code_sections
+        ]
     if len(code_sections) > 1:
         entry["additional_sections"] = []
         for index, section in code_sections[1:]:

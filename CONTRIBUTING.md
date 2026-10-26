@@ -75,19 +75,47 @@ reviewed source registry, compiles without executing target code, and rejects
 unsupported relocations/layouts. Headers, compiler, and flags remain trusted
 inputs; header paths and contents receive a separate aggregate hash. The tool
 handles ELF32/64, REL/RELA, either supported byte order, and split executable
-sections. Relocation masks in `elf-relocations.json` preserve instruction bits;
-unknown relocation types fail closed. Linker instruction rewrites need explicit
-handling and controls against real linked output. It validates the finished catalog
-before atomically replacing output. `.gz` output is deterministic gzip; plain JSON
-remains accepted. Merge independently built target catalogs with repeated
+sections. Its automatic scope preserves complete decoder-text references when
+the patch-bearing functions co-locate in one section and the complete section
+population fits the limit. For function-section objects, it selects all emitted
+sections for the literal/command/distance block-switch functions, their safe
+variants, and normal/safe command processing, plus separately emitted related
+role clones/cold functions and `DecodeBlockTypeAndLength` helpers. Missing,
+malformed, or over-budget roles fail closed; unrelated public API sections are
+not made mandatory.
+
+Scoped entries use `code_scope=patch_bearing_sections_v1`, declare the exact
+`patch_functions`, bind them positionally to `section_functions`, and qualify
+their IDs with the scope. Do not edit these fields by hand. Relocation masks in
+`elf-relocations.json` preserve instruction bits; unknown relocation types fail
+closed. Linker instruction rewrites need explicit handling and controls against
+real linked output. The tool validates the finished catalog before atomically
+replacing output. `.gz` output is deterministic gzip; plain JSON remains
+accepted. Merge independently built target catalogs with repeated
 `--merge target.json.gz` arguments, with no source-tree argument required.
 Generate the packaged catalog with this tool rather than editing it by hand.
+
+To generate a linker-GC profile, compile the reference object with function and
+data sections, then validate linked applications with garbage collection:
+
+```sh
+python3 scripts/build_binary_references.py /sources/brotli-1.0.9 \
+  /sources/brotli-1.0.10 --cc cc \
+  --cflags='-O2 -fPIC -ffunction-sections -fdata-sections' \
+  --output gc-reference.json.gz
+```
+
+Repeat the affected/fixed release pairs for all intended optimization and
+PIC/non-PIC profiles. `--gc-sections` is a linker option used by the real linked
+controls, not a compiler option stored in the reference flags. A reference match
+still does not prove that separately matched sections belong to one decoder copy.
 
 The [build matrix](docs/usage.md#compiled-decoder-evidence) records packaged
 coverage and toolchain limits. For GCC cross-compilers, repeat the four default
 profiles with `-marm`/`-mthumb` for ARM, `-mno-relax` for RISC-V, or `-EB` for
-big-endian MIPS. LoongArch uses Clang `--target=loongarch64-linux-gnu -mno-relax`;
-see the matrix for its declaration headers and upstream portability change.
+big-endian MIPS. Packaged LoongArch profiles use GCC 14 with the Debian LoongArch
+sysroot and Clang 19 with `--target=loongarch64-linux-gnu -mno-relax`; see the
+matrix for declaration headers and the upstream portability change.
 For Brotli 1.2.0/1.2.1, append `&& !defined(__loongarch__)` to the
 `BROTLI_GNUC_HAS_ATTRIBUTE(model, 3, 0, 3)` guard in `c/common/platform.h`.
 Keep `decode.c` unchanged and use `--build-note` to record this change and the
@@ -123,7 +151,12 @@ PIE/non-PIE links, stripped binaries, removed section headers, and archive
 members. By default they never execute the resulting applications. Set
 `BROTLI_TEST_CC`, `BROTLI_TEST_AR`, and `BROTLI_TEST_STRIP` for cross tools;
 `BROTLI_TEST_CFLAGS` and `BROTLI_TEST_LDFLAGS` add target flags. Set
-`BROTLI_LARGE_FILE_TESTS=1` when running the full suite to include the optional
+`BROTLI_TEST_GC_SECTIONS=1` to add `-ffunction-sections -fdata-sections` and
+`-Wl,--gc-sections`. GC mode verifies that all required patch roles survive,
+unrelated APIs are discarded, and a version-only link with every required role
+discarded receives no code-state match. Each real artifact is checked against
+the paired affected/fixed release references, so opposite-state matches fail.
+Set `BROTLI_LARGE_FILE_TESTS=1` when running the full suite to include the optional
 multi-GiB hashing and CLI regressions.
 
 For an explicit benign runtime check, set `BROTLI_TEST_RUNNER` to a trusted QEMU
@@ -151,7 +184,10 @@ uv run --locked pytest tests/test_binary_builds.py --no-cov \
 ```
 
 JUnit properties record compiler/flags, target identity, runner, artifact/runtime
-check counts, and packaged-corpus compatibility for each variant. Set
+check counts, GC/missing-role checks, the paired release, selected reference
+catalog, and packaged-corpus compatibility for each variant. Set
+`BROTLI_TEST_REFERENCE_CATALOG=/path/to/candidate.json.gz` to validate a candidate
+catalog without replacing the packaged file. Set
 `BROTLI_TEST_REQUIRE_PACKAGED=1` only when testing an exact packaged profile; a
 mismatch then fails. Otherwise mismatches are reported explicitly. An opposite
 patch-state match always fails, regardless of profile compatibility.

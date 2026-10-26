@@ -70,9 +70,17 @@ extracting their paths onto the filesystem. Sequential expansion may spool data
 to temporary storage for random access; set `TMPDIR` to a disk-backed directory
 for large inputs.
 
-Recognized unsupported formats, including Debian/AR, RPM, Zstandard, 7z, and RAR,
-produce gaps; supply unpacked files. Unrecognized encodings can be missed.
-Container traversal does not apply whiteouts or reconstruct the final image.
+Recognized unsupported formats, including Debian/AR, RPM, Zstandard, 7z, RAR,
+SquashFS/Snap/AppImage, and ASAR, produce gaps; supply unpacked files. An
+ELF-prefixed AppImage keeps its outer ELF evidence and also reports the opaque
+payload gap. The scanner does not extract these formats. Unrecognized encodings
+can be missed. Container traversal does not apply whiteouts or reconstruct the
+final image.
+
+Dockerfile/Containerfile names, dotted variants such as `Dockerfile.production`,
+and `.bzl` files use the existing dependency-declaration analysis. Their matches
+are leads only: they do not establish that a package was selected, built, shipped,
+or loaded at runtime.
 
 ### Resource limits
 
@@ -140,33 +148,61 @@ interpreting the call neighborhood; missing parser evidence is not a negative re
 The main scanner includes code matching for ELF32 and ELF64 executables and
 shared libraries in supported byte orders. It compares compiled decoder text
 with reviewed references, masking supported relocation fields and documented
-linker instruction rewrites. Every executable section of the reference must
-match, including split hot/cold sections and compiler thunks. Sections can move
-independently; their association and relocation targets are not verified.
-It uses executable load segments, so stripped symbols and
-missing section headers do not prevent a match. Evidence includes source/object
-hashes, compiler flags, reference state, and file offsets.
+linker instruction rewrites. Complete references require every executable object
+section, including split hot/cold sections and compiler thunks. Scope-aware
+references for `-ffunction-sections` instead require every emitted section for
+the literal, command, and distance block-switch paths, their safe variants, and
+normal/safe command processing. Any separately emitted related helper, clone, or
+cold section recognized by those role patterns or by
+`DecodeBlockTypeAndLength` is required too; unrelated public decoder APIs are
+not.
 
-The packaged catalog contains 336 references for Brotli 1.0.9/1.0.10,
-1.1.0/1.1.1, and 1.2.0/1.2.1, each at `-O2` and `-O3` with PIC and non-PIC
-profiles:
+Scope-aware matches report `code_scope=patch_bearing_sections_v1`, the mapped
+`patch_functions` and positional `section_functions`, and method
+`relocation_masked_patch_sections`. Reference generation rejects a missing,
+malformed, or over-budget required role. All retained fragments from one
+reference must match before its affected/fixed state is reported. Sections can
+move independently; their association with one decoder copy and their relocation
+targets are not verified. Matching uses executable load segments, so stripping
+symbols or removing section headers from the linked artifact does not prevent a
+match. Evidence includes source/object hashes, compiler flags, reference state,
+scope, and file offsets.
+
+The packaged catalog contains 432 references for Brotli 1.0.9/1.0.10,
+1.1.0/1.1.1, and 1.2.0/1.2.1. It preserves all 336 prior references unchanged,
+adds 24 complete LoongArch GCC references, and adds 72 scope-aware
+`-ffunction-sections -fdata-sections` references for linker-GC builds. The final
+population is 360 complete and 72 scope-aware references. Each toolchain set
+covers `-O2` and `-O3` with PIC and non-PIC profiles:
 
 | Architecture | Toolchain / additional options |
 | --- | --- |
-| x86-64, x86 | GCC 14.2.0 |
-| AArch64 | GCC 14.2.0 and the original GCC 16.2.1 corpus |
+| x86-64 | GCC 14.2.0, including scope-aware linker-GC profiles |
+| x86 | GCC 14.2.0 |
+| AArch64 | GCC 14.2.0 and GCC 16.2.1, including scope-aware linker-GC profiles for both |
 | ARMv7 ARM and Thumb | GCC 14.2.0, `-marm` / `-mthumb` |
 | RISC-V64 | GCC 14.2.0, `-mno-relax` |
 | PowerPC64 little-endian | GCC 14.2.0 |
 | s390x (big-endian) | GCC 14.2.0 |
 | MIPS32/64, little- and big-endian | GCC 14.2.0, `-EB` for big-endian |
-| LoongArch64 | Clang 19.1.7, `-mno-relax`; portability details below |
+| LoongArch64 | GCC 14.2.0 and Clang 19.1.7, `-mno-relax`; portability details below |
 
 LoongArch references apply the `BROTLI_MODEL` header guard from upstream
 [e230f47](https://github.com/google/brotli/commit/e230f474b87134e8c6c85b630084c612057f253e)
-and use AArch64 LP64 glibc headers for C declarations. Decoder source is unchanged;
-`build_note` and `headers_sha256` record these build inputs. These profiles do
-not establish coverage for other LoongArch toolchains/sysroots.
+for 1.2.0/1.2.1. The GCC profile uses the Debian LoongArch sysroot; the Clang
+profile uses AArch64 LP64 glibc headers for C declarations. Decoder source is
+unchanged; `build_note` and `headers_sha256` record the compiler, sysroot,
+portability input, and `-mno-relax`. These profiles do not establish coverage
+for other LoongArch toolchains/sysroots.
+
+The scope-aware profiles were checked with valid one-shot and streaming decoder
+fixtures across all six releases and four optimization/PIC profiles: 24 AArch64
+GCC 14, 24 x86-64 GCC 14, and 24 AArch64 GCC 16 cases. Each case checks
+normal, stripped, and section-header-free artifacts, paired affected/fixed
+references, and a version-only link where garbage collection removes every
+required patch role. The 24 LoongArch GCC 14 complete-reference cases received
+the same normal runtime/artifact checks without the linker-GC option. These are
+profile-specific acceptance results, not compiler-independent coverage.
 
 Linker CPU erratum fixes and inserted veneers can also leave these compiler
 profiles unmatched, depending on code placement (including Cortex-A8/A53 fixes).
@@ -191,9 +227,12 @@ replace the packaged catalog. See [reference generation](../CONTRIBUTING.md#comp
 | `not_assessed` | No patch classification; the main scanner uses `unknown`. |
 
 Matching establishes code identity within the checked scope. Different compilers,
-flags, LTO, split sections, linker relaxation, or alternate backports can remain
-unmatched. Relocation targets and referenced data are not verified. A code match
-does not establish runtime linkage, reachability, or that every copy is fixed.
+flags, LTO, unrepresented split-section layouts, linker relaxation, or alternate
+backports can remain unmatched. LTO is not covered by the scope-aware references.
+Relocation targets, referenced data, and association of independently matched
+sections with one linked decoder copy are not verified. A code match does not
+establish runtime linkage, reachability, or that every copy is fixed. A
+fixed-only match remains review-required.
 
 On unmatched ELF inputs, metadata distinguishes defined decoder APIs from imports
 and reads supported constant-return `BrotliDecoderVersion` functions without

@@ -65,6 +65,55 @@ incomplete. Exit 0 means collection completed within those limits. Neither exit
 is a patch verdict or a runtime reachability conclusion. When tooling or source
 is unavailable, state that gap and continue with direct source inspection.
 
+## Dynamically linked ELF providers
+
+An undefined Brotli decoder symbol identifies an importer, not the decoder bytes
+which will run. Keep the importer's patch status and provider selection unknown
+until the supplying regular files are inspected in the relevant deployment scope.
+Use a trusted host `readelf` for static metadata only:
+
+```sh
+readelf -dW -- /absolute/application-or-library
+readelf -Ws -- /absolute/application-or-library
+```
+
+Record the importer SHA-256 and ELF identity, each decoder API with `UND`, every
+`DT_NEEDED` name, and literal `DT_RPATH`/`DT_RUNPATH` values. Then:
+
+1. Establish the application, container/rootfs, package, or deployment directory
+   being reviewed. A library with the same name on the review host is not evidence
+   about the deployment.
+2. Enumerate regular provider candidates under that supplied scope: an explicitly
+   packaged sibling, an application library directory, or a library path recorded
+   by reviewed deployment/build configuration. Include transitive providers when
+   one wrapper imports another Brotli library.
+3. Treat `$ORIGIN`, `${ORIGIN}`, and other loader tokens as untrusted path data.
+   For candidate enumeration, substitute an importer directory only with ordinary
+   path operations inside the supplied root; normalize the result and reject scope
+   escapes. Never pass the token through `eval`, `sh -c`, environment expansion,
+   or command substitution. Do not follow an unreviewed symlink as provider proof.
+4. Scan each actual provider file directly with the inventory helper. Preserve its
+   hash, code/metadata result, path, and whether it is an import or definition.
+   If the scanner reports a symlink gap, supply the real deployment target as an
+   explicit scan root rather than enabling symlink following.
+5. Keep runtime selection unknown unless deployment-specific loader configuration,
+   build/link provenance, package/image contents, or an explicitly authorized
+   runtime trace establishes the selected file. `DT_NEEDED` is a name; RUNPATH,
+   RPATH, SONAME, and a matching fixed file do not by themselves prove selection.
+
+Never use `ldd`, `LD_TRACE_LOADED_OBJECTS`, or the target's dynamic loader for this
+static workflow: they execute loader behavior and can run target-controlled code.
+Do not execute a helper from the inspected root. Static `readelf` results also
+cannot account for `dlopen`, audit/preload variables, loader caches, mounts,
+set-user-ID rules, or process-specific namespaces. Ask for the missing deployment
+evidence instead of simulating those rules with the review host.
+
+A vulnerable matched provider establishes affected code in that provider, not
+that the importer reaches it. A fixed match supplies bounded code-identity
+evidence for that provider; it does not clear the binary or application. Other
+provider candidates, embedded copies, relocation targets, loader selection, the
+call path, and input ownership remain separate rows of evidence.
+
 ## Node.js and HTTP services/clients
 
 Search for `fetch`, `globalThis.fetch`, `undici`, `brotliDecompress`,

@@ -2,9 +2,22 @@
 
 ## Unreleased
 
+- Expand the packaged ELF catalog from 336 to 432 references while preserving
+  every prior entry: add 72 scope-aware GCC references for x86-64/AArch64
+  function-section builds linked with garbage collection, plus 24 complete
+  LoongArch GCC 14 references.
+- Require all eight patch-bearing decoder roles and recognized emitted
+  helper/clone/cold sections for a scoped code match, while allowing linker GC
+  to discard unrelated public APIs. Record the reference scope and
+  function-to-fragment population in match evidence; missing roles remain
+  unknown.
 - Add opt-in QEMU runtime checks for the ELF build matrix, covering one-shot and
-  streaming decode, decoder versions, normal/stripped/sectionless artifacts, and
-  explicit packaged-profile compatibility reporting.
+  streaming decode, decoder versions, normal/stripped/sectionless artifacts,
+  linker-GC and missing-role controls, paired affected/fixed references, and
+  explicit candidate/packaged-profile compatibility reporting.
+- Report opaque SquashFS, Snap, AppImage, and ASAR payloads as coverage gaps,
+  preserving outer ELF evidence for AppImage without extraction. Route
+  Dockerfile/Containerfile variants and `.bzl` through dependency-lead analysis.
 - Report source-parser/grammar-provider failures as incomplete JSON evidence,
   and normalize whitespace in explicitly supplied discovery symbols.
 - Validate MIPS instruction modes before raw disassembly; unsupported modes

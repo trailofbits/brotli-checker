@@ -94,6 +94,11 @@ UNSUPPORTED_SUFFIXES = {
     ".dmg",
     ".cpio",
     ".ar",
+    ".snap",
+    ".squashfs",
+    ".sqfs",
+    ".appimage",
+    ".asar",
 }
 ARCHIVE_SIGNATURES = (
     (b"PK\x03\x04", "zip"),
@@ -116,6 +121,8 @@ ARCHIVE_SIGNATURES = (
     (b"070701", "unsupported"),
     (b"070702", "unsupported"),
     (b"070707", "unsupported"),
+    (b"hsqs", "unsupported"),
+    (b"sqsh", "unsupported"),
 )
 NODE_FIXES = {22: (22, 23, 4), 24: (24, 22, 1), 26: (26, 12, 1)}
 # Frozen from the Node.js release schedule on the advisory snapshot date.
@@ -146,6 +153,8 @@ MANIFEST_NAMES = {
     "workspace",
     "workspace.bazel",
     "deps",
+    "dockerfile",
+    "containerfile",
     ".gitmodules",
     "vcpkg.json",
     "conanfile.txt",
@@ -695,7 +704,9 @@ class Inventory:
         self._inspect_fetch(text, label)
         indicators = []
         if text and (
-            name in MANIFEST_NAMES or name.endswith((".cmake", ".spdx.json", ".cdx.json"))
+            name in MANIFEST_NAMES
+            or name.startswith(("dockerfile.", "containerfile."))
+            or name.endswith((".cmake", ".spdx.json", ".cdx.json", ".bzl"))
         ):
             self._inspect_manifest(text, label)
         elif not python_bytecode(data, name):
