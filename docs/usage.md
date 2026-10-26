@@ -190,6 +190,21 @@ interpreting the call neighborhood; missing parser evidence is not a negative re
 
 ## Compiled decoder evidence
 
+Binary recognition now has a separate `detection_status`: reviewed code matches,
+stable decoder-table matches, defined symbols, imports, weak strings, and no
+recognition are distinct. The full 704-entry command table or all three
+code-length tables can recognize stripped and LTO builds without matching a
+compiler-specific code reference. `decoder_tables_detected` reports exact data
+offsets (and ELF virtual addresses), not a patch verdict. The main scanner
+reports "Brotli decoder tables detected; patch review required" and retains exit
+3 unless stronger affected evidence applies. A nonmatch is not proof of absence.
+See [stable signatures and their validation](../skills/brotli-checker/references/binary-signatures.md).
+
+ELF signatures are restricted to load segments. PE/Mach-O/WASM signatures are
+file-content evidence only, explicitly not loader validated; they can identify
+embedded data without proving executable use. Malformed ELF scoping reports a
+coverage gap instead of silently treating the binary as fully inspected.
+
 The main scanner includes code matching for ELF32 and ELF64 executables and
 shared libraries in supported byte orders. It compares compiled decoder text
 with reviewed references, masking supported relocation fields and documented

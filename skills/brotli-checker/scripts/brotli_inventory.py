@@ -45,6 +45,7 @@ from brotli_binary_match import (
     match_code,
 )
 from brotli_binary_metadata import decoder_metadata
+from brotli_binary_signatures import recognize_decoder_data
 from brotli_dependencies import MAX_DEPENDENCY_MATCHES, dependency_manifest, dependency_matches
 from brotli_source_leads import MAX_SOURCE_MATCHES, source_references
 
@@ -387,6 +388,7 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
         else CodeAssessment([], "Code matching requires a supported linked ELF32/ELF64 binary")
     )
     metadata = decoder_metadata(data) if is_elf else {}
+    recognition = recognize_decoder_data(data)
     versions = metadata.get("versions", [])
     for version in versions:
         rule = assess_version("brotli", version["version"])
@@ -410,6 +412,12 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
         elif {symbol.decode("ascii") for symbol in DECODER_SYMBOLS}.intersection(indicators):
             kind = "decoder_symbol_candidate"
             reason = "Decoder symbol/string found; implementation and patch status unresolved."
+        if recognition["matches"]:
+            kind = "decoder_data_signature"
+            reason = (
+                "Brotli decoder-specific table signatures detected; inspect code references "
+                "to these tables to determine implementation and patch state."
+            )
         if versions:
             reason += " Reported decoder version is metadata, not proof of a fix."
     if old_version and status not in {"vulnerable_code_match", "mixed_code_matches"}:
@@ -425,10 +433,23 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
         "linkage": linkage,
         "indicators": indicators,
         "decoder_metadata": metadata,
+        "recognition": recognition,
+        "detection_status": "decoder_code_identified"
+        if code.matches
+        else recognition["status"]
+        if recognition["matches"]
+        else "decoder_symbols_defined"
+        if metadata.get("defined_symbols")
+        else "decoder_import_detected"
+        if metadata.get("imported_symbols")
+        else "name_or_string_only"
+        if indicators
+        else "not_detected",
         "code_matches": code.matches,
         "code_assessment": code.reason,
         "gaps": ([code.reason] if code.limited else [])
-        + ([metadata["reason"]] if metadata.get("limited") else []),
+        + ([metadata["reason"]] if metadata.get("limited") else [])
+        + ([recognition["reason"]] if recognition["limited"] else []),
     }
 
 
@@ -491,6 +512,7 @@ class Inventory:
                         "patch status need review."
                     ),
                     size_bytes=size_bytes,
+                    detection_status="name_or_string_only",
                 )
             )
 
@@ -636,6 +658,23 @@ class Inventory:
         return raw.decode("utf-8", errors="replace")
 
     def _inspect_noncontainer(self, data: Buffer, label: str, digest: str) -> None:
+        recognition = recognize_decoder_data(data)
+        if recognition["limited"]:
+            self.gap(label, recognition["reason"])
+        if recognition["matches"]:
+            self.findings.append(
+                finding(
+                    label,
+                    "decoder_data_signature",
+                    "unknown",
+                    "Brotli decoder table signatures detected in file bytes; executable use "
+                    "and patch state require code review.",
+                    sha256=digest,
+                    recognition=recognition,
+                    detection_status=recognition["status"],
+                )
+            )
+            return
         name = leaf_name(label)
         text = self._text(data, label)
         if self._inspect_source(text, label, digest):
@@ -658,6 +697,7 @@ class Inventory:
                     "Filename suggests Brotli; implementation and patch status unresolved.",
                     sha256=digest,
                     indicators=indicators,
+                    detection_status="name_or_string_only",
                 )
             )
 
@@ -679,6 +719,8 @@ class Inventory:
                 code_assessment=assessment["code_assessment"],
                 indicators=assessment["indicators"],
                 decoder_metadata=assessment["decoder_metadata"],
+                recognition=assessment["recognition"],
+                detection_status=assessment["detection_status"],
                 linkage=assessment["linkage"],
             )
         )
@@ -797,6 +839,7 @@ class Inventory:
                     "Decoder symbol/string may identify imports, exports, or embedded code; "
                     "patch status unknown.",
                     sha256=digest,
+                    detection_status="name_or_string_only",
                 )
             )
 
@@ -1265,6 +1308,14 @@ def explain_lead(item: dict) -> dict:
             ),
         }
     advice = {
+        "decoder_data_signature": (
+            "Brotli decoder tables detected; patch state not established",
+            (
+                "Use the recorded table offsets to locate code references and review the decoder. "
+                "These tables occur in both affected and fixed versions; "
+                "they do not prove that the tables are used at runtime."
+            ),
+        ),
         "decoder_source_candidate": (
             "Possible decoder integration in source",
             (
@@ -1506,6 +1557,24 @@ def summarize(report: dict) -> dict:
         }
     if findings and statuses <= GOOD:
         return fixed_summary(statuses)
+    return unresolved_summary(findings)
+
+
+def unresolved_summary(findings: list[dict]) -> dict:
+    if any(item["kind"] == "decoder_data_signature" for item in findings):
+        return {
+            "status": "decoder_detected_patch_unresolved",
+            "title": "Brotli decoder tables detected; patch review required",
+            "meaning": (
+                "The binary contains decoder-specific data signatures, not just a name. "
+                "Those tables are shared by affected and fixed builds and may be unused data."
+            ),
+            "next_steps": [
+                "Use table offsets and ELF addresses to locate references in trusted static tools.",
+                "Review the decoding and error-propagation code or obtain exact build provenance.",
+                "Keep runtime use, other decoder copies, and patch status separate.",
+            ],
+        }
     if any(fetch_related(item) for item in findings):
         return fetch_summary()
     return {

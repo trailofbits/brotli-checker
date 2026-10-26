@@ -79,6 +79,7 @@ class BinaryInventory(Inventory):
                 kind="artifact_name_candidate",
                 size_bytes=size_bytes,
                 code_assessment="Content was not inspected; filename only",
+                detection_status="name_or_string_only",
             )
         )
 
@@ -96,6 +97,8 @@ class BinaryInventory(Inventory):
         linkage: str = "unknown",
         code_matches: list[dict] | None = None,
         decoder_metadata: dict | None = None,
+        recognition: dict | None = None,
+        detection_status: str = "not_detected",
         code_assessment: str,
     ) -> dict:
         return {
@@ -110,6 +113,8 @@ class BinaryInventory(Inventory):
             "linkage": linkage,
             "code_matches": code_matches or [],
             "decoder_metadata": decoder_metadata or {},
+            "recognition": recognition or {},
+            "detection_status": detection_status,
             "code_assessment": code_assessment,
         }
 
@@ -139,6 +144,8 @@ class BinaryInventory(Inventory):
                     linkage=assessment["linkage"],
                     code_matches=assessment["code_matches"],
                     decoder_metadata=assessment["decoder_metadata"],
+                    recognition=assessment["recognition"],
+                    detection_status=assessment["detection_status"],
                     code_assessment=assessment["reason"],
                 )
             )

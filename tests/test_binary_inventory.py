@@ -37,7 +37,7 @@ def test_native_indicators_are_not_patch_verdicts(tmp_path, magic):
     data = magic + b"\0BrotliDecoderDecompress\0"
     artifact.write_bytes(data)
     result = run_scan(artifact)
-    assert result.returncode == (3 if magic == b"!<arch>\n" else 1)
+    assert result.returncode == (3 if magic in {b"!<arch>\n", b"\x7fELF"} else 1)
     finding = json.loads(result.stdout)["findings"][0]
     assert finding["sha256"] == hashlib.sha256(data).hexdigest()
     assert finding["patch_status"] == "not_assessed"
@@ -61,12 +61,13 @@ def test_catalog_matches_even_without_indicators(tmp_path):
     assert json.loads(result.stdout)["findings"] == []
 
 
-def test_bundled_named_stripped_library(tmp_path):
+def test_bundled_named_truncated_library_reports_uninspected_structure(tmp_path):
     archive = tmp_path / "app.whl"
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr("native/libbrotlidec.so.1", b"\x7fELF\0stripped")
     result = run_scan(archive)
-    assert result.returncode == 1
+    assert result.returncode == 3
+    assert json.loads(result.stdout)["coverage"]["gap_count"] > 0
     findings = json.loads(result.stdout)["findings"]
     assert len(findings) == 1
     assert findings[0]["path"].endswith("app.whl!native/libbrotlidec.so.1")
@@ -217,7 +218,7 @@ def test_nested_bundle_and_multiple_root_budget(tmp_path):
     with zipfile.ZipFile(outer, "w") as archive:
         archive.writestr("nested.zip", inner.getvalue())
     result = run_scan(outer)
-    assert result.returncode == 1
+    assert result.returncode == 3  # Truncated ELF headers cannot scope structural recognition.
     report = json.loads(result.stdout)
     assert report["findings"][0]["path"].endswith("app.zip!nested.zip!application")
     assert report["coverage"]["archives_opened"] == 2
