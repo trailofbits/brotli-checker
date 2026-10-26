@@ -45,6 +45,10 @@ select the full suite; timeout detections must pass the harness's solo rerun
 and unmutated control confirmation.
 
 Keep tests on the normal Python import path so mutation instrumentation runs.
+Load large compiled-reference catalogs lazily in optional build tests. Source/reporting
+CLI tests should use a small explicit catalog; dedicated packaged-catalog and linked
+binary tests retain full corpus checks. Eager import-time loads inflate every mutant
+subprocess and misattribute coverage to test collection.
 Do not replace scanner imports with direct `exec_module` or `runpy.run_path`.
 Keep the ordinary suite offline. Document optional downloads and trusted
 compiler inputs separately.

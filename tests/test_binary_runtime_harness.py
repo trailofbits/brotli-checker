@@ -86,7 +86,7 @@ def test_legacy_packaged_profile_defaults_to_elf64_little_endian(monkeypatch):
         "source_sha256": "a" * 64,
     }
     reference = SimpleNamespace(metadata={**metadata, "elf_class": 64, "byteorder": "little"})
-    monkeypatch.setattr(builds, "PACKAGED_REFERENCES", [SimpleNamespace(metadata=metadata)])
+    monkeypatch.setattr(builds, "packaged_references", lambda: [SimpleNamespace(metadata=metadata)])
     monkeypatch.setattr(
         builds.matcher,
         "match_code",
@@ -116,7 +116,7 @@ def test_packaged_profile_mismatch_is_recorded_or_required(monkeypatch):
             "source_sha256": "a" * 64,
         }
     )
-    monkeypatch.setattr(builds, "PACKAGED_REFERENCES", [])
+    monkeypatch.setattr(builds, "packaged_references", list)
     monkeypatch.setattr(
         builds.matcher,
         "match_code",
