@@ -86,14 +86,38 @@ def check_report(report: dict, expected_files: set[Path]) -> float:
     return score
 
 
+def combine_reports(reports: list[dict]) -> dict:
+    results = []
+    seen_files: set[str] = set()
+    for report in reports:
+        rows, _ = validate_results(report)
+        files = {Path(row["file_path"]).name for row in rows}
+        if files & seen_files:
+            msg = "Mutation shards overlap source files."
+            raise ValueError(msg)
+        seen_files.update(files)
+        for row in rows:
+            path = SOURCE / Path(row["file_path"]).name
+            if not path.is_file():
+                msg = "Mutation shard contains an unknown scanner module."
+                raise ValueError(msg)
+            results.append({**row, "file_path": str(path)})
+    counts = Counter(row["status"] for row in results)
+    return {
+        "summary": {"total": len(results), **{key: counts[key] for key in STATUSES}},
+        "results": results,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "report", nargs="?", type=Path, default=Path("coverage/gremlins/gremlins.json")
+        "reports", nargs="*", type=Path, default=[Path("coverage/gremlins/gremlins.json")]
     )
     args = parser.parse_args(argv)
     try:
-        report = json.loads(args.report.read_text(encoding="utf-8"))
+        reports = [json.loads(path.read_text(encoding="utf-8")) for path in args.reports]
+        report = combine_reports(reports) if len(reports) > 1 else reports[0]
         score = check_report(report, {path.resolve() for path in SOURCE.glob("*.py")})
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"Mutation check failed: {error}", file=sys.stderr)
