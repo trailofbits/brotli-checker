@@ -89,14 +89,34 @@ produce exit 0. Version strings/imports do not determine code state. Matching
 excludes relocated address fields and does not verify their targets or referenced
 data or associate separately matched executable sections. Packaged references cover
 x86, x86-64, ARM/Thumb, AArch64, RISC-V64, PowerPC64 little-endian, s390x,
-MIPS32/64 in both byte orders, and LoongArch64. They cover `-O2`/`-O3` PIC/non-PIC
-builds of three affected/fixed release pairs with GCC 14.2, the original AArch64
-GCC 16.2.1 builds, and Clang 19 LoongArch builds. LoongArch uses a documented
-upstream header portability change and LP64 declaration headers; inspect
-`build_note`, `headers_sha256`, and flags. Other compiler/options require
-corresponding trusted references via `--code-references`. No match remains unknown;
-a supported target with no references produces an explicit coverage gap.
-Do not present this as compiler-independent semantic or CFG patch verification.
+MIPS32/64 in both byte orders, and LoongArch64. The 432 references cover `-O2`/`-O3`
+PIC/non-PIC builds of three affected/fixed release pairs with GCC 14.2, the
+original AArch64 GCC 16.2.1 builds, and Clang 19 LoongArch builds. LoongArch also
+has GCC 14.2 references built with `-mno-relax` against a real LoongArch glibc
+sysroot. The two Loong toolchains have distinct header/sysroot provenance; inspect
+`build_note`, `headers_sha256`, compiler, and flags rather than treating the ISA as
+the build identity.
+
+For x86-64 GCC 14.2, AArch64 GCC 14.2, and AArch64 GCC 16.2, the catalog also
+covers `-ffunction-sections -fdata-sections` linked with section garbage
+collection. These entries have `code_scope: patch_bearing_sections_v1` and method
+`relocation_masked_patch_sections`. They require exact matches for every emitted
+section owning literal, command, and distance block-switch handling, all safe
+variants, and normal/safe command processing, plus recorded emitted helpers. They
+intentionally do not require unrelated public APIs which the linker may discard.
+A fixed scoped match establishes only the recorded patch-bearing population, not
+the whole decoder, unused APIs, another copy, or runtime selection. Missing any
+required role prevents that reference from matching. Paired controls reject
+opposite-state code, and matching both states reports a mixed result. This does
+not establish that separately matched fragments belong to one decoder copy.
+
+Other compilers/options require corresponding trusted references via
+`--code-references`. Cross-translation-unit LTO can rewrite and reorder the final
+code beyond both complete and function-section pre-link identities; keep those
+binaries unknown unless reviewed post-link evidence or bounded disassembly closes
+the gap. No match remains unknown; a supported target with no references produces
+an explicit coverage gap. Do not present this as compiler-independent semantic or
+CFG patch verification.
 
 The inventory also reads bounded ELF symbol tables without executing the target.
 It distinguishes decoder API definitions from imports. For an exactly defined
@@ -106,6 +126,16 @@ instruction forms. A reported old supported-branch version is
 already applies. A reported fixed version is metadata only and never clears the
 binary. Code-reference matches remain code-identity evidence; metadata does not
 upgrade an unmatched binary to `fixed_code_match`.
+
+For `decoder_import_candidate`, statically inspect the importer and every
+in-scope provider candidate before triage. Use a trusted `readelf` to record
+`DT_NEEDED`, `DT_RPATH`/`DT_RUNPATH`, and undefined decoder symbols, then scan the
+actual regular provider files from the supplied application, image, or deployment
+root. Never run `ldd`, invoke a dynamic loader, or shell-evaluate `$ORIGIN` or
+other path tokens. A needed name, RUNPATH, SONAME, host library, or one fixed
+provider does not prove which file the deployed loader selects. Keep selection
+and reachability unknown until deployment-specific evidence closes them. See
+[dynamic ELF providers](references/reachability.md#dynamically-linked-elf-providers).
 
 For an unresolved local ELF with decoder name, symbol, version, or code evidence,
 collect bounded disassembly for model review instead of stopping at a generic
@@ -167,6 +197,13 @@ application or production binary's patch state was validated, and no malformed
 or exploit payload was executed. The benign fetch test establishes a decoding
 route, not CVE triggerability or exploitation. Do not describe source
 classification as an end-to-end test of a vulnerable app.
+
+The packaged function-section profiles were additionally validated with real
+linked `--gc-sections` builds for x86-64 GCC 14.2, AArch64 GCC 14.2, and AArch64
+GCC 16.2 across all six releases and four optimization/PIC profiles. LoongArch
+GCC 14.2 complete references received the same 24-case linked/QEMU matrix. These
+benign executions confirm ordinary decoder operation and reference recognition;
+they are not malformed-stream, reachability, or vulnerability tests.
 
 ## Establish patch status and reachability
 

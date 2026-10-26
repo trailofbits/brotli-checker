@@ -475,6 +475,8 @@ class TestInventory:
             b"xar!",
             b"070701",
             b"\x50\x2a\x4d\x18",
+            b"hsqs",
+            b"sqsh",
         ],
     )
     def test_unsupported_container_magic_prevents_exit_zero(self, signature):
@@ -485,13 +487,71 @@ class TestInventory:
         assert report["coverage"]["gap_count"] == 1
         assert "Unsupported" in report["coverage"]["gaps"][0]["reason"]
 
-    @pytest.mark.parametrize("suffix", [".deb", ".rpm", ".tar.zst", ".br", ".lzma", ".7z"])
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            ".deb",
+            ".rpm",
+            ".tar.zst",
+            ".br",
+            ".lzma",
+            ".7z",
+            ".snap",
+            ".squashfs",
+            ".sqfs",
+            ".appimage",
+            ".asar",
+        ],
+    )
     def test_unsupported_named_packages_prevent_exit_zero(self, suffix):
         target = self.root / ("package" + suffix)
         target.write_bytes(b"opaque content")
         code, report = self.run_cli(target, "--brotli-version", "1.1.1")
         assert code == 3
         assert report["coverage"]["gap_count"] == 1
+
+    def test_elf_prefixed_appimage_keeps_binary_evidence_and_payload_gap(self):
+        target = self.root / "service.AppImage"
+        target.write_bytes(linked_elf(b"launcher") + b"hsqsopaque payload")
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 3
+        assert report["coverage"]["gap_count"] == 1
+        candidates = [item for item in report["findings"] if item["path"] == str(target)]
+        assert len(candidates) == 1
+        assert candidates[0]["kind"] == "binary_candidate"
+        assert candidates[0]["patch_status"] == "unknown"
+
+    def test_unsupported_squashfs_is_not_extracted_and_respects_input_budget(self):
+        target = self.root / "application.snap"
+        target.write_bytes(b"hsqs" + b"opaque compressed payload")
+        before = list(self.root.iterdir())
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 3
+        assert report["coverage"]["gap_count"] == 1
+        assert list(self.root.iterdir()) == before
+
+        code, report = self.run_cli(
+            target,
+            "--brotli-version",
+            "1.2.1",
+            "--max-file-bytes",
+            "4",
+        )
+        assert code == 3
+        assert report["coverage"]["files_read"] == 0
+        assert report["coverage"]["gap_count"] == 1
+        assert "4-byte limit" in report["coverage"]["gaps"][0]["reason"]
+        assert report["coverage"]["archives_attempted"] == 0
+        assert list(self.root.iterdir()) == before
+
+    def test_unsupported_container_near_misses_do_not_create_false_gaps(self):
+        (self.root / "near-magic").write_bytes(b"hsqXordinary")
+        (self.root / "snapshot").write_text("ordinary notes")
+        (self.root / "notes.asar.txt").write_text("ordinary notes")
+        code, report = self.run_cli(self.root, "--brotli-version", "1.2.1")
+        assert code == 0
+        assert report["coverage"]["gap_count"] == 0
+        assert [item["kind"] for item in report["findings"]] == ["supplied_version"]
 
     @pytest.mark.parametrize(
         "name",
@@ -784,6 +844,46 @@ class TestInventory:
         assert item["kind"] == "dependency_candidate"
         assert item["evidence"]["possible_node_http_client"] is True
         assert "actual Node.js runtime" in inventory.render_text(report)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Dockerfile",
+            "Containerfile",
+            "Dockerfile.production",
+            "Containerfile.dev",
+            "repositories.bzl",
+        ],
+    )
+    def test_container_and_bazel_declarations_are_unknown_dependency_leads(self, name):
+        marker = self.root / "should-not-exist"
+        target = self.root / name
+        target.write_text(f"touch {marker}\ninstall libbrotli1\n")
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 3
+        leads = [item for item in report["findings"] if item["kind"] == "dependency_candidate"]
+        assert len(leads) == 1
+        assert leads[0]["patch_status"] == "unknown"
+        assert leads[0]["evidence"]["matches"] == [{"line": 2, "text": "install libbrotli1"}]
+        assert not marker.exists()
+        assert report["coverage"]["gap_count"] == 0
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Dockerfile",
+            "Containerfile",
+            "Dockerfile.production",
+            "Containerfile.dev",
+            "repositories.bzl",
+        ],
+    )
+    def test_container_and_bazel_declaration_negative_controls(self, name):
+        (self.root / name).write_text("install zlib1g\n")
+        code, report = self.run_cli(self.root, "--brotli-version", "1.2.1")
+        assert code == 0
+        assert report["coverage"]["gap_count"] == 0
+        assert [item["kind"] for item in report["findings"]] == ["supplied_version"]
 
     def test_undici_types_alone_do_not_imply_a_runtime_http_client(self):
         (self.root / "package.json").write_text('{"devDependencies":{"undici-types":"^6"}}')

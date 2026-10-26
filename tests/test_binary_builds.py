@@ -4,6 +4,8 @@ BROTLI_TEST_SOURCES=/path/to/trees pytest tests/test_binary_builds.py
 Trees must be named brotli-1.0.9, brotli-1.0.10, etc. Requires cc, ar, and strip;
 compiles references and applications. Targets are executed only when the caller
 explicitly supplies BROTLI_TEST_RUNNER (for example, QEMU plus its -L sysroot).
+Set BROTLI_TEST_GC_SECTIONS=1 to add function/data sections and linker GC, and
+to exercise patch-role retention plus a version-only missing-role control.
 """
 
 import contextlib
@@ -42,7 +44,40 @@ RELEASES = [
     ("1.2.0", "vulnerable"),
     ("1.2.1", "fixed"),
 ]
-PACKAGED_REFERENCES = matcher.load_references(matcher.REFERENCES)
+PAIRED_RELEASE = {
+    "1.0.9": "1.0.10",
+    "1.0.10": "1.0.9",
+    "1.1.0": "1.1.1",
+    "1.1.1": "1.1.0",
+    "1.2.0": "1.2.1",
+    "1.2.1": "1.2.0",
+}
+REFERENCE_CATALOG = Path(os.environ.get("BROTLI_TEST_REFERENCE_CATALOG", str(matcher.REFERENCES)))
+PACKAGED_REFERENCES = matcher.load_references(REFERENCE_CATALOG)
+GC_COMPILE_FLAGS = ("-ffunction-sections", "-fdata-sections")
+GC_LINK_FLAGS = ("-Wl,--gc-sections",)
+PATCH_ROLES = {
+    "literal",
+    "command",
+    "distance",
+    "safe_literal",
+    "safe_command",
+    "safe_distance",
+    "process",
+    "safe_process",
+    "helpers",
+}
+UNRELATED_DECODER_APIS = {
+    "BrotliDecoderAttachDictionary",
+    "BrotliDecoderErrorString",
+    "BrotliDecoderGetErrorCode",
+    "BrotliDecoderHasMoreOutput",
+    "BrotliDecoderIsFinished",
+    "BrotliDecoderIsUsed",
+    "BrotliDecoderSetMetadataCallbacks",
+    "BrotliDecoderSetParameter",
+    "BrotliDecoderTakeOutput",
+}
 
 
 def invoke(command):
@@ -75,7 +110,7 @@ def expected_runtime_output(release):
     return f"ok version={release} bytes={len(EXPECTED_PLAINTEXT)}\n"
 
 
-def run_runtime_smoke(app, release, runner):
+def run_runtime_smoke(app, release, runner, *, expected_output=None):
     if runner is None:
         return
     command = [*runner, str(app)]
@@ -94,7 +129,9 @@ def run_runtime_smoke(app, release, runner):
         f"runtime smoke exited {result.returncode}: command={command!r} "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
-    assert result.stdout == expected_runtime_output(release), (
+    if expected_output is None:
+        expected_output = expected_runtime_output(release)
+    assert result.stdout == expected_output, (
         f"runtime smoke output mismatch: command={command!r} "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
@@ -176,6 +213,59 @@ int main(void) {{
 """.lstrip()
 
 
+def version_harness_source(release):
+    major, minor, patch = map(int, release.split("."))
+    encoded = major << 24 | minor << 12 | patch
+    return f"""
+#include <brotli/decode.h>
+#include <stdint.h>
+#include <stdio.h>
+
+int main(void) {{
+  uint32_t version = BrotliDecoderVersion();
+  if (version != UINT32_C({encoded})) return 20;
+  printf("version-only ok version=%u.%u.%u\\n",
+      version >> 24, (version >> 12) & 0xfff, version & 0xfff);
+  return 0;
+}}
+""".lstrip()
+
+
+def defined_function_symbols(data):
+    header = matcher.elf_header(data)
+    sections = matcher.section_headers(data, header)
+    symbols = set()
+    for table in sections:
+        if table[1] not in (matcher.SHT_SYMTAB, matcher.SHT_DYNSYM):
+            continue
+        strings = sections[table[6]]
+        string_start = strings[4]
+        string_end = string_start + strings[5]
+        for name_offset, info, _, index, _, _ in matcher.symbol_rows(data, header, table):
+            if info & 0xF != matcher.STT_FUNC or index == 0 or name_offset >= strings[5]:
+                continue
+            start = string_start + name_offset
+            end = data.find(b"\0", start, string_end)
+            if end >= 0:
+                symbols.add(data[start:end].decode("ascii"))
+    return symbols
+
+
+def patch_function_names(reference):
+    functions = reference.metadata["patch_functions"]
+    assert set(functions) == PATCH_ROLES
+    assert all(functions[role] for role in PATCH_ROLES - {"helpers"})
+    return {name for names in functions.values() for name in names}
+
+
+def assert_gc_population(path, reference, discarded):
+    assert reference.metadata["code_scope"] == matcher.REFERENCE_SCOPE_PATCH
+    linked = defined_function_symbols(path.read_bytes())
+    assert patch_function_names(reference) <= linked
+    assert discarded
+    assert discarded.isdisjoint(linked)
+
+
 def profile_value(metadata, key):
     if key == "elf_class":
         return metadata.get(key, 64)
@@ -224,6 +314,35 @@ def run_main_scan(path, catalog_path):
     return code, json.loads(output.getvalue())
 
 
+def assert_missing_gc_population(  # noqa: PLR0913, PLR0917 -- Complete negative boundary.
+    path, reference, references, state, catalog_path, runner, release
+):
+    data = path.read_bytes()
+    linked = defined_function_symbols(data)
+    assert patch_function_names(reference).isdisjoint(linked)
+    local = matcher.match_code(data, references)
+    assert not local.limited
+    assert local.patch_status == "unknown"
+    assert local.matches == []
+    packaged = matcher.match_code(data, PACKAGED_REFERENCES)
+    assert packaged.matches == []
+
+    main_code, report = run_main_scan(path, catalog_path)
+    version_supported = reference.metadata["machine"] in {
+        matcher.EM_386,
+        matcher.EM_X86_64,
+        matcher.EM_AARCH64,
+    }
+    assert main_code == (1 if state == "vulnerable" and version_supported else 3)
+    assert all(not item["patch_status"].endswith("_code_match") for item in report["findings"])
+    run_runtime_smoke(
+        path,
+        release,
+        runner,
+        expected_output=f"version-only ok version={release}\n",
+    )
+
+
 def assert_artifact(  # noqa: PLR0913, PLR0917 -- One complete per-artifact acceptance boundary.
     path,
     reference,
@@ -233,9 +352,10 @@ def assert_artifact(  # noqa: PLR0913, PLR0917 -- One complete per-artifact acce
     catalog_path,
     *,
     require_packaged,
+    references=None,
 ):
     before = path.read_bytes()
-    assessment = matcher.match_code(before, [reference])
+    assessment = matcher.match_code(before, references or [reference])
     assert not assessment.limited
     assert {match["state"] for match in assessment.matches} == {state}
     packaged = packaged_match_evidence(before, reference, state, required=require_packaged)
@@ -257,30 +377,44 @@ def assert_artifact(  # noqa: PLR0913, PLR0917 -- One complete per-artifact acce
 @pytest.mark.parametrize("optimization", ["-O2", "-O3"])
 @pytest.mark.parametrize("pic", [False, True])
 @pytest.mark.skipif(not SOURCE_ROOT, reason="Set BROTLI_TEST_SOURCES for real-build tests")
-def test_real_static_decoder(  # noqa: PLR0913, PLR0915, PLR0917 -- End-to-end matrix boundary.
+def test_real_static_decoder(  # noqa: C901, PLR0913, PLR0915, PLR0917 -- End-to-end matrix boundary.
     tmp_path, release, state, optimization, pic, record_property
 ):
     assert SOURCE_ROOT
     tree = Path(SOURCE_ROOT) / f"brotli-{release}"
+    paired_tree = Path(SOURCE_ROOT) / f"brotli-{PAIRED_RELEASE[release]}"
     compiler = shutil.which(os.environ.get("BROTLI_TEST_CC", "cc"))
     archiver = shutil.which(os.environ.get("BROTLI_TEST_AR", "ar"))
     strip = shutil.which(os.environ.get("BROTLI_TEST_STRIP", "strip"))
     assert compiler
     assert archiver
     assert strip
+    gc_sections = configured_boolean(
+        os.environ.get("BROTLI_TEST_GC_SECTIONS"), "BROTLI_TEST_GC_SECTIONS"
+    )
     flags = [optimization, "-fPIC"] if pic else [optimization, "-fno-pic", "-fno-PIE"]
     flags.extend(shlex.split(os.environ.get("BROTLI_TEST_CFLAGS", "")))
+    if gc_sections:
+        flags.extend(flag for flag in GC_COMPILE_FLAGS if flag not in flags)
+    linker_flags = shlex.split(os.environ.get("BROTLI_TEST_LDFLAGS", ""))
+    if gc_sections:
+        linker_flags.extend(flag for flag in GC_LINK_FLAGS if flag not in linker_flags)
     build = runpy.run_path(str(ROOT / "scripts/build_binary_references.py"))["build_references"]
-    catalog = build([tree], compiler, flags)
-    reference = matcher.CodeReference.from_json(catalog["references"][0])
-    assert reference.metadata["state"] == state
+    catalog = build([tree, paired_tree], compiler, flags)
+    references = [matcher.CodeReference.from_json(entry) for entry in catalog["references"]]
+    assert {item.metadata["state"] for item in references} == {"fixed", "vulnerable"}
+    reference = next(item for item in references if item.metadata["state"] == state)
     catalog_path = tmp_path / "references.json"
     catalog_path.write_text(json.dumps(catalog))
     objects = []
+    decode_object = None
     for source in sorted([*(tree / "c/dec").glob("*.c"), *(tree / "c/common").glob("*.c")]):
         obj = tmp_path / (source.parent.name + "-" + source.stem + ".o")
         invoke([compiler, *flags, "-I", str(tree / "c/include"), "-c", str(source), "-o", str(obj)])
         objects.append(str(obj))
+        if source.name == "decode.c":
+            decode_object = obj
+    assert decode_object is not None
     library = tmp_path / "libdecoder.a"
     invoke([archiver, "rcs", str(library), *objects])
     main = tmp_path / "main.c"
@@ -290,6 +424,7 @@ def test_real_static_decoder(  # noqa: PLR0913, PLR0915, PLR0917 -- End-to-end m
         os.environ.get("BROTLI_TEST_REQUIRE_PACKAGED"), "BROTLI_TEST_REQUIRE_PACKAGED"
     )
     record_property("compiler", reference.metadata["compiler"])
+    record_property("reference_catalog", str(REFERENCE_CATALOG))
     record_property("flags", reference.metadata["flags"])
     record_property(
         "target_identity",
@@ -299,6 +434,13 @@ def test_real_static_decoder(  # noqa: PLR0913, PLR0915, PLR0917 -- End-to-end m
     )
     record_property("runtime_runner", shlex.join(runner) if runner is not None else "disabled")
     record_property("require_packaged", require_packaged)
+    record_property("gc_sections", gc_sections)
+    record_property("opposite_release", PAIRED_RELEASE[release])
+    discarded = (
+        defined_function_symbols(decode_object.read_bytes()) & UNRELATED_DECODER_APIS
+        if gc_sections
+        else set()
+    )
     addresses = []
     for link_flag in ("-no-pie", "-pie") if pic else ("-no-pie",):
         variant = link_flag.removeprefix("-")
@@ -307,7 +449,7 @@ def test_real_static_decoder(  # noqa: PLR0913, PLR0915, PLR0917 -- End-to-end m
             [
                 compiler,
                 *flags,
-                *shlex.split(os.environ.get("BROTLI_TEST_LDFLAGS", "")),
+                *linker_flags,
                 link_flag,
                 "-I",
                 str(tree / "c/include"),
@@ -325,7 +467,10 @@ def test_real_static_decoder(  # noqa: PLR0913, PLR0915, PLR0917 -- End-to-end m
             runner,
             catalog_path,
             require_packaged=require_packaged,
+            references=references,
         )
+        if gc_sections:
+            assert_gc_population(normal, reference, discarded)
         record_property(f"packaged_{variant}_normal", normal_packaged)
         addresses.append(
             file_offset_address(normal.read_bytes(), normal_assessment.matches[0]["file_offset"], 1)
@@ -348,6 +493,7 @@ def test_real_static_decoder(  # noqa: PLR0913, PLR0915, PLR0917 -- End-to-end m
             runner,
             catalog_path,
             require_packaged=require_packaged,
+            references=references,
         )
         record_property(f"packaged_{variant}_stripped", stripped_packaged)
 
@@ -373,6 +519,7 @@ def test_real_static_decoder(  # noqa: PLR0913, PLR0915, PLR0917 -- End-to-end m
             runner,
             catalog_path,
             require_packaged=require_packaged,
+            references=references,
         )
         record_property(f"packaged_{variant}_sectionless", sectionless_packaged)
 
@@ -384,9 +531,37 @@ def test_real_static_decoder(  # noqa: PLR0913, PLR0915, PLR0917 -- End-to-end m
         finding = json.loads(result.stdout)["findings"][0]
         assert finding["path"].endswith("!bin/service")
         assert finding["patch_status"] == state + "_code_match"
+    if gc_sections:
+        version_source = tmp_path / "version.c"
+        version_source.write_text(version_harness_source(release))
+        version_only = tmp_path / "version-only"
+        invoke(
+            [
+                compiler,
+                *flags,
+                *linker_flags,
+                "-pie" if pic else "-no-pie",
+                "-I",
+                str(tree / "c/include"),
+                str(version_source),
+                str(library),
+                "-o",
+                str(version_only),
+            ]
+        )
+        assert_missing_gc_population(
+            version_only,
+            reference,
+            references,
+            state,
+            catalog_path,
+            runner,
+            release,
+        )
     if pic:
         assert addresses[0] != addresses[1]
     variants = len(addresses) * 3
     record_property("artifact_variants", variants)
     record_property("packaged_checks", variants)
-    record_property("runtime_checks", variants if runner is not None else 0)
+    record_property("missing_role_checks", int(gc_sections))
+    record_property("runtime_checks", variants + int(gc_sections) if runner is not None else 0)
