@@ -120,11 +120,48 @@ BROTLI_TEST_SOURCES=/sources uv run --locked pytest tests/test_binary_builds.py 
 
 Run on a Linux ELF build host. These tests exercise optimization/PIC profiles,
 PIE/non-PIE links, stripped binaries, removed section headers, and archive
-members. They never execute the resulting applications. Set
+members. By default they never execute the resulting applications. Set
 `BROTLI_TEST_CC`, `BROTLI_TEST_AR`, and `BROTLI_TEST_STRIP` for cross tools;
 `BROTLI_TEST_CFLAGS` and `BROTLI_TEST_LDFLAGS` add target flags. Set
 `BROTLI_LARGE_FILE_TESTS=1` when running the full suite to include the optional
 multi-GiB hashing and CLI regressions.
+
+For an explicit benign runtime check, set `BROTLI_TEST_RUNNER` to a trusted QEMU
+user-mode command and the target libc sysroot. No host-wide binfmt registration
+is required. The fixture decodes one fixed valid payload using both one-shot and
+streaming APIs, compares every output byte, and checks the decoder version.
+It runs normal, stripped, and section-header-free variants with a timeout and
+strict exit/stdout/stderr checks. This is a runtime/ABI smoke test, not a CVE
+trigger or a patch-state oracle; affected and fixed releases should both pass it.
+The production scanner never invokes this runner.
+
+For example, with trusted RISC-V64 cross tools and QEMU installed:
+
+```sh
+make known-answers
+BROTLI_TEST_SOURCES=tests/known_answers/.deps \
+BROTLI_TEST_CC=riscv64-linux-gnu-gcc \
+BROTLI_TEST_AR=riscv64-linux-gnu-ar \
+BROTLI_TEST_STRIP=riscv64-linux-gnu-strip \
+BROTLI_TEST_CFLAGS=-mno-relax \
+BROTLI_TEST_LDFLAGS=-Wl,--no-relax \
+BROTLI_TEST_RUNNER='qemu-riscv64 -L /usr/riscv64-linux-gnu' \
+uv run --locked pytest tests/test_binary_builds.py --no-cov \
+  --junitxml=artifacts/qemu-riscv64.xml -o junit_family=xunit1
+```
+
+JUnit properties record compiler/flags, target identity, runner, artifact/runtime
+check counts, and packaged-corpus compatibility for each variant. Set
+`BROTLI_TEST_REQUIRE_PACKAGED=1` only when testing an exact packaged profile; a
+mismatch then fails. Otherwise mismatches are reported explicitly. An opposite
+patch-state match always fails, regardless of profile compatibility.
+
+Useful compiler/runner pairs include x86_64/i386, AArch64, ARMv7 (`-marm` and
+`-mthumb`), RISC-V64 (`-mno-relax`), PowerPC64LE, s390x, and MIPS32/64 in both
+byte orders. Use the corresponding cross-tool prefix and sysroot, not the host
+libraries. Dynamic symbol names may legitimately remain after `strip`, notably
+on MIPS; the invariant is removal of `SHT_SYMTAB`, not absence of all Brotli text.
+LoongArch source/header portability requirements are documented above.
 
 ### Runtime fixtures
 

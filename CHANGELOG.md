@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add opt-in QEMU runtime checks for the ELF build matrix, covering one-shot and
+  streaming decode, decoder versions, normal/stripped/sectionless artifacts, and
+  explicit packaged-profile compatibility reporting.
 - Report source-parser/grammar-provider failures as incomplete JSON evidence,
   and normalize whitespace in explicitly supplied discovery symbols.
 - Validate MIPS instruction modes before raw disassembly; unsupported modes
