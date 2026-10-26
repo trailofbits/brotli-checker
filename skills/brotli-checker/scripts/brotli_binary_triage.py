@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from brotli_binary_data import Buffer, FileData, file_data, sha256_data
 from brotli_binary_match import (
     EM_ARM,
+    EM_MIPS,
     TARGETS,
     ELFLayout,
     elf_header,
@@ -55,6 +56,16 @@ PATCH_SYMBOL = re.compile(
 )
 PROCESS_SYMBOL = re.compile(r"^(?:Safe)?ProcessCommands(?:Internal)?(?:[.$].*)?$")
 PUBLIC_FALLBACK = "BrotliDecoderDecompressStream"
+EF_MIPS_ARCH = 0xF0000000
+EF_MIPS_ARCH_32R2 = 0x70000000
+EF_MIPS_ARCH_64R2 = 0x80000000
+EF_MIPS_ARCH_ASE = 0x0F000000
+EF_MIPS_ARCH_ASE_M16 = 0x04000000
+EF_MIPS_ARCH_ASE_MICROMIPS = 0x02000000
+EF_MIPS_MACH = 0x00FF0000
+STO_MIPS_ISA = 0xC0
+STO_MIPS16 = 0xF0
+STO_MICROMIPS = 0x80
 
 
 class TriageError(ValueError):
@@ -211,6 +222,69 @@ def function_offset(data: Buffer, header: tuple, address: int, size: int) -> int
     return None
 
 
+def require_supported_instruction_mode(  # noqa: C901 -- MIPS flags and bounded symbol modes.
+    data: Buffer,
+    deadline: float | None = None,
+    candidate_limit: int = DEFAULT_MAX_SYMBOLS + 1,
+) -> str | None:
+    """Reject MIPS ISA/mode combinations not represented by the raw-binary command."""
+    header = elf_header(data)
+    if header[2] != EM_MIPS:
+        return None
+    flags = header[7]
+    ase = flags & EF_MIPS_ARCH_ASE
+    if ase:
+        modes = []
+        if ase & EF_MIPS_ARCH_ASE_M16:
+            modes.append("MIPS16")
+        if ase & EF_MIPS_ARCH_ASE_MICROMIPS:
+            modes.append("microMIPS")
+        suffix = "/".join(modes) if modes else f"ASE 0x{ase:08x}"
+        message = "Unsupported MIPS instruction mode in ELF flags: " + suffix
+        raise TriageError(message)
+    machine = flags & EF_MIPS_MACH
+    if machine:
+        message = f"Unsupported MIPS vendor-machine flags 0x{machine:08x}"
+        raise TriageError(message)
+    actual = flags & EF_MIPS_ARCH
+    architectures = {
+        EF_MIPS_ARCH_32R2: "mips:isa32r2",
+        EF_MIPS_ARCH_64R2: "mips:isa64r2",
+    }
+    if actual not in architectures:
+        message = f"Unsupported MIPS ISA flags 0x{actual:08x}; raw triage supports r2 only"
+        raise TriageError(message)
+    if deadline is None:
+        return architectures[actual]
+    _, symbol_reason = relevant_symbols(data, deadline, candidate_limit)
+    if unsupported_mips_symbol_reason(symbol_reason):
+        raise TriageError(symbol_reason)
+    allowed = {
+        None,
+        "No ELF section table; symbol-based triage is unavailable",
+        "Relevant ELF symbol candidate limit reached",
+    }
+    if symbol_reason not in allowed:
+        message = f"Cannot establish exact MIPS symbol instruction mode: {symbol_reason}"
+        raise TriageError(message)
+    return architectures[actual]
+
+
+def mips_symbol_mode(other: int) -> str | None:
+    """Decode GNU MIPS compressed-ISA markers from st_other."""
+    if other & STO_MIPS16 == STO_MIPS16:
+        return "MIPS16"
+    if other & STO_MIPS_ISA == STO_MICROMIPS:
+        return "microMIPS"
+    if other & STO_MIPS_ISA:
+        return f"reserved MIPS ISA 0x{other & STO_MIPS_ISA:02x}"
+    return None
+
+
+def unsupported_mips_symbol_reason(reason: str | None) -> bool:
+    return reason is not None and reason.startswith("Unsupported ") and "instruction mode" in reason
+
+
 def relevant_symbols(  # noqa: C901, PLR0911, PLR0912, PLR0915 -- Bounded ELF validation.
     data: Buffer, deadline: float, candidate_limit: int = DEFAULT_MAX_SYMBOLS + 1
 ) -> tuple[list[dict], str | None]:
@@ -244,11 +318,20 @@ def relevant_symbols(  # noqa: C901, PLR0911, PLR0912, PLR0915 -- Bounded ELF va
                 "ELF symbols do not reference a string table"
             )
         name_start, name_stop = checked_range(data, names[4], names[5])
-        for name_offset, info, _, index, symbol_address, size in symbol_rows(data, header, table):
+        for name_offset, info, other, index, symbol_address, size in symbol_rows(
+            data, header, table
+        ):
             address = symbol_address & (~1 if header[2] == EM_ARM else -1)
             if time.monotonic() >= deadline:
                 return [*defined_symbols, *imported_symbols], "ELF symbol scan timeout reached"
-            if info & 0xF != STT_FUNC or name_offset >= names[5]:
+            if info & 0xF != STT_FUNC:
+                continue
+            # Instruction mode must not depend on recognizing a function's name.
+            if header[2] == EM_MIPS and (mode := mips_symbol_mode(other)) is not None:
+                return [*defined_symbols, *imported_symbols], (
+                    f"Unsupported {mode} instruction mode for function at 0x{symbol_address:x}"
+                )
+            if name_offset >= names[5]:
                 continue
             absolute_name = name_start + name_offset
             end = data.find(
@@ -461,6 +544,7 @@ def fragment_command(  # noqa: PLR0913, PLR0917 -- Bound original addresses to a
     thumb: bool = False,
 ) -> list[str]:
     header = elf_header(data)
+    mode_architecture = require_supported_instruction_mode(data)
     if thumb and header[2] != EM_ARM:
         message = "--thumb requires an ARM ELF"
         raise TriageError(message)
@@ -484,7 +568,7 @@ def fragment_command(  # noqa: PLR0913, PLR0917 -- Bound original addresses to a
             "ephemeral": True,
         }
     )
-    architecture = TARGETS[target_identity(header)][1]
+    architecture = mode_architecture or TARGETS[target_identity(header)][1]
     return [
         str(objdump),
         "--disassemble-all",
@@ -532,6 +616,8 @@ def collect_ranges(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bounded
         report["evidence"]["symbols"] = relevant[: args.max_symbols]
         if symbol_reason is not None:
             report["collection"]["reasons"].append(symbol_reason)
+        if unsupported_mips_symbol_reason(symbol_reason):
+            return 3, report
         if len(relevant) > args.max_symbols:
             report["collection"]["reasons"].append("Relevant symbol limit reached")
         defined = [symbol for symbol in relevant[: args.max_symbols] if symbol["defined"]]
@@ -610,12 +696,13 @@ def collect(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[
         report["tool"]["path"] = str(objdump)
         with read_target(path, args.max_file_bytes) as data:
             report["target"].update(sha256=sha256_data(data), size_bytes=len(data))
+            deadline = time.monotonic() + args.timeout_seconds
             try:
                 executable_ranges(data)
+                require_supported_instruction_mode(data, deadline, args.max_symbols + 1)
             except ValueError as error:
                 report["collection"]["reasons"].append(f"Unsupported or malformed ELF: {error}")
                 return 3, report
-            deadline = time.monotonic() + args.timeout_seconds
             with tempfile.TemporaryDirectory(prefix="brotli-triage-") as directory:
                 code, report = collect_ranges(
                     report, args, mode, data, objdump, Path(directory), deadline

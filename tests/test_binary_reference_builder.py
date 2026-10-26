@@ -1,4 +1,5 @@
 import copy
+import gzip
 import hashlib
 import runpy
 import sys
@@ -126,6 +127,7 @@ def test_merge_preserves_sections_and_writes_deterministic_gzip(tmp_path, monkey
     assert main() == 0
     assert [ref.to_json() for ref in load_references(output)] == [entry]
     compressed = output.read_bytes()
-    assert compressed[:2] == b"\x1f\x8b"
+    assert compressed[:10] == bytes.fromhex("1f8b08000000000002ff")
+    assert gzip.decompress(compressed).endswith(b"\n")
     assert main() == 0
     assert output.read_bytes() == compressed

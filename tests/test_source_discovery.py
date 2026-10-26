@@ -10,11 +10,13 @@ from types import ModuleType
 import brotli_source_discovery as discovery
 import pytest
 import trailmark
+import trailmark.parse as trailmark_parse
 from trailmark.models.annotations import EntrypointKind, EntrypointTag, TrustLevel
 from trailmark.models.diagnostics import ParseDiagnostic
 from trailmark.models.edges import CodeEdge, EdgeConfidence, EdgeKind
 from trailmark.models.graph import CodeGraph
 from trailmark.models.nodes import CodeUnit, NodeKind, NodeOrigin, SourceLocation
+from tree_sitter_language_pack import DownloadError
 
 
 def unit(node_id, *, proxy=False, attributes=(), line=1):
@@ -342,6 +344,17 @@ def test_cli_forwards_languages_symbols_and_resolves_root(monkeypatch, tmp_path)
     assert json.loads(output.getvalue())["candidates"][0]["symbol"] == "download"
 
 
+def test_cli_trims_reviewed_symbol_names(monkeypatch):
+    alias = unit("proxy:app:download", proxy=True, attributes=(("proxy_kind", "unresolved"),))
+    graph = graph_with(
+        [unit("app:main"), alias],
+        [call("app:main", alias.id, attributes=(("raw_target", "app:download"),))],
+    )
+    code, result = run_cli(monkeypatch, graph, "--symbol", " download ")
+    assert code == 0
+    assert result["candidates"][0]["symbol"] == "download"
+
+
 @pytest.mark.parametrize(
     "failure", [ValueError("collision"), OSError("unreadable"), RecursionError("deep")]
 )
@@ -367,6 +380,34 @@ def test_missing_runtime_emits_json_without_attempting_to_parse(monkeypatch):
     assert result["status"] == "incomplete"
     assert result["trailmark_version"] is None
     assert "trailmark" in result["gaps"][0]["message"]
+
+
+def test_language_provider_error_emits_incomplete_json(monkeypatch):
+    def fail(_root, **_kwargs):
+        message = "grammar unavailable"
+        raise DownloadError(message)
+
+    monkeypatch.setattr(trailmark_parse, "parse_directory", fail)
+    code, result = run_cli(monkeypatch)
+    assert code == 3
+    assert result["status"] == "incomplete"
+    assert result["trailmark_version"] == "0.7.0"
+    assert result["gaps"] == [
+        {
+            "kind": "discovery_error",
+            "message": "Trailmark language provider failed: grammar unavailable",
+        }
+    ]
+
+
+def test_language_provider_boundary_does_not_hide_programmer_errors(monkeypatch):
+    def fail(_root, **_kwargs):
+        message = "fixture programmer error"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(trailmark_parse, "parse_directory", fail)
+    with pytest.raises(AssertionError, match="programmer error"):
+        discovery.load_graph("/src", "c")
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("Symlink loop"), OSError("Cannot resolve path")])

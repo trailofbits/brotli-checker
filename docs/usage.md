@@ -131,6 +131,10 @@ inventory and manual review. See the
 [source review workflow](../skills/brotli-checker/references/reachability.md#trailmark-source-discovery)
 for known gaps and how to interpret graph evidence.
 
+Unavailable grammars and language-provider failures produce an incomplete JSON
+report with a `discovery_error` gap. Resolve that setup/download failure before
+interpreting the call neighborhood; missing parser evidence is not a negative result.
+
 ## Compiled decoder evidence
 
 The main scanner includes code matching for ELF32 and ELF64 executables and
@@ -264,6 +268,10 @@ Only bounded code fragments are copied for disassembly. The target is never
 loaded or executed. The host `objdump` must support the target architecture.
 ARM Thumb symbols select Thumb decoding automatically; for a trusted explicit
 Thumb range add `--thumb`. An architecture/tool mismatch leaves collection incomplete.
+MIPS raw disassembly currently accepts classic MIPS32r2/MIPS64r2 selected from
+ELF ISA flags, including ELF32 N32 with MIPS64r2. MIPS16, microMIPS, other ISA
+revisions, vendor-machine/ASE flags, and incompatible symbol-declared modes
+remain explicitly incomplete; they are not decoded using a guessed r2 mode.
 
 Exit 0 means evidence collection completed; exit 3 means it is incomplete.
 Neither is a patch verdict. Review affected and fixed control flow, including

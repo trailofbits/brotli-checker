@@ -103,7 +103,13 @@ def write_validated_catalog(output: Path, catalog: dict) -> None:
         ) as stream:
             temporary_path = Path(stream.name)
             data = (json.dumps(catalog, indent=2) + "\n").encode()
-            stream.write(gzip.compress(data, mtime=0) if output.suffix == ".gz" else data)
+            if output.suffix == ".gz":
+                with gzip.GzipFile(
+                    filename="", mode="wb", compresslevel=9, fileobj=stream, mtime=0
+                ) as compressed:
+                    compressed.write(data)
+            else:
+                stream.write(data)
         load_references(temporary_path)
         temporary_path.replace(output)
     finally:

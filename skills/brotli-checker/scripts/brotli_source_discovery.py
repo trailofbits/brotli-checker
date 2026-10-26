@@ -312,9 +312,14 @@ def runtime_version() -> str:
 def load_graph(root: str, language: str) -> CodeGraph:
     from trailmark.analysis.entrypoints import detect_entrypoints  # noqa: PLC0415
     from trailmark.parse import parse_directory  # noqa: PLC0415
+    from tree_sitter_language_pack import Error as LanguageProviderError  # noqa: PLC0415
 
-    graph = parse_directory(root, language=language, allow_empty=True, strict=False)
-    graph.entrypoints.update(detect_entrypoints(graph, root))
+    try:
+        graph = parse_directory(root, language=language, allow_empty=True, strict=False)
+        graph.entrypoints.update(detect_entrypoints(graph, root))
+    except LanguageProviderError as error:
+        message = f"Trailmark language provider failed: {error}"
+        raise RuntimeError(message) from error
     return graph
 
 
@@ -349,7 +354,8 @@ def arguments(argv: list[str] | None) -> argparse.Namespace:
         )
     parser.add_argument("--max-depth", type=nonnegative, default=Limits().max_depth)
     args = parser.parse_args(argv)
-    if any(not symbol.strip() for symbol in args.symbol):
+    args.symbol = [symbol.strip() for symbol in args.symbol]
+    if any(not symbol for symbol in args.symbol):
         parser.error("--symbol must not be empty")
     return args
 
