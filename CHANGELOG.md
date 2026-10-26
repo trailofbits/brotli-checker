@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Report source-parser/grammar-provider failures as incomplete JSON evidence,
+  and normalize whitespace in explicitly supplied discovery symbols.
+- Validate MIPS instruction modes before raw disassembly; unsupported modes
+  remain incomplete rather than being interpreted as classic r2 instructions.
+- Write gzip catalogs with a fixed compression level and canonical header
+  metadata across supported Python versions.
+
 ## [0.2.0] - 2026-10-23
 
 - Expand packaged ELF decoder fingerprints to 336 profiles across x86-64, x86,

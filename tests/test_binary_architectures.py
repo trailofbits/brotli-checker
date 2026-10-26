@@ -1,5 +1,9 @@
+import contextlib
 import gzip
+import io
+import json
 import struct
+import sys
 from pathlib import Path
 
 import brotli_binary_match as matcher
@@ -7,6 +11,17 @@ import brotli_binary_triage as triage
 import brotli_inventory as scanner
 import pytest
 from test_binary_match import elf, reference, write_catalog
+from test_binary_metadata import elf_with_symbols
+
+
+def with_elf_flags(data, flags):
+    result = bytearray(data)
+    header = matcher.elf_header(data)
+    parser = matcher.ELFLayout.of(header).parser("header")
+    fields = list(parser.unpack_from(result))
+    fields[7] = flags
+    parser.pack_into(result, 0, *fields)
+    return bytes(result)
 
 
 @pytest.mark.parametrize("identity", matcher.TARGETS, ids=lambda key: matcher.TARGETS[key][0])
@@ -15,6 +30,9 @@ def test_architecture_matching_and_disassembly_scope(identity, state, tmp_path):
     machine, bits, byteorder = identity
     entry = {**reference(state, machine), "elf_class": bits, "byteorder": byteorder}
     data = elf(bytes.fromhex(entry["code"]), machine, elf_class=bits, byteorder=byteorder)
+    if machine == matcher.EM_MIPS:
+        flags = triage.EF_MIPS_ARCH_32R2 if bits == 32 else triage.EF_MIPS_ARCH_64R2
+        data = with_elf_flags(data, flags)
     assert matcher.target_identity(matcher.elf_header(data)) == identity
     refs = [matcher.CodeReference.from_json(entry)]
     assert scanner.assess_binary(data, refs)["patch_status"] == state + "_code_match"
@@ -25,6 +43,133 @@ def test_architecture_matching_and_disassembly_scope(identity, state, tmp_path):
     assert f"--architecture={matcher.TARGETS[identity][1]}" in command
     assert f"--endian={byteorder}" in command
     assert Path(command[-1]).read_bytes() == bytes.fromhex(entry["code"])
+
+
+@pytest.mark.parametrize(
+    ("bits", "byteorder", "flags"),
+    [
+        (32, "little", triage.EF_MIPS_ARCH_32R2 | triage.EF_MIPS_ARCH_ASE_M16),
+        (32, "big", triage.EF_MIPS_ARCH_32R2 | triage.EF_MIPS_ARCH_ASE_MICROMIPS),
+        (32, "little", triage.EF_MIPS_ARCH_32R2 | 0x08000000),  # MDMX ASE.
+        (32, "big", triage.EF_MIPS_ARCH_32R2 | 0x008B0000),  # Octeon machine.
+        (32, "little", 0x90000000),  # EF_MIPS_ARCH_32R6.
+        (64, "little", triage.EF_MIPS_ARCH_64R2 | triage.EF_MIPS_ARCH_ASE_M16),
+        (64, "big", triage.EF_MIPS_ARCH_64R2 | triage.EF_MIPS_ARCH_ASE_MICROMIPS),
+        (64, "little", 0xA0000000),  # EF_MIPS_ARCH_64R6.
+    ],
+)
+@pytest.mark.parametrize("scope", ["symbols", "explicit"])
+def test_mips_unsupported_isa_and_compressed_modes_fail_before_objdump(  # noqa: PLR0913, PLR0917
+    tmp_path, monkeypatch, bits, byteorder, flags, scope
+):
+    target = tmp_path / "mips-service"
+    data = elf(b"code" * 64, matcher.EM_MIPS, elf_class=bits, byteorder=byteorder)
+    target.write_bytes(with_elf_flags(data, flags))
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("unsupported MIPS modes must fail before objdump")
+
+    monkeypatch.setattr(triage, "run_bounded", forbidden)
+    arguments = [str(target), "--objdump", sys.executable]
+    if scope == "explicit":
+        arguments.extend(("--start-address", "0x401000", "--stop-address", "0x401004"))
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        assert triage.main(arguments) == 3
+    report = json.loads(output.getvalue())
+    assert report["tool"]["commands"] == []
+    assert "Unsupported MIPS" in " ".join(report["collection"]["reasons"])
+
+
+def test_mips_n32_uses_64r2_instruction_decoder(tmp_path):
+    data = elf(b"code" * 64, matcher.EM_MIPS, elf_class=32, byteorder="little")
+    data = with_elf_flags(data, triage.EF_MIPS_ARCH_64R2 | 0x20)  # EF_MIPS_ABI2 / N32.
+    report = {"tool": {"fragments": []}}
+    command = triage.fragment_command(
+        report, data, tmp_path, Path("/trusted/objdump"), 0x401000, 0x401010
+    )
+    assert "--architecture=mips:isa64r2" in command
+
+
+def mips_mixed_symbol_elf(other, name="ProcessCommands"):
+    data = elf_with_symbols(
+        b"\x90" * 64,
+        matcher.EM_MIPS,
+        [{"name": "SafeDecodeLiteralBlockSwitch"}, {"name": name}],
+    )
+    data = bytearray(with_elf_flags(data, triage.EF_MIPS_ARCH_64R2))
+    raw = bytes(data)
+    header = matcher.elf_header(raw)
+    symbol_table = next(
+        section for section in matcher.section_headers(raw, header) if section[1] == 2
+    )
+    symbol_size = matcher.ELFLayout.of(header).parser("symbol").size
+    # Null symbol, then classic SafeDecodeLiteralBlockSwitch, then compressed ProcessCommands.
+    data[symbol_table[4] + 2 * symbol_size + 5] = other
+    return bytes(data)
+
+
+@pytest.mark.parametrize("scope", ["symbols", "explicit"])
+def test_mips_classic_r2_modes_reach_objdump(tmp_path, monkeypatch, scope):
+    target = tmp_path / "classic-mips"
+    target.write_bytes(mips_mixed_symbol_elf(0))
+    commands = []
+
+    def record(command, *_):
+        commands.append(command)
+        return {"returncode": 0, "output": "asm", "limited": False, "reason": None}
+
+    monkeypatch.setattr(triage, "run_bounded", record)
+    arguments = [str(target), "--objdump", sys.executable]
+    if scope == "explicit":
+        arguments.extend(("--start-address", "0x400100", "--stop-address", "0x400104"))
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = triage.main(arguments)
+    report = json.loads(output.getvalue())
+    assert commands
+    assert "Unsupported MIPS" not in " ".join(report["collection"]["reasons"])
+    assert code == (0 if scope == "explicit" else 3)
+
+
+@pytest.mark.parametrize(
+    ("other", "mode"),
+    [
+        (triage.STO_MIPS16, "MIPS16"),
+        (triage.STO_MICROMIPS, "microMIPS"),
+        (0x40, "reserved MIPS ISA 0x40"),
+    ],
+)
+def test_mips_relevant_symbol_mode_is_explicitly_incomplete(other, mode):
+    symbols, reason = triage.relevant_symbols(mips_mixed_symbol_elf(other), float("inf"))
+    assert [symbol["name"] for symbol in symbols] == ["SafeDecodeLiteralBlockSwitch"]
+    assert reason == f"Unsupported {mode} instruction mode for function at 0x400100"
+
+
+@pytest.mark.parametrize("other", [triage.STO_MIPS16, triage.STO_MICROMIPS])
+@pytest.mark.parametrize("scope", ["symbols", "explicit"])
+@pytest.mark.parametrize("name", ["ProcessCommands", "custom_wrapper", "x" * 200])
+def test_mips_symbol_modes_stop_both_triage_scopes_before_objdump(
+    tmp_path, monkeypatch, other, scope, name
+):
+    target = tmp_path / "mixed-mips"
+    target.write_bytes(mips_mixed_symbol_elf(other, name))
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("compressed MIPS symbol modes must fail before objdump")
+
+    monkeypatch.setattr(triage, "run_bounded", forbidden)
+    arguments = [str(target), "--objdump", sys.executable]
+    if scope == "explicit":
+        arguments.extend(("--start-address", "0x400100", "--stop-address", "0x400104"))
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        assert triage.main(arguments) == 3
+    report = json.loads(output.getvalue())
+    assert report["tool"]["commands"] == []
+    assert "instruction mode" in " ".join(report["collection"]["reasons"])
 
 
 @pytest.mark.parametrize(
