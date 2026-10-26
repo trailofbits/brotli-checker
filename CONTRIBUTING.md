@@ -54,6 +54,19 @@ and positive/negative controls. Keep third-party notices with derived data.
 Record validation commands, results, and limits in the pull request; keep local
 run reports out of the repository.
 
+Dependency-field collection belongs to `brotli_dependencies.py`; source import,
+API, and FFI leads belong to `brotli_source_leads.py`. These produce review leads,
+not deployment or version verdicts. Keep source samples bounded and do not retain
+a full token index merely to return a small sample. Use normal module imports in
+tests so mutation instrumentation includes these modules.
+
+Independent-port source fingerprints share the source registry but require an
+explicit implementation, analogous-issue relation, immutable source URL, verified
+SHA-256/Git blob, and reviewed upstream fix. Preserve legacy Google C entries.
+`make verify-fingerprints` downloads and checks both families' exact/modified
+classification boundaries. Port-specific status checks are provenance controls,
+not proof of reachability or a replacement for reviewing the complete fix.
+
 To review dependency updates, run `uv lock --upgrade` and the checks above.
 Resolution permits the latest stable releases; Dependabot proposals retain their
 seven-day cooldown. Keep GitHub Actions pinned to full commit SHAs with exact

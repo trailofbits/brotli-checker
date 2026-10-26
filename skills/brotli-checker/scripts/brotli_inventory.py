@@ -21,7 +21,6 @@ import re
 import stat
 import sys
 import tarfile
-import tomllib
 import zipfile
 import zlib
 from contextlib import contextmanager
@@ -46,6 +45,8 @@ from brotli_binary_match import (
     match_code,
 )
 from brotli_binary_metadata import decoder_metadata
+from brotli_dependencies import MAX_DEPENDENCY_MATCHES, dependency_manifest, dependency_matches
+from brotli_source_leads import MAX_SOURCE_MATCHES, source_references
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -128,46 +129,7 @@ NODE_FIXES = {22: (22, 23, 4), 24: (24, 22, 1), 26: (26, 12, 1)}
 # Frozen from the Node.js release schedule on the advisory snapshot date.
 NODE_EOL_BRANCHES = {0, *range(4, 22), 23, 25}
 SKIPPABLE_FRAMES = tuple(bytes((first, 0x2A, 0x4D, 0x18)) for first in range(0x50, 0x60))
-MANIFEST_NAMES = {
-    "package.json",
-    "package-lock.json",
-    "npm-shrinkwrap.json",
-    "yarn.lock",
-    "pnpm-lock.yaml",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "gradle.lockfile",
-    "cargo.toml",
-    "cargo.lock",
-    "go.mod",
-    "go.sum",
-    "pyproject.toml",
-    "requirements.txt",
-    "uv.lock",
-    "poetry.lock",
-    "cmakelists.txt",
-    "cmakecache.txt",
-    "module.bazel",
-    "module.bazel.lock",
-    "workspace",
-    "workspace.bazel",
-    "deps",
-    "dockerfile",
-    "containerfile",
-    ".gitmodules",
-    "vcpkg.json",
-    "conanfile.txt",
-    "conanfile.py",
-    "bom.json",
-    "metadata",
-    "pkg-info",
-}
 UNDICI = re.compile(r"(?<![\w-])undici(?![\w-])", re.IGNORECASE)
-DEPENDENCY = re.compile(
-    r"brotli(?:4j|dec|common|enc)?|woff2|workerd|(?<![\w-])undici(?![\w-])",
-    re.IGNORECASE,
-)
 JS_NON_CODE = re.compile(
     r"(?P<comment>//[^\n]*|/\*[\s\S]*?\*/)"
     r"""|(?P<string>'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")"""
@@ -184,8 +146,9 @@ OLD_CALL = re.compile(r"\bBROTLI_SAFE\s*\(\s*(" + SWITCH_CALL + r")")
 NEW_CALL = re.compile(r"\bBROTLI_SAFE_WITH_STATUS\s*\(\s*(" + SWITCH_CALL + r")")
 BAD_GUARD = re.compile(r"if\s*\(\s*max_block_type\s*<=\s*1\s*\)\s*\{\s*return\s+BROTLI_FALSE\s*;")
 COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
-GOOD = {"fixed_source", "upstream_fixed_version"}
+GOOD = {"fixed_source", "fixed_port_source", "upstream_fixed_version"}
 WARNING = {
+    "affected_port_source",
     "vulnerable_source",
     "potentially_vulnerable",
     "vulnerable_code_match",
@@ -199,7 +162,6 @@ DEFAULT_MAX_TOTAL_BYTES = None
 DEFAULT_MAX_EXPANDED_BYTES = 8 * 1024 * 1024 * 1024
 DEFAULT_MAX_TOTAL_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 DEFAULT_MAX_TEXT_BYTES = 128 * 1024 * 1024
-MAX_SOURCE_MATCHES = 20
 PYC_HEADER_BYTES = 16
 DECODER_SYMBOLS = (
     b"BrotliDecoderDecompress",
@@ -312,44 +274,6 @@ def fetch_references(text: str) -> tuple[list[dict], bool]:
         )
         previous = offset
     return matches, len(found) > MAX_SOURCE_MATCHES
-
-
-def dependency_matches(text: str, name: str) -> list[dict]:
-    if name != "pyproject.toml":
-        return [
-            {"line": i, "text": line[:300]}
-            for i, line in enumerate(text.splitlines(), 1)
-            if DEPENDENCY.search(line)
-        ]
-    try:
-        metadata = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        # Preserve a lead when malformed metadata cannot be parsed.
-        return (
-            [{"text": "Unparseable Python metadata mentioning Brotli-related components."}]
-            if DEPENDENCY.search(text)
-            else []
-        )
-    sections = (
-        "project.dependencies",
-        "project.optional-dependencies",
-        "dependency-groups",
-        "build-system.requires",
-        "tool.poetry.dependencies",
-        "tool.poetry.dev-dependencies",
-        "tool.poetry.group",
-        "tool.pdm.dev-dependencies",
-        "tool.uv.sources",
-    )
-    matches = []
-    for field in sections:
-        value = metadata
-        for key in field.split("."):
-            value = value.get(key, {}) if isinstance(value, dict) else {}
-        rendered = json.dumps(value, ensure_ascii=True)
-        if DEPENDENCY.search(rendered):
-            matches.append({"field": field, "text": rendered[:300]})
-    return matches
 
 
 def finding(path: str, kind: str, patch_status: str, reason: str, **evidence: object) -> dict:
@@ -658,16 +582,32 @@ class Inventory:
             return
         if digest in self.fingerprints:
             entry = self.fingerprints[digest]
+            independent = entry.get("issue_relation") == "analogous_independent_implementation"
+            status = "fixed_source" if entry["state"] == "fixed" else "vulnerable_source"
+            if independent:
+                status = (
+                    "fixed_port_source" if entry["state"] == "fixed" else "affected_port_source"
+                )
             self.findings.append(
                 finding(
                     label,
                     "exact_source_match",
-                    "fixed_source" if entry["state"] == "fixed" else "vulnerable_source",
-                    "Bytes match a reviewed decoder file; surrounding tree/build "
-                    "and runtime remain unverified.",
+                    status,
+                    (
+                        "Bytes match a reviewed port decoder's block-switch fix state; "
+                        "C advisory impact is not inferred. Build and runtime remain unverified."
+                        if independent
+                        else "Bytes match a reviewed decoder file; surrounding tree/build "
+                        "and runtime remain unverified."
+                    ),
                     sha256=digest,
                     git_blob=entry["git_blob"],
                     sources=entry["sources"],
+                    **{
+                        key: entry[key]
+                        for key in ("implementation", "component", "issue_relation", "upstream_fix")
+                        if key in entry
+                    },
                 )
             )
             return
@@ -702,12 +642,9 @@ class Inventory:
             return
         first_finding = len(self.findings)
         self._inspect_fetch(text, label)
+        self._inspect_language_sources(text, label)
         indicators = []
-        if text and (
-            name in MANIFEST_NAMES
-            or name.startswith(("dockerfile.", "containerfile."))
-            or name.endswith((".cmake", ".spdx.json", ".cdx.json", ".bzl"))
-        ):
+        if text and dependency_manifest(name):
             self._inspect_manifest(text, label)
         elif not python_bytecode(data, name):
             indicators = binary_indicators(data)
@@ -803,8 +740,34 @@ class Inventory:
                 )
             )
 
+    def _inspect_language_sources(self, text: str, label: str) -> None:
+        if not text:
+            return
+        matches, truncated = source_references(text, Path(leaf_name(label)).suffix)
+        if matches:
+            self.findings.append(
+                finding(
+                    label,
+                    "decoder_source_candidate",
+                    "unknown",
+                    "Language import, decoder API, or FFI reference; selected implementation, "
+                    "shipped provider, patch state, and input ownership remain unresolved.",
+                    matches=matches,
+                    matches_truncated=truncated,
+                    detection="language_scoped_source_heuristic",
+                    required_checks=[
+                        "Resolve the import, alias, build flags, and actual package or runtime.",
+                        "Identify native bindings versus independent ports; inspect shipped code.",
+                        "Check provider advisories; wrapper and C versions are distinct.",
+                        "Trace active decoding calls and who controls their input bytes.",
+                    ],
+                )
+            )
+
     def _inspect_manifest(self, text: str, label: str) -> None:
         matches = dependency_matches(text, leaf_name(label))
+        if any(row.get("parse_incomplete") for row in matches):
+            self.gap(label, "Dependency metadata parsing incomplete; selection remains unresolved.")
         if matches:
             self.findings.append(
                 finding(
@@ -813,8 +776,10 @@ class Inventory:
                     "unknown",
                     "Declaration or metadata only; resolve the selected implementation "
                     "and embedded version.",
-                    matches=matches[:20],
+                    matches=matches[:MAX_DEPENDENCY_MATCHES],
                     matching_lines=len(matches),
+                    matches_truncated=len(matches) > MAX_DEPENDENCY_MATCHES,
+                    matching_lines_is_lower_bound=len(matches) > MAX_DEPENDENCY_MATCHES,
                     possible_node_http_client=any(UNDICI.search(row["text"]) for row in matches),
                 )
             )
@@ -1178,6 +1143,26 @@ def explain_possible(item: dict) -> dict:
     }
 
 
+def explain_source_warning(item: dict) -> dict:
+    if item["evidence"].get("issue_relation") == "analogous_independent_implementation":
+        return {
+            "result": "Analogous decoder error-handling bug found in port source",
+            "next_action": (
+                "Check this implementation's linked upstream fix and update selected affected "
+                "copies. This exact source match does not establish the C advisory's memory "
+                "corruption impact or runtime exploitability."
+            ),
+        }
+    return {
+        "result": "Vulnerable Brotli source found",
+        "next_action": (
+            "Have the app's maintainer check whether this copy is used. If it "
+            "is, update its Brotli dependency, rebuild and deploy the app, and "
+            "confirm the running app has the fix."
+        ),
+    }
+
+
 def explain_finding(item: dict) -> dict:  # noqa: PLR0911 -- Explicit per-evidence guidance.
     status = item["patch_status"]
     if status in {"vulnerable_code_match", "mixed_code_matches", "fixed_code_match"}:
@@ -1191,18 +1176,11 @@ def explain_finding(item: dict) -> dict:  # noqa: PLR0911 -- Explicit per-eviden
                 "the whole binary."
             ),
         }
-    if status == "vulnerable_source":
-        return {
-            "result": "Vulnerable Brotli source found",
-            "next_action": (
-                "Have the app's maintainer check whether this copy is used. If it "
-                "is, update its Brotli dependency, rebuild and deploy the app, and "
-                "confirm the running app has the fix."
-            ),
-        }
+    if status in {"vulnerable_source", "affected_port_source"}:
+        return explain_source_warning(item)
     if status == "potentially_vulnerable":
         return explain_possible(item)
-    if status == "fixed_source":
+    if status in {"fixed_source", "fixed_port_source"}:
         return {
             "result": "Fix identified in this source file",
             "next_action": (
@@ -1287,6 +1265,15 @@ def explain_lead(item: dict) -> dict:
             ),
         }
     advice = {
+        "decoder_source_candidate": (
+            "Possible decoder integration in source",
+            (
+                "Follow the recorded import, decoder API, or FFI reference to the selected "
+                "package/runtime and shipped provider. Distinguish native bindings from "
+                "independent ports; wrapper versions are not C decoder versions. Check the "
+                "implementation's advisory and trace who controls the decoded input."
+            ),
+        ),
         "binary_candidate": (
             "Unclassified native binary",
             (
@@ -1408,6 +1395,20 @@ def attention_summary(statuses: set[str]) -> dict:
                 ),
             ],
         }
+    if "affected_port_source" in statuses:
+        return {
+            "status": "needs_attention",
+            "title": "Analogous error-handling bug found in an independent decoder",
+            "meaning": (
+                "Source bytes match a reviewed Go or Rust decoder before its own block-switch "
+                "fix. This does not establish the C advisory's corruption impact or runtime use."
+            ),
+            "next_steps": [
+                "Follow the implementation-specific upstream fix recorded for each matched file.",
+                "Update selected affected copies and verify the deployed artifact and input path.",
+                "Review other copies and coverage gaps independently.",
+            ],
+        }
     if "potentially_vulnerable" in statuses:
         return {
             "status": "needs_attention",
@@ -1448,6 +1449,35 @@ def fetch_summary() -> dict:
     }
 
 
+def fixed_summary(statuses: set[str]) -> dict:
+    if statuses == {"fixed_port_source"}:
+        return {
+            "status": "checked_port_sources_include_fix",
+            "title": "Independent-port fix identified in the checked source files",
+            "meaning": (
+                "These source files match reviewed Go/Rust fixes for analogous error handling. "
+                "This is not a C advisory verdict or proof about deployed binaries or other copies."
+            ),
+            "next_steps": [
+                "Confirm the deployed application builds these sources and their required context.",
+                "Review other decoder copies and actual input reachability separately.",
+            ],
+        }
+    return {
+        "status": "checked_items_include_fix",
+        "title": "Fix identified in the checked items",
+        "meaning": (
+            "The checked source files or supplied versions match a known fix. "
+            "This does not yet confirm what your running app uses or cover "
+            "copies outside this check."
+        ),
+        "next_steps": [
+            "Confirm the running app uses these fixed copies or versions.",
+            "Check any additional copies bundled inside the app or its packages.",
+        ],
+    }
+
+
 def summarize(report: dict) -> dict:
     findings = report["findings"]
     statuses = {item["patch_status"] for item in findings}
@@ -1475,19 +1505,7 @@ def summarize(report: dict) -> dict:
             ],
         }
     if findings and statuses <= GOOD:
-        return {
-            "status": "checked_items_include_fix",
-            "title": "Fix identified in the checked items",
-            "meaning": (
-                "The checked source files or supplied versions match a known fix. "
-                "This does not yet confirm what your running app uses or cover "
-                "copies outside this check."
-            ),
-            "next_steps": [
-                "Confirm the running app uses these fixed copies or versions.",
-                "Check any additional copies bundled inside the app or its packages.",
-            ],
-        }
+        return fixed_summary(statuses)
     if any(fetch_related(item) for item in findings):
         return fetch_summary()
     return {
@@ -1516,9 +1534,11 @@ def display_copies(findings: list[dict]) -> list[dict]:
         "mixed_code_matches": 0,
         "fixed_code_match": 2,
         "vulnerable_source": 0,
+        "affected_port_source": 0,
         "potentially_vulnerable": 1,
         "unknown": 2,
         "fixed_source": 3,
+        "fixed_port_source": 3,
         "upstream_fixed_version": 3,
     }
     copies = {}
@@ -1716,10 +1736,14 @@ def main(argv: list[str] | None = None) -> int:
     ):
         inventory.findings.extend(assess_version(component, value) for value in versions)
     statuses = {item["patch_status"] for item in inventory.findings}
-    if statuses & WARNING:
+    if statuses & (WARNING - {"affected_port_source"}):
         result, code = "affected_evidence_found", 1
+    elif "affected_port_source" in statuses:
+        result, code = "affected_port_evidence_found", 1
     elif inventory.gap_count or not statuses or statuses - GOOD:
         result, code = "review_required", 3
+    elif statuses == {"fixed_port_source"}:
+        result, code = "reported_port_sources_include_fix", 0
     else:
         result, code = "reported_items_meet_fix_rules", 0
     report = make_report(inventory, roots, args, registry, result)
@@ -1738,11 +1762,20 @@ def make_report(
     registry: dict,
     result: str,
 ) -> dict:
+    port_only = bool(inventory.findings) and all(
+        item["evidence"].get("issue_relation") == "analogous_independent_implementation"
+        for item in inventory.findings
+    )
     return {
         "schema_version": 1,
-        "cve": "CVE-2026-111497",
+        "cve": None if port_only else "CVE-2026-111497",
         "result": result,
-        "snapshot_date": registry["verified_on"],
+        "snapshot_date": registry.get(
+            "related_implementations_verified_on", registry["verified_on"]
+        )
+        if port_only
+        else registry["verified_on"],
+        "related_implementation_snapshot_date": registry.get("related_implementations_verified_on"),
         "advisory_freshness": "not_checked_offline",
         "scope": [str(root.expanduser().absolute()) for root in roots],
         "findings": inventory.findings,

@@ -48,7 +48,7 @@ extension, or statically linked executable.
 
 ## Fingerprint provenance
 
-[fingerprints.json](fingerprints.json) contains 20 distinct decoder-file SHA-256
+[fingerprints.json](fingerprints.json) contains 20 Google C decoder-file SHA-256
 fingerprints: 17 vulnerable and three fixed. For upstream 1.0.3–1.0.10,
 1.1.0–1.1.1, and 1.2.0–1.2.1, release files were downloaded and hashed. Several
 releases share identical files. The remaining vulnerable variants came from
@@ -57,6 +57,30 @@ downloaded, their Git blob hashes verified, and their old block-switch handling
 compared with the upstream fix. Each entry includes its retrieval URL and hash.
 An exact fixed match concerns only that decoder file, not an entire backport,
 header set, selected build, or running application.
+
+### Analogous independent-port fixes
+
+An additional 14 exact-source fingerprints were reviewed on **2026-10-26**:
+five distinct Go decoder files (four affected, one fixed) and nine Rust decoder
+files (eight affected, one fixed). They cover the reviewed published tags of
+`github.com/andybalholm/brotli` from v1.0.0 through v1.2.7 and
+`brotli-decompressor` from 4.0.0 through 6.2.0. The respective fixed tags are
+v1.2.7 and 6.2.0. Their
+[Go fix](https://github.com/andybalholm/brotli/commit/33c2a9884269798192b5ecf171288f98939dbe42)
+and [Rust fix](https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752)
+separately correct invalid-block-switch status propagation.
+
+These entries carry explicit `implementation`, `component`, `issue_relation`,
+and `upstream_fix` metadata. Their statuses are `affected_port_source` and
+`fixed_port_source`; port-only reports do not assign the C CVE. A pre-fix match
+reports affected source for the analogous error-handling bug, **not** evidence of the C advisory's out-of-bounds
+write or runtime exploitability. Focused tests distinguish the old and fixed
+internal paths; they are not complete malicious-stream or exploitation tests.
+Fixed matches cover the recorded file only. Modified port files produce unknown
+source leads, not a verdict inferred from the presence of fix-looking tokens.
+Dependency/lockfile declarations remain unresolved; this does not treat a cached
+or overridden version as the deployed decoder. See the
+[ecosystem guide](ecosystems.md) for reviewed port boundaries and native FFI routes.
 
 The [community inventory](https://gist.github.com/N3mes1s/ed33893da270decbb0b4128807fb2141)
 at revision `6f34a3ae446cbba851214fd6a0b40d3a6e3c786f` is a positive set of source

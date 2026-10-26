@@ -890,6 +890,154 @@ class TestInventory:
         (self.root / "app.ts").write_text("import type { Dispatcher } from 'undici-types';")
         assert not self.scan().findings
 
+    @pytest.mark.parametrize(
+        ("name", "source"),
+        [
+            ("app.py", "import brotlicffi as codec\ncodec.decompress(payload)"),
+            ("app.java", "import org.brotli.dec.BrotliInputStream;"),
+            ("app.kt", "import com.aayushatharva.brotli4j.decoder.Decoder"),
+            ("app.cs", "using System.IO.Compression;\nnew BrotliStream(input, mode);"),
+            ("app.rs", "use brotli::Decompressor;"),
+            ("ffi.rs", '#[link(name = "brotlidec")]\nunsafe extern "C" {}'),
+            ("app.go", 'import codec "github.com/google/brotli/go/cbrotli"'),
+            ("app.rb", "require 'brotli'\nBrotli.inflate(payload)"),
+            ("app.php", "<?php brotli_uncompress($payload);"),
+            ("app.js", "import codec from 'brotli-wasm';"),
+        ],
+    )
+    def test_language_integrations_remain_unknown_alongside_fixed_version(self, name, source):
+        target = self.root / name
+        target.write_text(source)
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 3
+        leads = [row for row in report["findings"] if row["kind"] == "decoder_source_candidate"]
+        assert len(leads) == 1
+        assert leads[0]["patch_status"] == "unknown"
+        assert leads[0]["build_selection"] == leads[0]["shipment"] == "unknown"
+        assert leads[0]["reachability"] == "unknown"
+        assert leads[0]["evidence"]["matches"]
+        assert all(row["line"] >= 1 for row in leads[0]["evidence"]["matches"])
+
+    def test_language_leads_traverse_archives_without_running_source(self):
+        marker = self.root / "must-not-run"
+        source = f"open({str(marker)!r}, 'w').write('bad')\nimport brotli as codec\n"
+        with zipfile.ZipFile(self.root / "application.whl", "w") as archive:
+            archive.writestr("app/service.py", source)
+        result = self.scan()
+        leads = [row for row in result.findings if row["kind"] == "decoder_source_candidate"]
+        assert len(leads) == 1
+        assert leads[0]["path"].endswith("application.whl!app/service.py")
+        assert leads[0]["evidence"]["matches"][0]["line"] == 2
+        assert not marker.exists()
+
+    def test_language_lead_sample_reports_truncation(self):
+        (self.root / "app.py").write_text("import brotli\n" * 25)
+        result = self.scan()
+        lead = next(row for row in result.findings if row["kind"] == "decoder_source_candidate")
+        assert len(lead["evidence"]["matches"]) == inventory.MAX_SOURCE_MATCHES
+        assert lead["evidence"]["matches_truncated"] is True
+
+    def test_dependency_sample_is_bounded_and_count_is_explicitly_a_lower_bound(self):
+        target = self.root / "requirements.txt"
+        target.write_text("brotli\n" * 1000)
+        result = self.scan(target)
+        evidence = result.findings[0]["evidence"]
+        assert len(evidence["matches"]) == inventory.MAX_DEPENDENCY_MATCHES
+        assert evidence["matching_lines"] == inventory.MAX_DEPENDENCY_MATCHES + 1
+        assert evidence["matches_truncated"]
+        assert evidence["matching_lines_is_lower_bound"]
+
+    def test_manifest_parser_depth_failure_cannot_be_cleared_by_a_fixed_version(self):
+        target = self.root / "Pipfile"
+        target.write_text("[packages]\nzlib=" + "[" * 2000 + "0" + "]" * 2000)
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 3
+        assert report["coverage"]["gap_count"] == 1
+        lead = next(row for row in report["findings"] if row["kind"] == "dependency_candidate")
+        assert lead["evidence"]["matches"][0]["parse_incomplete"]
+
+    @pytest.mark.parametrize("state", ["vulnerable", "fixed"])
+    def test_exact_port_source_keeps_independent_issue_attribution(self, state, monkeypatch):
+        entry = self.registry["fingerprints"][0]
+        entry.update(
+            state=state,
+            implementation="andybalholm_brotli_go",
+            component="github.com/andybalholm/brotli",
+            issue_relation="analogous_independent_implementation",
+            upstream_fix="https://example.invalid/reviewed-port-fix",
+        )
+        (self.root / "renamed.data").write_bytes(self.sample)
+        result = self.scan()
+        assert len(result.findings) == 1
+        item = result.findings[0]
+        assert item["patch_status"] == (
+            "fixed_port_source" if state == "fixed" else "affected_port_source"
+        )
+        assert item["evidence"]["component"] == "github.com/andybalholm/brotli"
+        assert item["evidence"]["issue_relation"] == "analogous_independent_implementation"
+        assert item["exploitability"] == "not_assessed"
+        assert "C advisory impact is not inferred" in item["reason"]
+        if state == "vulnerable":
+            explanation = inventory.explain_finding(item)
+            assert "Analogous" in explanation["result"]
+            assert "does not establish" in explanation["next_action"]
+        registry = self.root / "registry.json"
+        registry.write_text(json.dumps({**self.registry, "verified_on": "2026-10-26"}))
+        monkeypatch.setattr(inventory, "REGISTRY", registry)
+        code, report = self.run_cli(self.root / "renamed.data")
+        assert code == (0 if state == "fixed" else 1)
+        assert report["cve"] is None
+        assert report["result"] == (
+            "reported_port_sources_include_fix"
+            if state == "fixed"
+            else "affected_port_evidence_found"
+        )
+        assert "CVE-2026-111497" not in inventory.render_text(report)
+        code, report = self.run_cli(self.root / "renamed.data", "--brotli-version", "1.2.0")
+        assert code == 1
+        assert report["cve"] == "CVE-2026-111497"
+        assert report["result"] == "affected_evidence_found"
+
+    @pytest.mark.parametrize(
+        ("name", "declaration"),
+        [
+            ("setup.py", "setup(install_requires=['brotlicffi'])"),
+            ("setup.cfg", "[options]\ninstall_requires = brotli"),
+            ("Pipfile", '[packages]\nbrotli = "*"'),
+            ("Pipfile.lock", '{"default": {"brotli": {"version": "==1.2.1"}}}'),
+            ("requirements-dev.txt", "httpx[brotli]"),
+            ("requirements.in", "brotlicffi"),
+            ("Gemfile", "gem 'brotli'"),
+            ("Gemfile.lock", "GEM\n  specs:\n    brotli (0.8.0)"),
+            ("service.gemspec", "spec.add_dependency 'brotli'"),
+            ("composer.json", '{"require": {"ext-brotli": "*"}}'),
+            ("composer.lock", '{"platform": {"ext-brotli": "*"}}'),
+            ("app.csproj", '<PackageReference Include="BrotliSharpLib" Version="0.3.3" />'),
+            ("app.fsproj", '<PackageReference Include="BrotliSharpLib" />'),
+            ("app.vbproj", '<PackageReference Include="BrotliSharpLib" />'),
+            ("Directory.Packages.props", '<PackageVersion Include="BrotliSharpLib" />'),
+            ("build.targets", '<PackageReference Include="BrotliSharpLib" />'),
+            ("app.nuspec", '<dependency id="BrotliSharpLib" />'),
+            ("packages.config", '<package id="BrotliSharpLib" />'),
+            ("packages.lock.json", '{"dependencies": {"BrotliSharpLib": {}}}'),
+            ("app.deps.json", '{"libraries": {"BrotliSharpLib/0.3.3": {}}}'),
+        ],
+    )
+    def test_ecosystem_manifests_are_unresolved_not_upstream_versions(self, name, declaration):
+        target = self.root / name
+        target.write_text(declaration)
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 3
+        leads = [item for item in report["findings"] if item["kind"] == "dependency_candidate"]
+        assert len(leads) == 1
+        assert leads[0]["patch_status"] == "unknown"
+        assert leads[0]["evidence"]["matches"]
+        assert "brotli" in json.dumps(leads[0]["evidence"]["matches"]).lower()
+        target.write_text("unrelated compression dependency: zlib")
+        code, report = self.run_cli(target, "--brotli-version", "1.2.1")
+        assert code == 0
+        assert [item["kind"] for item in report["findings"]] == ["supplied_version"]
+
     def test_fetch_source_inside_nested_archives_is_found_without_execution(self):
         marker = self.root / "should-not-exist"
         source = f"require('node:fs').writeFileSync({json.dumps(str(marker))}, 'bad'); fetch(url);"

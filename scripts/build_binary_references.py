@@ -35,7 +35,11 @@ def scoped_reference_id(reference: dict) -> str:
 
 def build_references(trees: list[Path], compiler: str, flags: list[str]) -> dict:
     registry = json.loads((ROOT / "skills/brotli-checker/references/fingerprints.json").read_text())
-    sources = {entry["sha256"]: entry for entry in registry["fingerprints"]}
+    sources = {
+        entry["sha256"]: entry
+        for entry in registry["fingerprints"]
+        if entry.get("implementation", "google_brotli_c") == "google_brotli_c"
+    }
     compiler_path = shutil.which(compiler)
     if compiler_path is None:
         msg = f"Compiler not found: {compiler}"

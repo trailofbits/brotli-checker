@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add 14 reviewed Go/Rust source fingerprints for analogous block-switch
+  error-handling fixes, with explicit implementation and upstream-fix provenance.
+  Do not infer the C advisory's memory-corruption impact for independent ports.
+- Collect bounded language-import, decoder API, and FFI source leads across
+  Python, JVM, .NET, Rust, Go, Ruby, PHP, and JavaScript/WASM integrations.
+  Preserve implementation uncertainty and distinguish native bindings from ports.
+- Extend dependency collection to Python setup/Pipfile/requirements variants,
+  Ruby, Composer, and .NET metadata; filter the new structured formats by
+  dependency fields rather than descriptive prose.
+- Expand source-call discovery names and add an ecosystem provider/reachability
+  guide with primary-source examples. Import aliases and dynamic providers still
+  require review; wrapper versions do not establish the native decoder version.
+
 - Expand the packaged ELF catalog from 336 to 432 references while preserving
   every prior entry: add 72 scope-aware GCC references for x86-64/AArch64
   function-section builds linked with garbage collection, plus 24 complete

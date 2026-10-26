@@ -202,6 +202,14 @@ For an authorized runtime test, use a fresh profile and quit the normal app
 first. The maintainer Slack fixture refuses to launch over an existing main
 process. Normal decoding tests must not be described as CVE trigger tests.
 
+## Other language ecosystems
+
+Use the [ecosystem integration guide](ecosystems.md) for concrete Python,
+JVM, .NET, Rust, Go, Ruby, PHP, and JavaScript/WASM provider examples. Start at
+the recorded import/API location, resolve the actual implementation and deployment
+artifact, then follow its callers and input ownership. An import or dependency
+can be optional, replaced, shadowed, or unused; it is not a patch verdict.
+
 ## Java HTTP stacks and native JNI providers
 
 Look for `com.aayushatharva.brotli4j`, `DecoderJNI`, `BrotliDecoder`, native

@@ -281,6 +281,296 @@
           "url": "https://raw.githubusercontent.com/utelle/wxpdfdoc/1aa2154023d7da66d9c19665564f334ecf8bfbf0/thirdparty/woff2/brotli/dec/decode.c"
         }
       ]
+    },
+    {
+      "sha256": "91478fc54797d11b28b580cd650788fc8160b4a98ce63931eee27c110baa6394",
+      "git_blob": "d2f39a051c6e5df6148d2d60fe90e50ac76ac4e8",
+      "size": 70122,
+      "state": "vulnerable",
+      "implementation": "andybalholm_brotli_go",
+      "component": "github.com/andybalholm/brotli",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/andybalholm/brotli/commit/33c2a9884269798192b5ecf171288f98939dbe42",
+      "sources": [
+        {
+          "label": "github.com/andybalholm/brotli-v1.0.0",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/b60f0d972eeb79a5fba5fb60f1e0568bc8c97e42/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.0.1",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/729edfbcfeaad43a6412c185205501ec80773250/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.0.2",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/94609f96061bb9f59f9fcaa55ac4038c8ad260f3/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.0.3",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/5376c15dde3fd4247febd5a3b4ac9708d2d6faff/decode.go"
+        }
+      ]
+    },
+    {
+      "sha256": "f52d689d687556d2bd3728fe1948df139c5c8781db274029f0b05f3bc403e99f",
+      "git_blob": "6a73b88af20151c1265b77d18ee0fe2e0f861d01",
+      "size": 69064,
+      "state": "vulnerable",
+      "implementation": "andybalholm_brotli_go",
+      "component": "github.com/andybalholm/brotli",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/andybalholm/brotli/commit/33c2a9884269798192b5ecf171288f98939dbe42",
+      "sources": [
+        {
+          "label": "github.com/andybalholm/brotli-v1.0.4",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/1d750214c25205863625bb3eb8190a51b2cef26d/decode.go"
+        }
+      ]
+    },
+    {
+      "sha256": "c02c27528aefba52c195d44baa67eb76f9aebc5352f9049d36ccc27767f06532",
+      "git_blob": "9d9513b7cfbc9958faebe7b50bbb3ad0cf8207a9",
+      "size": 69014,
+      "state": "vulnerable",
+      "implementation": "andybalholm_brotli_go",
+      "component": "github.com/andybalholm/brotli",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/andybalholm/brotli/commit/33c2a9884269798192b5ecf171288f98939dbe42",
+      "sources": [
+        {
+          "label": "github.com/andybalholm/brotli-v1.0.5",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/2848168f550a22ff691915d3d760b328244bfae8/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.0.6",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/b7a4cf9ec51091bb564e7d758771b967bc411813/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.1.0",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/17e5901d050574f228e7d5a3f754a30a7cb55d55/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.1.1",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/57434b509141a6ee9681116b8d552069126e615f/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.2.0",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/676a02057d90cd1e75ede54cdfa79d4cdb574dae/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.2.1",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/0675b242cf45dcdd51ed6fb600876b570bea329b/decode.go"
+        }
+      ]
+    },
+    {
+      "sha256": "a4a46b86fe329e27befe76beea255e1d2a38c720b0290e67f15603c2c68b607c",
+      "git_blob": "1a27c0a6bac6d37e659037fd7074fa8c9aef35fc",
+      "size": 68817,
+      "state": "vulnerable",
+      "implementation": "andybalholm_brotli_go",
+      "component": "github.com/andybalholm/brotli",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/andybalholm/brotli/commit/33c2a9884269798192b5ecf171288f98939dbe42",
+      "sources": [
+        {
+          "label": "github.com/andybalholm/brotli-v1.2.2",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/785aba538b2118979d2c573eccb287c4da157faf/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.2.3",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/6b8aef6ece266fa87b925ce3a913bc30dc4b7b70/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.2.4",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/eede31285845c44ddf1e333dfd896bc7d44696ac/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.2.5",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/9140f7ee89196c79405ce26a162949cef2ebc7f4/decode.go"
+        },
+        {
+          "label": "github.com/andybalholm/brotli-v1.2.6",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/451b9eb6fcc1f329d548f888b9ae2bc372ef434b/decode.go"
+        }
+      ]
+    },
+    {
+      "sha256": "5e28b506f5778d95484427d950c4fd82d62d4678c486064055f43b5e928d3b7a",
+      "git_blob": "fba92ca94067ff80f6d82a15556809e9f31c70c5",
+      "size": 69186,
+      "state": "fixed",
+      "implementation": "andybalholm_brotli_go",
+      "component": "github.com/andybalholm/brotli",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/andybalholm/brotli/commit/33c2a9884269798192b5ecf171288f98939dbe42",
+      "sources": [
+        {
+          "label": "github.com/andybalholm/brotli-v1.2.7",
+          "url": "https://raw.githubusercontent.com/andybalholm/brotli/33c2a9884269798192b5ecf171288f98939dbe42/decode.go"
+        }
+      ]
+    },
+    {
+      "sha256": "84451e349095141d890f908fd29b1b6aa9a62de3fcc341d3b0029c6eac8d5473",
+      "git_blob": "64c490838a79a25851317b72ca2f86835224563f",
+      "size": 135126,
+      "state": "vulnerable",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-4.0.0",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/62daa8041df428cd38064a54132dcd1621f66214/src/decode.rs"
+        },
+        {
+          "label": "brotli-decompressor-4.0.1",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/e7263337a7f4bc2c911a29b063a873e87ada164d/src/decode.rs"
+        }
+      ]
+    },
+    {
+      "sha256": "20061b108f2c0ad577cda6dd3a7bcf5e1ba2617322ba6b187ccad024d3c3cc5b",
+      "git_blob": "6fcb1653145716adc1fa2d35184d18d7ccb72c45",
+      "size": 135641,
+      "state": "vulnerable",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-4.0.2",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/dedfdc9c758e024b16416dd2398e8507e4cc4164/src/decode.rs"
+        }
+      ]
+    },
+    {
+      "sha256": "fc64a5f0287a85d9c66b66d682493ff41b654f1030d3db969d1e02abe7cc320a",
+      "git_blob": "519bc76418854ec865905480c826ebf522eaef07",
+      "size": 135694,
+      "state": "vulnerable",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-4.0.3",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/2ede189d2b0d95777899b1613fc3c13662b66b23/src/decode.rs"
+        }
+      ]
+    },
+    {
+      "sha256": "af911b8494db64c5aacacea2ded76870231a6daa4df3d310436812e3bda83eb8",
+      "git_blob": "2f9afa19577d3979e6329033847d17bf6301819d",
+      "size": 136143,
+      "state": "vulnerable",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-5.0.0",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/a91c112180789502cdb9bf9e87f9546dd9a970fd/src/decode.rs"
+        }
+      ]
+    },
+    {
+      "sha256": "79896b38285f417f88cfd96082d14006273a7540cec3a0089e8d0ac6e11eb337",
+      "git_blob": "853acc910fe9975ab2a6af7ec1cf9aa95b0fc47f",
+      "size": 136510,
+      "state": "vulnerable",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-5.0.1",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/273d1b9864b52f5a2a9e90479710dd5ce8bce8ed/src/decode.rs"
+        },
+        {
+          "label": "brotli-decompressor-5.0.2",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/1726498458a0870ff1cec8fce6a5b5c00c00b628/src/decode.rs"
+        },
+        {
+          "label": "brotli-decompressor-5.0.3",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/8dd9ab9fa41ec57de152ed61628f7bff7fb4ff04/src/decode.rs"
+        }
+      ]
+    },
+    {
+      "sha256": "54f02ada8c5de3e63a2eafca7bf622cdc3981dfe0fb4a5beb72de4306d420bb8",
+      "git_blob": "ff1b410abfd224c795ba2d82a2b1799f6ef8ab6b",
+      "size": 170899,
+      "state": "vulnerable",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-6.0.0",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/731d7d50582a4f89fbbb999e27f74e9acfaedbf9/src/decode.rs"
+        },
+        {
+          "label": "brotli-decompressor-6.0.1",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/e4f3bf3326256a5dc23e5fa9276d803f6a4ad527/src/decode.rs"
+        }
+      ]
+    },
+    {
+      "sha256": "64ba21d5e35f57988d54c4e0831c311245f97d473c4927b1cde8025b63134225",
+      "git_blob": "46abcb610c8023e375352caa4e1859802b3d4f85",
+      "size": 204505,
+      "state": "vulnerable",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-6.1.0",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/910099df8c358e58367593047f6b758920076ed6/src/decode.rs"
+        }
+      ]
+    },
+    {
+      "sha256": "dd3140b3d0b4f7517ca912ed82aab501a92358afe4c8cdeee4e9b0e016b90eb0",
+      "git_blob": "2a6ca6822491f7534c889a0287d0adf6974b0b04",
+      "size": 208133,
+      "state": "vulnerable",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-6.1.1",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/fdfccff3dc0a4a0752befab25b0e8144ddb497b1/src/decode.rs"
+        }
+      ]
+    },
+    {
+      "sha256": "cf0e90898c9cb6c8b84a72850ed134fc9a2ee991773fcfaf8b2f8e4345bb330a",
+      "git_blob": "b2d9c9cc14e208ac4e96712d5add47864bfa78ad",
+      "size": 220839,
+      "state": "fixed",
+      "implementation": "dropbox_brotli_decompressor_rust",
+      "component": "brotli-decompressor",
+      "issue_relation": "analogous_independent_implementation",
+      "upstream_fix": "https://github.com/dropbox/rust-brotli-decompressor/commit/cc7ee0edae39870daa7f0d7c1456e113b759e752",
+      "sources": [
+        {
+          "label": "brotli-decompressor-6.2.0",
+          "url": "https://raw.githubusercontent.com/dropbox/rust-brotli-decompressor/072acf0f7b7514144e90eaabf2d46d4d0617d94e/src/decode.rs"
+        }
+      ]
     }
-  ]
+  ],
+  "related_implementation_scope": "Go and Rust source entries identify independently reviewed analogous block-switch error-handling fixes; C advisory impact is not inferred. Other ports remain unclassified.",
+  "related_implementations_verified_on": "2026-10-26"
 }

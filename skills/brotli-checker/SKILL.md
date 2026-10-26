@@ -268,6 +268,23 @@ locations and continue with the Node/fetch section of the reachability guide.
 A fixed supplied version or standalone Brotli library does not clear an
 unresolved runtime lead.
 
+For non-C/C++ projects, use the [ecosystem integration guide](references/ecosystems.md).
+The inventory's `decoder_source_candidate` findings collect language-scoped
+imports and decoder API references with source locations. Their
+`implementation_hint` is a lead based on expected upstream behavior, not proof
+of the selected provider. Resolve aliases, optional dependencies, runtime
+configuration, native extensions/JNI/FFI, and WASM assets before patch assessment.
+Inspect bundled native code and deployment-specific shared providers; do not
+substitute the review host's libraries. Independent Java, Rust, Go, and JavaScript
+ports require their own implementation review, not the C library's version rules.
+The registry includes separately reviewed exact Go/Rust source fingerprints for
+analogous block-switch error fixes. Preserve their `issue_relation` and upstream
+fix evidence; do not describe those matches as proof of the C corruption impact.
+Keep wrapper version, decoder version, build selection, shipment, and input
+ownership separate. Use reviewed local aliases via source discovery's `--symbol`
+when its default names cannot follow a call. Absence of a lexical lead or graph
+edge is not evidence that decoding cannot occur.
+
 For Electron apps, use the guide's Electron section. Separate Chromium's
 renderer/net/session fetch paths from Node fetch, and verify which decoder the
 embedder links. A standalone Node version rule cannot classify a vendor Electron

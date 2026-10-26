@@ -165,6 +165,15 @@ def test_requested_symbols_add_aliases_and_wrappers_without_inventing_binding():
         "zlib.createBrotliDecompress",
         "zlib.brotliDecompressSync",
         "app:BrotliDecoderDecompressStream",
+        "System.IO.Compression.BrotliStream",
+        "System.IO.Compression.BrotliDecoder.TryDecompress",
+        "org.brotli.dec.BrotliInputStream",
+        "brotli::Decompressor",
+        "brotli2::read::BrotliDecoder",
+        "cbrotli.NewReader",
+        "Brotli.decompress",
+        "brotli_uncompress",
+        "brotli_decompress",
     ],
 )
 def test_qualified_decoder_and_fetch_calls_are_discovery_candidates(raw):
@@ -173,6 +182,13 @@ def test_qualified_decoder_and_fetch_calls_are_discovery_candidates(raw):
     result = collect(graph_with([unit("app:main"), target], [edge]))
     assert result["candidate_count"] == 1
     assert result["candidates"][0]["call"]["attributes"]["raw_target"] == raw
+
+
+@pytest.mark.parametrize("raw", ["gzip.NewReader", "codec.Decompressor", "codec.TryDecompress"])
+def test_generic_decoder_names_do_not_imply_brotli(raw):
+    target = unit("proxy:" + raw, proxy=True)
+    edge = call("app:main", target.id, attributes=(("raw_target", raw),))
+    assert collect(graph_with([unit("app:main"), target], [edge]))["candidate_count"] == 0
 
 
 def test_callback_edges_are_kept_with_uncertainty_and_deferred_metadata():
