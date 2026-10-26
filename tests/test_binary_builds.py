@@ -19,6 +19,7 @@ import struct
 import subprocess
 import sys
 import zipfile
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -53,7 +54,13 @@ PAIRED_RELEASE = {
     "1.2.1": "1.2.0",
 }
 REFERENCE_CATALOG = Path(os.environ.get("BROTLI_TEST_REFERENCE_CATALOG", str(matcher.REFERENCES)))
-PACKAGED_REFERENCES = matcher.load_references(REFERENCE_CATALOG)
+
+
+@cache
+def packaged_references():
+    return matcher.load_references(REFERENCE_CATALOG)
+
+
 GC_COMPILE_FLAGS = ("-ffunction-sections", "-fdata-sections")
 GC_LINK_FLAGS = ("-Wl,--gc-sections",)
 PATCH_ROLES = {
@@ -280,9 +287,9 @@ def packaged_match_evidence(data, reference, state, *, required):
             profile_value(packaged.metadata, key) == profile_value(reference.metadata, key)
             for key in ("compiler", "machine", "elf_class", "byteorder", "flags")
         )
-        for packaged in PACKAGED_REFERENCES
+        for packaged in packaged_references()
     )
-    assessment = matcher.match_code(data, PACKAGED_REFERENCES)
+    assessment = matcher.match_code(data, packaged_references())
     assert all(match["state"] == state for match in assessment.matches), (
         "packaged references must never identify the opposite state"
     )
@@ -324,7 +331,7 @@ def assert_missing_gc_population(  # noqa: PLR0913, PLR0917 -- Complete negative
     assert not local.limited
     assert local.patch_status == "unknown"
     assert local.matches == []
-    packaged = matcher.match_code(data, PACKAGED_REFERENCES)
+    packaged = matcher.match_code(data, packaged_references())
     assert packaged.matches == []
 
     main_code, report = run_main_scan(path, catalog_path)

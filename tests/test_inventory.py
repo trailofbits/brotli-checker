@@ -56,9 +56,39 @@ def tar_bytes(name, content):
     return stream.getvalue()
 
 
+@pytest.fixture(scope="session")
+def cli_code_catalog(tmp_path_factory):
+    # These tests exercise reporting/traversal, not the packaged compiler corpus.
+    # Catalog discrimination and real linked builds have dedicated tests.
+    path = tmp_path_factory.mktemp("inventory-catalog") / "references.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "references": [
+                    {
+                        "id": "fixture",
+                        "state": "fixed",
+                        "machine": matcher.EM_AARCH64,
+                        "source_sha256": "a" * 64,
+                        "object_sha256": "b" * 64,
+                        "source": "test fixture",
+                        "compiler": "fixture",
+                        "flags": "-O2",
+                        "code": bytes(range(256)).hex(),
+                        "mask": (b"\xff" * 256).hex(),
+                    }
+                ],
+            }
+        )
+    )
+    return path
+
+
 class TestInventory:
     @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path: Path) -> None:
+    def _setup(self, tmp_path: Path, cli_code_catalog: Path) -> None:
+        self.cli_code_catalog = cli_code_catalog
         self.root = tmp_path
         self.sample = b"a complete file used as an exact-match fixture\n"
         self.registry = {
@@ -100,7 +130,9 @@ class TestInventory:
     def run_cli(self, *args):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = inventory.main([*map(str, args), "--json"])
+            code = inventory.main(
+                [*map(str, args), "--code-references", str(self.cli_code_catalog), "--json"]
+            )
         return code, json.loads(output.getvalue())
 
     def test_version_boundaries_and_backport_uncertainty(self):
