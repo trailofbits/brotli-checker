@@ -9,6 +9,9 @@ filesystems. It checks source fingerprints and supported ELF binary code,
 investigates which copies the app uses, and explains what to update or review.
 Each copy keeps its own result.
 
+It also recognizes decoder tables in stripped or LTO binaries. Table recognition
+finds copies to review; it does not establish their patch status.
+
 For source review, [Trailmark](https://github.com/trailofbits/trailmark) maps calls
 to the decoder and fetch APIs, helping the assistant find callers to inspect.
 The scanner finds suspect parts; Trailmark helps show how the code connects.
@@ -73,6 +76,8 @@ for updates and backports.
 ## Documentation
 
 - [Scanner guide](docs/usage.md): commands, output, limits, and binary review.
+- [Ecosystem guide](skills/brotli-checker/references/ecosystems.md): native
+  bindings, runtime decoders, independent ports, and WASM integrations.
 - [Advisory](skills/brotli-checker/references/advisory.md): fixed versions,
   fingerprints, and provenance.
 - [Reachability](skills/brotli-checker/references/reachability.md): investigating
