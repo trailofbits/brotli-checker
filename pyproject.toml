@@ -1,6 +1,6 @@
 [project]
 name = "brotli-checker"
-version = "0.2.0"
+version = "0.3.0"
 description = "A Brotli security checker skill and offline source inventory tool"
 readme = "README.md"
 license = "MIT"

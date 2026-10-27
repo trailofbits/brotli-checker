@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.3.0] - 2026-10-27
 
 - Recognize compiler-independent Brotli decoder table signatures in binaries,
   including stripped/LTO builds. Report recognition strength and table offsets
@@ -8,7 +8,6 @@
 - Scope ELF table evidence to load segments, report malformed-layout gaps, and
   preserve bounded streaming/sparse access. Non-ELF table evidence is explicitly
   file-content-only, without loader or execution claims.
-
 - Add 14 reviewed Go/Rust source fingerprints for analogous block-switch
   error-handling fixes, with explicit implementation and upstream-fix provenance.
   Do not infer the C advisory's memory-corruption impact for independent ports.
@@ -21,7 +20,6 @@
 - Expand source-call discovery names and add an ecosystem provider/reachability
   guide with primary-source examples. Import aliases and dynamic providers still
   require review; wrapper versions do not establish the native decoder version.
-
 - Expand the packaged ELF catalog from 336 to 432 references while preserving
   every prior entry: add 72 scope-aware GCC references for x86-64/AArch64
   function-section builds linked with garbage collection, plus 24 complete
@@ -44,6 +42,8 @@
   remain incomplete rather than being interpreted as classic r2 instructions.
 - Write gzip catalogs with a fixed compression level and canonical header
   metadata across supported Python versions.
+- Parallelize mutation CI by scanner module with an aggregate completeness and
+  score gate, and avoid repeated compiled-catalog parsing in mutation test setup.
 
 ## [0.2.0] - 2026-10-23
 
@@ -72,6 +72,7 @@
 - Include offline source and dependency inventory, source fingerprints, AArch64
   ELF decoder fingerprints, and bounded binary disassembly review.
 
+[0.3.0]: https://github.com/trailofbits/brotli-checker/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/trailofbits/brotli-checker/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/trailofbits/brotli-checker/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/trailofbits/brotli-checker/releases/tag/v0.1.0
