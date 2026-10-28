@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add explicit optional FLIRT function recognition with a reproducible, hash-bound
+  Brotli PAT corpus, full-function masked verification, ambiguity handling, and
+  bounded sparse executable-range scanning. Function identity remains separate
+  from patch state; unavailable requested backends produce coverage gaps.
+- Add trusted ELF-object FLIRT generation/merge tooling, provenance and collision
+  checks, real-backend tests, and a prioritized defensive extension roadmap.
+
 ## [0.3.0] - 2026-10-27
 
 - Recognize compiler-independent Brotli decoder table signatures in binaries,

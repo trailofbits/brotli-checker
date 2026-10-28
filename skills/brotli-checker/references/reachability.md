@@ -276,6 +276,13 @@ exposure: protocol role, negotiation, provider, buffering, and configuration mat
 
 ## Bounded binary patch triage
 
+Optional [FLIRT recognition](flirt.md) supplies individual executable windows
+and candidate function names, including when a whole-decoder profile misses.
+Use definitive names only when ambiguity checks completed; otherwise preserve
+candidate alternatives and gaps. Reference source states are provenance, not a
+patch verdict. Match windows are not a recovered call graph: inspect calls,
+relocation targets, and error propagation before drawing semantic conclusions.
+
 Stable [decoder-data signatures](binary-signatures.md) can identify useful
 starting points even when stripping or LTO defeats compiled-code matching.
 Use their recorded data addresses to find code cross-references in trusted
