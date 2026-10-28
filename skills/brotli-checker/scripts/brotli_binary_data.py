@@ -330,3 +330,19 @@ def sha256_data(data: Buffer) -> str:
     finally:
         view.release()
     return digest.hexdigest()
+
+
+def normalize_ranges(
+    ranges: list[tuple[int, int]],
+) -> tuple[list[tuple[int, int]], list[int], list[int]]:
+    union: list[tuple[int, int]] = []
+    starts, coverage_ends = [], []
+    for start, size in sorted(ranges):
+        end = start + size
+        starts.append(start)
+        coverage_ends.append(max(end, coverage_ends[-1] if coverage_ends else end))
+        if union and start <= union[-1][1]:
+            union[-1] = (union[-1][0], max(end, union[-1][1]))
+        else:
+            union.append((start, end))
+    return union, starts, coverage_ends

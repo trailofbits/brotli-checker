@@ -16,6 +16,7 @@ from brotli_binary_match import (
     CodeReference,
     load_references,
 )
+from brotli_flirt import DEFAULT_FLIRT_BUNDLE, FlirtCatalog
 from brotli_inventory import (
     DEFAULT_MAX_EXPANDED_BYTES,
     DEFAULT_MAX_FILE_BYTES,
@@ -25,6 +26,7 @@ from brotli_inventory import (
     archive_kind,
     assess_binary,
     is_binary_name_candidate,
+    load_optional_flirt,
     positive,
 )
 
@@ -56,6 +58,7 @@ class BinaryInventory(Inventory):
         archive_depth: int,
         max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
         max_total_expanded_bytes: int = DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
+        flirt_catalog: FlirtCatalog | None = None,
     ) -> None:
         super().__init__(
             {"fingerprints": []},
@@ -66,6 +69,7 @@ class BinaryInventory(Inventory):
             max_expanded_bytes=max_expanded_bytes,
             max_total_expanded_bytes=max_total_expanded_bytes,
             code_references=None,
+            flirt_catalog=flirt_catalog,
         )
         self.catalog = catalog
         self.references = references
@@ -99,6 +103,7 @@ class BinaryInventory(Inventory):
         decoder_metadata: dict | None = None,
         recognition: dict | None = None,
         detection_status: str = "not_detected",
+        flirt: dict | None = None,
         code_assessment: str,
     ) -> dict:
         return {
@@ -115,6 +120,7 @@ class BinaryInventory(Inventory):
             "decoder_metadata": decoder_metadata or {},
             "recognition": recognition or {},
             "detection_status": detection_status,
+            "flirt": flirt or {},
             "code_assessment": code_assessment,
         }
 
@@ -122,7 +128,7 @@ class BinaryInventory(Inventory):
         digest = sha256_data(data)
         file_format = next((name for magic, name in MAGICS.items() if data.startswith(magic)), None)
         catalog_label = self.catalog.get(digest)
-        assessment = assess_binary(data, self.references)
+        assessment = assess_binary(data, self.references, self.flirt_catalog)
         for reason in assessment["gaps"]:
             self.gap(label, reason)
         named = is_binary_name_candidate(label)
@@ -145,6 +151,7 @@ class BinaryInventory(Inventory):
                     code_matches=assessment["code_matches"],
                     decoder_metadata=assessment["decoder_metadata"],
                     recognition=assessment["recognition"],
+                    flirt=assessment["flirt"],
                     detection_status=assessment["detection_status"],
                     code_assessment=assessment["reason"],
                 )
@@ -182,6 +189,14 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=REFERENCES,
         help="Compiled decoder reference catalog (defaults to packaged references)",
+    )
+    parser.add_argument(
+        "--flirt", action="store_true", help="enable optional FLIRT function recognition"
+    )
+    parser.add_argument(
+        "--flirt-references",
+        type=Path,
+        help="trusted FLIRT bundle manifest (implies --flirt; otherwise use the packaged bundle)",
     )
     parser.add_argument(
         "--max-file-bytes",
@@ -224,6 +239,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         catalog = load_catalog(args.catalog)
         references = load_references(args.code_references)
+        flirt_catalog, flirt_error = load_optional_flirt(
+            args.flirt_references or (DEFAULT_FLIRT_BUNDLE if args.flirt else None)
+        )
     except (OSError, ValueError) as error:
         parser.error(str(error))
     inventory = BinaryInventory(
@@ -235,12 +253,16 @@ def main(argv: list[str] | None = None) -> int:
         archive_depth=args.archive_depth,
         max_expanded_bytes=args.max_expanded_bytes,
         max_total_expanded_bytes=args.max_total_expanded_bytes,
+        flirt_catalog=flirt_catalog,
     )
+    if flirt_error is not None:
+        inventory.gap("<FLIRT>", flirt_error)
     roots = [root.expanduser().absolute() for root in args.roots]
     inventory.scan_roots(roots)
     report = {
         "schema_version": 2,
         "scope": [str(root) for root in roots],
+        "flirt_requested": args.flirt or args.flirt_references is not None,
         "findings": inventory.findings,
         "coverage": {
             "files_read": inventory.files_read,

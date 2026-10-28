@@ -1,8 +1,9 @@
 # Contributing
 
 Use Python 3.12–3.15 and [uv](https://docs.astral.sh/uv/) 0.13.5 or later. The
-scanner itself uses only the standard library; source discovery uses pinned
-Trailmark. Development, security, and mutation tools are separate locked groups.
+default scanner uses only the standard library; source discovery uses pinned
+Trailmark. Optional FLIRT uses the pinned `flirt` extra on Python 3.12-3.14.
+Development, security, and mutation tools are separate locked groups.
 
 ## Checks
 
@@ -20,8 +21,8 @@ applies formatting and lint fixes. The offline test suite runs on Python
 branch coverage floor.
 
 `make security` runs zizmor's offline pedantic workflow checks and pip-audit
-against the complete hashed lockfile export. Advisory queries require network
-access.
+against the complete hashed lockfile export, including optional extras. Advisory
+queries require network access.
 
 `make mutations` uses pytest-gremlins with isolated subprocesses, fresh results,
 and all default mutation operators. It first runs `make known-answers`, which
@@ -80,6 +81,19 @@ seven-day cooldown. Keep GitHub Actions pinned to full commit SHAs with exact
 release comments.
 
 ### Compiled references
+
+The optional function-level FLIRT catalog is generated separately by
+`scripts/build_flirt_references.py`; see the
+[FLIRT reference guide](skills/brotli-checker/references/flirt.md). Use its
+build/merge commands, never hand-edit generated PAT or manifest files. The builder
+and runtime share one strict format validator. Retain source/header/object hashes,
+compiler flags, and portability notes; reject name collisions after merging too.
+Use `uv run --extra flirt pytest tests/test_flirt.py tests/test_flirt_reference_builder.py
+tests/test_flirt_integration.py --no-cov` for focused real-backend checks.
+CI validates the complete packaged bundle once with
+`BROTLI_FLIRT_REFERENCE_TESTS=1`; it is not loaded in every mutant subprocess.
+CI installs the extra where supported, including mutation shards; Python 3.15
+exercises the core and explicit unavailable-backend path instead.
 
 Generate catalogs from complete, trusted local upstream trees with an ELF
 GCC-like compiler:

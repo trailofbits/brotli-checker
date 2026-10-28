@@ -190,6 +190,22 @@ interpreting the call neighborhood; missing parser evidence is not a negative re
 
 ## Compiled decoder evidence
 
+For optional individual-function recognition, run:
+
+```sh
+uv run --python 3.14 --extra flirt python skills/brotli-checker/scripts/brotli_inventory.py \
+  /path/to/application --flirt --json
+```
+
+`--flirt-references PATH` selects a trusted custom bundle and implies `--flirt`.
+Both inventory CLIs support these options. FLIRT reports function offsets and
+compatible source profiles while leaving patch state independent; a fixed-source
+signature is not a fixed-binary verdict. Missing requested backends, unsupported
+targets, ambiguity, and work limits appear as coverage gaps. Python 3.15 supports
+the core scanner but not the pinned optional backend. See the
+[FLIRT guide](../skills/brotli-checker/references/flirt.md) for strict format scope,
+generation, interpretation, and copied-skill commands.
+
 Binary recognition now has a separate `detection_status`: reviewed code matches,
 stable decoder-table matches, defined symbols, imports, weak strings, and no
 recognition are distinct. The full 704-entry command table or all three

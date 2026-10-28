@@ -11,6 +11,7 @@ import struct
 from bisect import bisect_right
 from typing import TYPE_CHECKING
 
+from brotli_binary_data import normalize_ranges
 from brotli_binary_match import elf_header, file_backed_ranges, program_headers
 
 if TYPE_CHECKING:
@@ -77,22 +78,6 @@ ANCHORS = re.compile(
         for name, value in SIGNATURES.items()
     )
 )
-
-
-def normalize_ranges(
-    ranges: list[tuple[int, int]],
-) -> tuple[list[tuple[int, int]], list[int], list[int]]:
-    union: list[tuple[int, int]] = []
-    starts, coverage_ends = [], []
-    for start, size in sorted(ranges):
-        end = start + size
-        starts.append(start)
-        coverage_ends.append(max(end, coverage_ends[-1] if coverage_ends else end))
-        if union and start <= union[-1][1]:
-            union[-1] = (union[-1][0], max(end, union[-1][1]))
-        else:
-            union.append((start, end))
-    return union, starts, coverage_ends
 
 
 def scan_tables(data: Buffer, ranges: list[tuple[int, int]]) -> tuple[dict, bool]:

@@ -20,6 +20,11 @@ name = "brotli-checker"
 version = "0.3.0"
 source = { virtual = "." }
 
+[package.optional-dependencies]
+flirt = [
+    { name = "python-flirt", marker = "python_full_version < '3.15'" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -37,6 +42,8 @@ security = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "python-flirt", marker = "python_full_version < '3.15' and extra == 'flirt'", specifier = "==0.10.2" }]
+provides-extras = ["flirt"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -727,6 +734,41 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/54/01fee16e8de7a0534e79bfc20510f44e26581fbcd40bd099ff461ce1d374/pytest_gremlins-1.12.2.tar.gz", hash = "sha256:28ac7f9748ab95452c157c1d06b5a3958b3b7c34e642f75d53bea144b96899e6", size = 4295970, upload-time = "2026-10-19T04:17:10.381Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/65/915f8c0613f18aa91c0626629ed89979cf70d3f1462fc751d5fbef502919/pytest_gremlins-1.12.2-py3-none-any.whl", hash = "sha256:f0f75eeaa1713143de01ea516fff683bda10e24bebfb5d609d9910e02e3b2f48", size = 185299, upload-time = "2026-10-19T04:17:08.271Z" },
+]
+
+[[package]]
+name = "python-flirt"
+version = "0.10.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/cf/2ab0ef40bbd22d22387d31900dcdba46f290ad3b17a35eb5560b48fc3a1a/python_flirt-0.10.2.tar.gz", hash = "sha256:f180d7fcdc110cbc5197d27c58fe7cd57adc2eead0a0b562d47ab0b0a85a3b20", size = 985774, upload-time = "2026-10-23T13:46:55.807Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/6f/8edb98254049e208fe8dbffdeef83a0d4570ecca1d70f1bc7bb4d8acd9cd/python_flirt-0.10.2-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:f4c9354745c077371e3c185e9253f4f7a251c3a4a24857e4859f6b31e221e518", size = 314938, upload-time = "2026-10-23T13:44:53.529Z" },
+    { url = "https://files.pythonhosted.org/packages/62/85/eeca6793af1a8df1472957398969242f8aede8b0794f738394bc635e876a/python_flirt-0.10.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:b1947f0ccf1fae8f5f4d1b758b70bc7aeba4d89bbfd42c2d47e5a8388fab59e7", size = 301631, upload-time = "2026-10-23T13:44:54.715Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/3d/c934714f2a8335b63f7b2a56c4fbbafadfe047be336826451ab8d9eeaa23/python_flirt-0.10.2-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9a81ae798f1ced754cf60a7e694e20215b4284aea6821d0c2433abc6161f1dda", size = 322320, upload-time = "2026-10-23T13:44:55.974Z" },
+    { url = "https://files.pythonhosted.org/packages/86/be/46507a6c61ac3a3a74ee7e03677562de1ae1d3ea9fbf41b782e5fdfb2a27/python_flirt-0.10.2-cp312-cp312-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:dce7985f4911adda927bf43c8323d58ec9204cc5ad5595fb6810db71f180b616", size = 335471, upload-time = "2026-10-23T13:44:57.29Z" },
+    { url = "https://files.pythonhosted.org/packages/09/17/7508390f911788d550e313d778e6aaed6886007110b4cbde7c7c3a29bc9a/python_flirt-0.10.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bf807bf1d4f593161cf3ed978dc443356a188ceb9839c28d5dcde87d4121d15d", size = 328869, upload-time = "2026-10-23T13:44:58.703Z" },
+    { url = "https://files.pythonhosted.org/packages/50/56/19237b3044e43facc7dbd7f0aa35d439ed215209968fc1f24f3cab04935a/python_flirt-0.10.2-cp312-cp312-manylinux_2_5_i686.manylinux1_i686.whl", hash = "sha256:cd76a46816781cd3b25e2179ac19eabb2620223c1158d36ba3708f164e8d5ade", size = 350992, upload-time = "2026-10-23T13:45:00.436Z" },
+    { url = "https://files.pythonhosted.org/packages/91/2a/c893b01259c95b77fba258e93e102e39094b9af8733d6652507b852d55ac/python_flirt-0.10.2-cp312-cp312-win32.whl", hash = "sha256:391f748da0441cfef90b2921f916a01a9081582da2203b38d4d276982e8c6f2a", size = 204234, upload-time = "2026-10-23T13:45:01.981Z" },
+    { url = "https://files.pythonhosted.org/packages/df/68/857a6ec75badf7ec39c2b8de1b481202613390269bdbab5024b7bbc8be2d/python_flirt-0.10.2-cp312-cp312-win_amd64.whl", hash = "sha256:9cd6552f3c520845b395d91a79b629e6d81471e43d023495a018eb956cebd55e", size = 213529, upload-time = "2026-10-23T13:45:03.363Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/69/ff713f0c297ba859cd8b2a5a77ed70f4af749f2bb4471c182475812ef963/python_flirt-0.10.2-cp312-cp312-win_arm64.whl", hash = "sha256:67f517dc353de5dc88699311f70b814674a0fd03f1768d646cf87adb1c3736b7", size = 201438, upload-time = "2026-10-23T13:45:04.6Z" },
+    { url = "https://files.pythonhosted.org/packages/53/59/875cbde0b3cfbb6cc7a4202f18ab3c4b3467c98d14e3fef2069e6faee74f/python_flirt-0.10.2-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:169e21d421e94577c50a0e4f0e23840e2a58be0b875348984e9632098dc430d5", size = 314862, upload-time = "2026-10-23T13:45:06.072Z" },
+    { url = "https://files.pythonhosted.org/packages/68/67/a9b81577d886eb38f2e0f42161136df95f67cf67541f4ade96ce0d46a7a4/python_flirt-0.10.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:6c5c57fc292e124742e31695a488513664886a605ab0694d4a97c04e4ff7c9e1", size = 301586, upload-time = "2026-10-23T13:45:07.408Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/2b/470583e0060fdea90ae7305bfef842244f0c0783a5472d0b41d591fe5eba/python_flirt-0.10.2-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:25ef5b3ad7bb8fba2f12b28cfde42f9efec30f88e8c19323e6b1101b975c2e23", size = 322308, upload-time = "2026-10-23T13:45:08.667Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/08/f8e26a21fb3bfb1002323eee1ae1b9f1dae32b0f11e32aee1124f3fc8014/python_flirt-0.10.2-cp313-cp313-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:52a947ebf62a43695f61bfea1957a281276caa61055c16bb52999b82e8c752dd", size = 335393, upload-time = "2026-10-23T13:45:09.984Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/d3/fc30bea89d728ad1fe78a9cdb671e106ce293552a68905840925729e5a3b/python_flirt-0.10.2-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8167b3e318ffc87a5bc0719883e4c61c61a06a62f68b3738ca59f466eda8fc97", size = 328651, upload-time = "2026-10-23T13:45:11.322Z" },
+    { url = "https://files.pythonhosted.org/packages/57/4f/2edbf20c879a471a8770294c8beaa11a8823b8fd9ff87ee1a3af9f4a777c/python_flirt-0.10.2-cp313-cp313-manylinux_2_5_i686.manylinux1_i686.whl", hash = "sha256:5d4f441291c43c4b30c4de1da512eb4e8d464a0540864990dc68d2a9c834d2e6", size = 351072, upload-time = "2026-10-23T13:45:12.552Z" },
+    { url = "https://files.pythonhosted.org/packages/14/ab/a050ae412a9c4d5995bb3bdf1762a3e0badefc8c816dbb174bf204d4bcaa/python_flirt-0.10.2-cp313-cp313-win32.whl", hash = "sha256:5d8c6fe12531b2cf36dac9e6a8e72c587c6c5c904bc8676e9a5b393aaf0df7c0", size = 204174, upload-time = "2026-10-23T13:45:13.917Z" },
+    { url = "https://files.pythonhosted.org/packages/15/62/af8c9e94ad2fbd8ed73a6a53078f0991b203318a51468d5c008d39fc58de/python_flirt-0.10.2-cp313-cp313-win_amd64.whl", hash = "sha256:6292d33b10a3ff57d4dc3743dba1c50b5687dea31132de2b7b1f66bf40e3c326", size = 213497, upload-time = "2026-10-23T13:45:15.129Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/5b/8ed905c64ac597859cf28c5fe33207b7a1ec7c19571494acb920c1895aea/python_flirt-0.10.2-cp313-cp313-win_arm64.whl", hash = "sha256:e987056a4f8e1f01dfd11d749eb75dca414ff1b4ce2eee24a08c744ca645dee8", size = 201376, upload-time = "2026-10-23T13:45:16.623Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/f8/ab59be164bae5b5b30139282b8c79595f3ed3c4f99d1a8b922dd9116362d/python_flirt-0.10.2-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:7894e51fd2490bb6690f13a10cad328052fd89d7124609d94ffdd4dc14bb0eed", size = 314673, upload-time = "2026-10-23T13:45:17.902Z" },
+    { url = "https://files.pythonhosted.org/packages/39/76/feaffbaf57b1e5ce19478d347f770efd3ea100a1d79f890724887e5b5520/python_flirt-0.10.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:447070b05c70fb3435e91e975b9189e752ca93afd95c17672c46a77f81b2da64", size = 301341, upload-time = "2026-10-23T13:45:19.311Z" },
+    { url = "https://files.pythonhosted.org/packages/21/aa/926a44056b874ad42adfd583da7768d783295626de69e147a6631afdcf13/python_flirt-0.10.2-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:05f39bda1ea8bab7a2581e56122531ca213aa777cac913e6bd134c283aa4caee", size = 321922, upload-time = "2026-10-23T13:45:20.642Z" },
+    { url = "https://files.pythonhosted.org/packages/61/c8/e7ce6009f98a4fd558fc4589d2f4987b6a7267d5a789a619d4f48812050f/python_flirt-0.10.2-cp314-cp314-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:9dc976ff3ba7f1aade4a6509c4ba34b7255794eb0c7cfb55eb03ee03eaee361f", size = 335424, upload-time = "2026-10-23T13:45:21.898Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/47/a4fc4357afb6c77339eed888ebe0021869d6d14d60743ed1aecea9c34626/python_flirt-0.10.2-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9412ec7987fe5e1cb834f28d37a596208534302c021d79b96942d7782d3e4543", size = 328337, upload-time = "2026-10-23T13:45:23.256Z" },
+    { url = "https://files.pythonhosted.org/packages/97/83/5ec92915739eeefab0405d25c45d42283439bfcb61a752fa36f086bb3b6c/python_flirt-0.10.2-cp314-cp314-manylinux_2_5_i686.manylinux1_i686.whl", hash = "sha256:139bc5d500dce651ee428ac86139bbdfb39a061343f318da425471e5165d46da", size = 350856, upload-time = "2026-10-23T13:45:24.564Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/0f/98776b5d17e1b19bab634d540d079c198d6d6f9eb3be2fe757442f2d872d/python_flirt-0.10.2-cp314-cp314-win32.whl", hash = "sha256:75bf43ab3e8072a5251e74a914fdb22c61a296e59958c1fd513aa7da407ef718", size = 204180, upload-time = "2026-10-23T13:45:26.114Z" },
+    { url = "https://files.pythonhosted.org/packages/28/f0/19c461d9185678bd4e2f27d64ce93edbec3693828610a8add280b3bf0dae/python_flirt-0.10.2-cp314-cp314-win_amd64.whl", hash = "sha256:9b0b82c78101da22a305e7f4f6ba9c2f5747fbe43c49d59fa92a76c3c9ba7cc2", size = 213392, upload-time = "2026-10-23T13:45:27.442Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/e7/e5a1b98ab2e494b74a278e4c15cf7d25a67b7221718dd5975cfc2effd626/python_flirt-0.10.2-cp314-cp314-win_arm64.whl", hash = "sha256:874bb8a51c4136da8908d124dc5d184fc530d62626cbf7d8dba3572d424e2a0f", size = 201088, upload-time = "2026-10-23T13:45:28.809Z" },
 ]
 
 [[package]]

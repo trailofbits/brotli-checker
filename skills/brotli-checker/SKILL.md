@@ -147,6 +147,17 @@ table bytes as if they were code or promote a table match to an affected/fixed
 verdict. PE/Mach-O/WASM table evidence is not loader validated. Dictionary-only
 presence does not establish a decoder, and unmatched signatures do not prove absence.
 
+For unmatched ELF code, use the optional [FLIRT function-recognition workflow](references/flirt.md)
+to obtain individual function names and bounded code windows from trusted
+patterns. Enable it explicitly with `--flirt`; use Python 3.12-3.14 and the pinned
+backend as documented. Inspect `flirt.matches`, `ambiguous_matches`, gaps, and
+`ambiguity_complete`. Do not equate `source_state_provenance` with target patch
+state or discard table/symbol/code evidence when FLIRT disagrees or misses.
+Use recognized windows for bounded disassembly, then verify actual error
+propagation and caller/callee targets. Unsupported reference constraints are
+rejected rather than assumed satisfied. The scanner does not download patterns
+or execute the target.
+
 For an unresolved local ELF with decoder table, name, symbol, version, or code evidence,
 collect bounded disassembly for model review instead of stopping at a generic
 unknown. Do not disassemble every unrelated ELF. Run this only with a trusted

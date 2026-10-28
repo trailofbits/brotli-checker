@@ -8,6 +8,9 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.16"
 dependencies = []
 
+[project.optional-dependencies]
+flirt = ["python-flirt==0.10.2; python_version < '3.15'"]
+
 [tool.uv]
 # Explicitly override any user-level waiting period for reviewed updates.
 exclude-newer = "0 days"

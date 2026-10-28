@@ -29,7 +29,7 @@ jobs:
           version: '0.13.5'
           python-version: ${{ matrix.python-version }}
       - name: Install development tools
-        run: uv sync --locked
+        run: uv sync --locked --extra flirt
       - name: Check formatting, lint, and types
         if: matrix.python-version == '3.12'
         run: |
@@ -37,7 +37,12 @@ jobs:
           uv run --locked ruff check .
           uv run --locked ty check skills/brotli-checker/scripts scripts tests
       - name: Run offline tests
-        run: uv run --locked pytest
+        run: uv run --locked --extra flirt pytest
+      - name: Validate packaged FLIRT corpus
+        if: matrix.python-version == '3.12'
+        env:
+          BROTLI_FLIRT_REFERENCE_TESTS: '1'
+        run: uv run --locked --extra flirt pytest tests/test_flirt_packaged.py --no-cov
 
   macos:
     name: Python 3.12 (macOS)
@@ -52,7 +57,7 @@ jobs:
           version: '0.13.5'
           python-version: '3.12'
       - name: Run portable offline tests
-        run: uv run --locked pytest
+        run: uv run --locked --extra flirt pytest
 
   trailmark:
     name: Trailmark source discovery
@@ -101,6 +106,7 @@ jobs:
           - brotli_binary_signatures
           - brotli_binary_triage
           - brotli_dependencies
+          - brotli_flirt
           - brotli_inventory
           - brotli_source_discovery
           - brotli_source_leads
@@ -117,7 +123,7 @@ jobs:
           MUTATION_MODULE: ${{ matrix.module }}
         run: |
           make known-answers
-          uv run --locked --group mutation pytest --gremlins --no-cov --gremlin-executor=subprocess --gremlin-targets="skills/brotli-checker/scripts/${MUTATION_MODULE}.py"
+          uv run --locked --extra flirt --group mutation pytest --gremlins --no-cov --gremlin-executor=subprocess --gremlin-targets="skills/brotli-checker/scripts/${MUTATION_MODULE}.py"
       - name: Retain mutation evidence
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

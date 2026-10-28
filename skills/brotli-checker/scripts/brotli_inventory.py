@@ -47,6 +47,14 @@ from brotli_binary_match import (
 from brotli_binary_metadata import decoder_metadata
 from brotli_binary_signatures import recognize_decoder_data
 from brotli_dependencies import MAX_DEPENDENCY_MATCHES, dependency_manifest, dependency_matches
+from brotli_flirt import (
+    DEFAULT_FLIRT_BUNDLE,
+    FlirtAssessment,
+    FlirtCatalog,
+    FlirtUnavailableError,
+    load_flirt_bundle,
+    match_flirt,
+)
 from brotli_source_leads import MAX_SOURCE_MATCHES, source_references
 
 if TYPE_CHECKING:
@@ -379,7 +387,7 @@ def version_finding(path: str, minimum: str, evidence: dict, *, fixed: bool) -> 
 
 
 def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally explicit.
-    data: Buffer, references: list[CodeReference]
+    data: Buffer, references: list[CodeReference], flirt_catalog: FlirtCatalog | None = None
 ) -> dict:
     is_elf = data.startswith(b"\x7fELF")
     code = (
@@ -389,6 +397,29 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
     )
     metadata = decoder_metadata(data) if is_elf else {}
     recognition = recognize_decoder_data(data)
+    flirt: FlirtAssessment = {
+        "status": "not_requested",
+        "matches": [],
+        "gaps": [],
+        "limitations": [],
+        "ambiguous_matches": [],
+    }
+    if flirt_catalog is not None:
+        flirt = (
+            match_flirt(data, flirt_catalog)
+            if is_elf
+            else {
+                "status": "not_applicable",
+                "matches": [],
+                "gaps": ["FLIRT executable mapping is unsupported for this non-ELF binary."]
+                if recognition["scope"] != "none"
+                else [],
+                "ambiguous_matches": [],
+                "limitations": [
+                    "FLIRT function recognition currently requires mapped ELF executable ranges."
+                ],
+            }
+        )
     versions = metadata.get("versions", [])
     for version in versions:
         rule = assess_version("brotli", version["version"])
@@ -418,6 +449,12 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
                 "Brotli decoder-specific table signatures detected; inspect code references "
                 "to these tables to determine implementation and patch state."
             )
+        if flirt["matches"]:
+            kind = "decoder_function_signature"
+            reason = (
+                "Brotli function patterns matched with FLIRT; source-profile state is provenance, "
+                "not this binary's patch verdict. Review the located code and its references."
+            )
         if versions:
             reason += " Reported decoder version is metadata, not proof of a fix."
     if old_version and status not in {"vulnerable_code_match", "mixed_code_matches"}:
@@ -434,8 +471,11 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
         "indicators": indicators,
         "decoder_metadata": metadata,
         "recognition": recognition,
+        "flirt": flirt,
         "detection_status": "decoder_code_identified"
         if code.matches
+        else "decoder_functions_recognized"
+        if flirt["matches"]
         else recognition["status"]
         if recognition["matches"]
         else "decoder_symbols_defined"
@@ -449,7 +489,8 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
         "code_assessment": code.reason,
         "gaps": ([code.reason] if code.limited else [])
         + ([metadata["reason"]] if metadata.get("limited") else [])
-        + ([recognition["reason"]] if recognition["limited"] else []),
+        + ([recognition["reason"]] if recognition["limited"] else [])
+        + flirt["gaps"],
     }
 
 
@@ -466,6 +507,7 @@ class Inventory:
         max_total_expanded_bytes: int = DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
         max_text_bytes: int = DEFAULT_MAX_TEXT_BYTES,
         code_references: list[CodeReference] | None = None,
+        flirt_catalog: FlirtCatalog | None = None,
     ) -> None:
         self.fingerprints = {entry["sha256"]: entry for entry in registry["fingerprints"]}
         self.max_file_bytes = max_file_bytes
@@ -486,6 +528,7 @@ class Inventory:
         self.archives_attempted = 0
         self.archives_opened = 0
         self.code_references = code_references
+        self.flirt_catalog = flirt_catalog
         self.checked_paths: set[Path] = set()
         self.pending_symlinks: list[Path] = []
         self.covered_symlinks = 0
@@ -659,6 +702,11 @@ class Inventory:
 
     def _inspect_noncontainer(self, data: Buffer, label: str, digest: str) -> None:
         recognition = recognize_decoder_data(data)
+        if (
+            self.flirt_catalog is not None
+            and recognition["scope"] == "file_bytes_not_loader_validated"
+        ):
+            self.gap(label, "FLIRT executable mapping is unsupported for this non-ELF binary.")
         if recognition["limited"]:
             self.gap(label, recognition["reason"])
         if recognition["matches"]:
@@ -705,7 +753,7 @@ class Inventory:
         references = self.code_references
         if references is None:
             return
-        assessment = assess_binary(data, references)
+        assessment = assess_binary(data, references, self.flirt_catalog)
         for reason in assessment["gaps"]:
             self.gap(label, reason)
         self.findings.append(
@@ -720,6 +768,7 @@ class Inventory:
                 indicators=assessment["indicators"],
                 decoder_metadata=assessment["decoder_metadata"],
                 recognition=assessment["recognition"],
+                flirt=assessment["flirt"],
                 detection_status=assessment["detection_status"],
                 linkage=assessment["linkage"],
             )
@@ -1308,6 +1357,14 @@ def explain_lead(item: dict) -> dict:
             ),
         }
     advice = {
+        "decoder_function_signature": (
+            "Brotli functions recognized with FLIRT; patch review required",
+            (
+                "Inspect the matched executable windows, candidate names, and build provenance. "
+                "Resolve caller/callee relationships and review patch-bearing error handling; "
+                "a signature from a fixed source build does not clear this binary."
+            ),
+        ),
         "decoder_data_signature": (
             "Brotli decoder tables detected; patch state not established",
             (
@@ -1561,6 +1618,20 @@ def summarize(report: dict) -> dict:
 
 
 def unresolved_summary(findings: list[dict]) -> dict:
+    if any(item["kind"] == "decoder_function_signature" for item in findings):
+        return {
+            "status": "decoder_recognized_patch_unresolved",
+            "title": "Brotli functions recognized; patch review required",
+            "meaning": (
+                "FLIRT identifies code windows matching trusted decoder functions. "
+                "Function recognition does not establish patch state, call targets, or runtime use."
+            ),
+            "next_steps": [
+                "Use the recorded function offsets to collect bounded disassembly.",
+                "Review the patch-bearing functions and actual control flow together.",
+                "Resolve the shipped provider and input ownership independently.",
+            ],
+        }
     if any(item["kind"] == "decoder_data_signature" for item in findings):
         return {
             "status": "decoder_detected_patch_unresolved",
@@ -1733,6 +1804,14 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="compiled ELF decoder references; unmatched code remains unidentified",
     )
     parser.add_argument(
+        "--flirt", action="store_true", help="enable optional FLIRT function recognition"
+    )
+    parser.add_argument(
+        "--flirt-references",
+        type=Path,
+        help="trusted FLIRT bundle manifest (implies --flirt; otherwise use the packaged bundle)",
+    )
+    parser.add_argument(
         "--max-file-bytes",
         type=positive,
         default=DEFAULT_MAX_FILE_BYTES,
@@ -1778,14 +1857,40 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def load_optional_flirt(path: Path | None) -> tuple[FlirtCatalog | None, str | None]:
+    if path is None:
+        return None, None
+    try:
+        return load_flirt_bundle(path), None
+    except FlirtUnavailableError as error:
+        return None, str(error)
+
+
+def scan_result(statuses: set[str], gap_count: int) -> tuple[str, int]:
+    if statuses & (WARNING - {"affected_port_source"}):
+        result, code = "affected_evidence_found", 1
+    elif "affected_port_source" in statuses:
+        result, code = "affected_port_evidence_found", 1
+    elif gap_count or not statuses or statuses - GOOD:
+        result, code = "review_required", 3
+    elif statuses == {"fixed_port_source"}:
+        result, code = "reported_port_sources_include_fix", 0
+    else:
+        result, code = "reported_items_meet_fix_rules", 0
+    return result, code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     roots = args.roots or ([] if args.brotli_version or args.node_version else [Path.cwd()])
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     try:
         code_references = load_references(args.code_references)
+        flirt_catalog, flirt_error = load_optional_flirt(
+            args.flirt_references or (DEFAULT_FLIRT_BUNDLE if args.flirt else None)
+        )
     except (OSError, ValueError) as error:
-        print(f"Invalid code references: {error}", file=sys.stderr)
+        print(f"Invalid binary references: {error}", file=sys.stderr)
         return 2
     inventory = Inventory(
         registry,
@@ -1797,24 +1902,19 @@ def main(argv: list[str] | None = None) -> int:
         max_total_expanded_bytes=args.max_total_expanded_bytes,
         max_text_bytes=args.max_text_bytes,
         code_references=code_references,
+        flirt_catalog=flirt_catalog,
     )
+    if flirt_error is not None:
+        inventory.gap("<FLIRT>", flirt_error)
     inventory.scan_roots([root.expanduser().absolute() for root in roots])
     for component, versions in (
         ("brotli", args.brotli_version),
         ("node", args.node_version),
     ):
         inventory.findings.extend(assess_version(component, value) for value in versions)
-    statuses = {item["patch_status"] for item in inventory.findings}
-    if statuses & (WARNING - {"affected_port_source"}):
-        result, code = "affected_evidence_found", 1
-    elif "affected_port_source" in statuses:
-        result, code = "affected_port_evidence_found", 1
-    elif inventory.gap_count or not statuses or statuses - GOOD:
-        result, code = "review_required", 3
-    elif statuses == {"fixed_port_source"}:
-        result, code = "reported_port_sources_include_fix", 0
-    else:
-        result, code = "reported_items_meet_fix_rules", 0
+    result, code = scan_result(
+        {item["patch_status"] for item in inventory.findings}, inventory.gap_count
+    )
     report = make_report(inventory, roots, args, registry, result)
     report["user_summary"] = summarize(report)
     if args.json:
@@ -1847,6 +1947,7 @@ def make_report(
         "related_implementation_snapshot_date": registry.get("related_implementations_verified_on"),
         "advisory_freshness": "not_checked_offline",
         "scope": [str(root.expanduser().absolute()) for root in roots],
+        "flirt_requested": args.flirt or args.flirt_references is not None,
         "findings": inventory.findings,
         "coverage": {
             "files_seen": inventory.files_seen,

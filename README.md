@@ -12,6 +12,13 @@ Each copy keeps its own result.
 It also recognizes decoder tables in stripped or LTO binaries. Table recognition
 finds copies to review; it does not establish their patch status.
 
+Optional [FLIRT recognition](skills/brotli-checker/references/flirt.md) identifies
+individual decoder functions and code windows for follow-up review, including
+some builds outside the exact-code profiles. It uses our generated Brotli patterns,
+not downloaded proprietary signatures, and does not turn function names into a
+patch verdict. Planned defensive extensions are listed in the
+[roadmap](docs/defensive-roadmap.md).
+
 For source review, [Trailmark](https://github.com/trailofbits/trailmark) maps calls
 to the decoder and fetch APIs, helping the assistant find callers to inspect.
 The scanner finds suspect parts; Trailmark helps show how the code connects.
