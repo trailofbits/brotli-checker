@@ -145,6 +145,42 @@ class FlirtCatalog:
     identities: dict[tuple[int, int, str], frozenset[str]]
 
 
+class FlirtSession:
+    """One lazily loaded backend per scan, including explicit unavailable evidence."""
+
+    def __init__(self, path: Path = DEFAULT_FLIRT_BUNDLE) -> None:
+        self.path = path
+        self.catalog: FlirtCatalog | None = None
+        self.error: str | None = None
+
+    def analyze(self, data: Buffer) -> FlirtAssessment:
+        if self.catalog is None and self.error is None:
+            try:
+                self.catalog = load_flirt_bundle(self.path)
+            except (OSError, ValueError) as error:
+                self.error = f"Automatic FLIRT unavailable: {error}"
+        if self.catalog is not None:
+            return match_flirt(data, self.catalog)
+        return {
+            "status": "limited",
+            "matches": [],
+            "gaps": [self.error or "FLIRT unavailable"],
+            "limitations": [IDENTITY_LIMITATION],
+            "ambiguous_matches": [],
+        }
+
+    def describe(self) -> dict:
+        return {
+            "status": "unavailable"
+            if self.error
+            else "enabled"
+            if self.catalog
+            else "not_applicable",
+            "bundle": str(self.path),
+            "reason": self.error,
+        }
+
+
 def _read_bounded(path: Path, limit: int, label: str) -> bytes:
     with path.open("rb") as stream:
         data = stream.read(limit + 1)

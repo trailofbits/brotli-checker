@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import brotli_binary_inventory as binary_inventory
 import pytest
+from test_binary_layout import pe_fixture
 
 SCRIPT = (
     Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts/brotli_binary_inventory.py"
@@ -19,6 +20,10 @@ import brotli_binary_data as binary_data  # noqa: E402
 
 
 def run_scan(*arguments):
+    if not any(str(arg) in {"--flirt", "--flirt-references", "--no-flirt"} for arg in arguments):
+        arguments = (*arguments, "--no-flirt")
+    # Reference fixtures contain arbitrary bytes, not an instruction-decoding corpus.
+    arguments = (*arguments, "--no-xrefs")
     stdout, stderr = io.StringIO(), io.StringIO()
     with (
         contextlib.redirect_stdout(stdout),
@@ -37,7 +42,8 @@ def test_native_indicators_are_not_patch_verdicts(tmp_path, magic):
     data = magic + b"\0BrotliDecoderDecompress\0"
     artifact.write_bytes(data)
     result = run_scan(artifact)
-    assert result.returncode == (3 if magic in {b"!<arch>\n", b"\x7fELF"} else 1)
+    assert result.returncode == 3  # Magic plus a string is not a valid binary layout.
+    assert json.loads(result.stdout)["coverage"]["gap_count"] > 0
     finding = json.loads(result.stdout)["findings"][0]
     assert finding["sha256"] == hashlib.sha256(data).hexdigest()
     assert finding["patch_status"] == "not_assessed"
@@ -135,7 +141,8 @@ def test_report_records_default_and_effective_limits(tmp_path):
 def test_native_file_larger_than_old_default_uses_sparse_file_view(tmp_path, monkeypatch):
     artifact = tmp_path / "libbrotli.dll"
     with artifact.open("wb") as stream:
-        stream.write(b"MZ\0BrotliDecoderDecompress\0")
+        stream.write(pe_fixture())
+        stream.write(b"\0BrotliDecoderDecompress\0")
         stream.truncate(129 * 1024 * 1024)
     assert artifact.stat().st_blocks * 512 < artifact.stat().st_size
 
@@ -160,7 +167,7 @@ def test_default_total_reads_can_exceed_one_gibibyte(tmp_path):
     for name in ("libbrotli-a.dll", "libbrotli-b.dll"):
         path = tmp_path / name
         with path.open("wb") as stream:
-            stream.write(b"MZ\0")
+            stream.write(pe_fixture())
             stream.truncate(513 * 1024 * 1024)
     result = run_scan(tmp_path)
     report = json.loads(result.stdout)

@@ -1,4 +1,4 @@
-# Optional FLIRT function recognition
+# Automatic FLIRT function recognition
 
 FLIRT supplies named code windows between weak component clues and patch-specific
 code evidence. It can recognize individual surviving functions when a whole
@@ -7,28 +7,30 @@ linker garbage collection, do not invalidate a recognized function.
 
 ## Run it
 
-The normal scanner stays dependency-free. FLIRT is explicit opt-in and uses the
+FLIRT runs automatically for ELF binaries and uses the
 pinned `python-flirt==0.10.2` backend on Python 3.12-3.14:
 
 ```sh
 # From the repository; use python so uv selects the project environment.
 uv run --python 3.14 --extra flirt python skills/brotli-checker/scripts/brotli_inventory.py \
-  /path/to/application --flirt --json
+  /path/to/application --json
 
 # With a copied/installed skill outside the repository:
 uv run --python 3.14 --with python-flirt==0.10.2 \
-  /path/to/skill/scripts/brotli_inventory.py /path/to/application --flirt --json
+  /path/to/skill/scripts/brotli_inventory.py /path/to/application --json
 ```
 
-Both inventory CLIs accept `--flirt`. `--flirt-references PATH` selects a trusted
+Both inventory CLIs enable FLIRT by default; `--no-flirt` explicitly disables it.
+The backend is loaded once, lazily, so source-only scans do not require it. `--flirt-references PATH` selects a trusted
 bundle manifest and also enables FLIRT. The manifest and its adjacent `.pat`
 must stay together. No signature download or target execution occurs during
-scanning. An explicitly requested unavailable backend produces a coverage gap;
-other analysis continues. An invalid bundle is a CLI error, not an empty result.
+scanning. An unavailable automatic backend produces a coverage gap;
+other analysis continues. An invalid explicitly supplied bundle is a CLI error, not an empty result.
+An unavailable packaged bundle is a coverage gap.
 
 Python 3.15 remains supported by the core scanner. The pinned FLIRT backend has
 no 3.15 wheel and its bundled PyO3 does not build against 3.15; use 3.12-3.14 for
-this optional mode rather than suppressing the missing-backend gap.
+full analysis rather than suppressing the missing-backend gap.
 
 ## Recognition contract
 

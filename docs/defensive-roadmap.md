@@ -1,6 +1,9 @@
 # Defensive scanner roadmap
 
-This roadmap prioritizes evidence that reduces unresolved Brotli copies without weakening conservative results. Effort is relative (`S`, `M`, `H`), not a delivery promise. The core scanner stays dependency-free; explicitly requested optional backends may add pinned tools or libraries and must report when unavailable.
+This roadmap records the implemented defensive evidence layers and remaining
+qualification work. The full skill uses pinned analysis backends and automatic
+FLIRT. Dependency-free execution remains available, with explicit gaps when a
+required backend is unavailable. Recognition never substitutes for patch proof.
 
 ## Evidence invariants
 
@@ -14,59 +17,64 @@ This roadmap prioritizes evidence that reduces unresolved Brotli copies without 
 
 - Exact source identities and conservative modified-source checks.
 - Language-scoped source/FFI and dependency leads.
-- Relocation-masked ELF code references plus separate optional FLIRT function recognition, neither of which proves runtime use.
+- Relocation-masked ELF code references plus separate automatic FLIRT function recognition, neither of which proves runtime use.
 - ELF import/export and constant-version metadata.
 - Compiler-independent decoder-table recognition; table evidence is not patch state.
 - Bounded ELF fragment disassembly with no automatic semantic verdict.
-- ZIP/TAR/gzip/bzip2/XZ traversal, explicit unsupported-format gaps, archive/text budgets, and per-copy JSON evidence.
+- ZIP/TAR/gzip/bzip2/XZ/ar/DEB/RPM/cpio/zstd traversal, OCI final-filesystem views,
+  explicit unsupported-format gaps, archive/text budgets, and per-copy JSON evidence.
 
 ## Ordered milestones
 
 ### 1. In-scope ELF provider graph (`M`)
 
-**Proposed:** Parse bounded `DT_NEEDED`, `DT_SONAME`, `DT_RUNPATH`, and `DT_RPATH` evidence, then relate importers to compatible provider artifacts only after all supplied roots are scanned. Expand audited `$ORIGIN` components inside the same filesystem or archive namespace. Report unique candidate, ambiguous, missing, incompatible, and unsupported-token states; never claim loader selection.
+**Implementation:** Parse bounded `DT_NEEDED`, `DT_SONAME`, `DT_RUNPATH`, and `DT_RPATH` evidence, then relate importers to compatible provider artifacts only after all supplied roots are scanned. Expand audited `$ORIGIN` components inside the same filesystem or archive namespace. Report unique candidate, ambiguous, missing, incompatible, and unsupported-token states; never claim loader selection.
 
 **Acceptance:** The existing sibling-DSO fixture resolves `$ORIGIN/../lib` to one candidate; executable-only, duplicate-SONAME, wrong-ABI, escaping-path, RUNPATH-vs-RPATH, archive, and fixed-provider controls remain conservative.
 
 ### 2. Seeded xrefs and local function graph (`H`)
 
-**Proposed:** Feed symbols, unwind/function-start metadata, decoder-table offsets, FLIRT results, exact matches, and trusted explicit ranges into one bounded graph. Prefer relocation-backed data references, then decode bounded executable ranges for PC-relative references and direct call/tail-call edges. Preserve unresolved indirect transfers. Use the graph to select triage ranges and associate patch roles with decoder copies, not to assign patch state by itself.
+**Implementation:** Feed symbols, unwind/function-start metadata, decoder-table offsets, FLIRT results, exact matches, and trusted explicit ranges into one bounded graph. Prefer relocation-backed data references, then decode bounded executable ranges for PC-relative references and direct call/tail-call edges. Preserve unresolved indirect transfers. Use the graph to select triage ranges and associate patch roles with decoder copies, not to assign patch state by itself.
 
 **Acceptance:** Real stripped/LTO table positives locate table users; distinct copies remain distinct; ICF/shared helpers remain shared; unknown relocation or ISA modes and exhausted budgets are gaps; encoder/table-only controls do not gain a patch verdict.
 
 ### 3. Verified debug companions (`M`)
 
-**Proposed:** Resolve only supplied ELF build-ID/`.gnu_debuglink`, Mach-O UUID, and PE PDB GUID/age companions. Use verified companions for function bounds, names, and source locations. Never follow embedded absolute paths or contact symbol servers automatically.
+**Implementation:** Resolve only supplied ELF build-ID/`.gnu_debuglink`, Mach-O UUID, and PE PDB GUID/age companions. Use verified companions for function bounds, names, and source locations. Never follow embedded absolute paths or contact symbol servers automatically.
 
 **Acceptance:** Mismatched, duplicate, missing, and split debug data stay unresolved; debug names alone cannot establish fixed code.
 
 ### 4. Structured provenance and distro backports (`H`)
 
-**Proposed:** Parse bounded CycloneDX/SPDX components, hashes, relationships, and completeness instead of matching one text line. Add same-root dpkg/apk ownership, then an independently reviewed RPM path. Accept explicit dated Debian, Ubuntu, and Red Hat advisory snapshots with native package-version ordering. Distinguish name-only, package-ID, artifact-hash-bound, and verified-attestation evidence.
+**Implementation:** Parse bounded CycloneDX/SPDX components, hashes, relationships, and completeness instead of matching one text line. Add same-root dpkg/apk ownership, then an independently reviewed RPM path. Accept explicit dated Debian, Ubuntu, and Red Hat advisory snapshots with native package-version ordering. Distinguish name-only, package-ID, artifact-hash-bound, and verified-attestation evidence.
 
 **Acceptance:** Hash and dependency edges survive parsing; incomplete BOMs say so; host metadata cannot classify a container file; feed source/date/digest and package scope are retained; vendor-fixed packages do not clear embedded copies.
 
 ### 5. Loader-aware PE and Mach-O (`H`)
 
-**Proposed:** First validate mapped sections, imports/exports, dependencies, relocations, and platform function metadata. Scope stable tables to mapped data. Then build paired affected/fixed MSVC, clang-cl, and Apple-clang references with stripped, signed, universal, LTCG/LTO, dead-strip, and ICF controls.
+**Implementation:** First validate mapped sections, imports/exports, dependencies, relocations, and platform function metadata. Scope stable tables to mapped data. Official paired Windows/macOS wheels are hash-pinned loader/table fixtures.
+**Remaining qualification:** paired affected/fixed MSVC, clang-cl, and Apple-clang
+patch-code references, including signed/LTCG/LTO/dead-strip/ICF controls. The local
+clang-cl probe lacks MSVC/UCRT headers and the Apple target lacks its SDK. Neither
+ELF references nor table matches are presented as replacements for that corpus.
 
 **Acceptance:** Resources and nonloaded data do not count as decoder use; fat slices and CPU subtypes stay separate; unsupported fixups, encryption, arm64e, or linker modes remain gaps; fixed evidence never crosses artifacts or slices.
 
 ### 6. Module-aware WebAssembly (`M-H`)
 
-**Proposed:** Parse bounded imports, exports, types, functions, code, data, data count, and name sections. Scope tables to data initializers and recover direct function-index calls while preserving indirect-table uncertainty. Retain the implementation family: C-to-Wasm and independent Rust/JS ports need distinct patch evidence.
+**Implementation:** Parse bounded imports, exports, types, functions, code, data, data count, and name sections. Scope tables to data initializers and recover direct function-index calls while preserving indirect-table uncertainty. Retain the implementation family: C-to-Wasm and independent Rust/JS ports need distinct patch evidence.
 
 **Acceptance:** Custom-section lookalikes do not count; malformed LEB/count/size inputs are incomplete; passive/active data is distinguished; no module is instantiated or executed.
 
 ### 7. CI evidence and comparison (`M`)
 
-**Proposed:** Add a reproducibility envelope with scanner/advisory/catalog/feed digests, effective limits, optional-tool identity, findings, relations, and gaps. Render deterministic SARIF 2.1.0 as a view of canonical JSON. Compare reports only when roots, evidence catalogs, limits, and coverage are compatible. Offer explicit fail policies without changing default exit semantics.
+**Implementation:** Add a reproducibility envelope with scanner/advisory/catalog/feed digests, effective limits, optional-tool identity, findings, relations, and gaps. Render deterministic SARIF 2.1.0 as a view of canonical JSON. Compare reports only when roots, evidence catalogs, limits, and coverage are compatible. Offer explicit fail policies without changing default exit semantics.
 
 **Acceptance:** New/unchanged/absent labels require a complete comparable scan; skipped prior paths are never reported resolved; fingerprints exclude unstable line/byte offsets; no renderer uploads data or suppresses current evidence.
 
 ### 8. Payloads and adversarial assurance (`S-H`, incremental)
 
-**Proposed:** Add regular ar/DEB traversal first (`S-M`), then explicit optional zstd, RPM/cpio, and OCI final-filesystem/whiteout support (`H`). Expand malformed format, mixed-copy, partial-backport, compiler/linker, and package-provenance corpora. Use development-only coverage-guided fuzzing for parsers and graph logic.
+**Implementation:** Add regular ar/DEB traversal first (`S-M`), then explicit optional zstd, RPM/cpio, and OCI final-filesystem/whiteout support (`H`). Expand malformed format, mixed-copy, partial-backport, compiler/linker, and package-provenance corpora. Use development-only coverage-guided fuzzing for parsers and graph logic.
 
 **Acceptance:** Members never escape to host paths; expansion and layer budgets remain enforced; historical OCI layers are not called shipped; parser failures are deterministic gaps; production scanning keeps target execution disabled.
 
@@ -85,3 +93,10 @@ Primary contracts: [ELF dynamic linking](https://refspecs.linuxfoundation.org/el
 [WebAssembly binary modules](https://webassembly.github.io/spec/core/binary/modules.html),
 [CycloneDX](https://cyclonedx.org/specification/overview/),
 [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html).
+
+## Operational entry points
+
+See [structured analysis](../skills/brotli-checker/references/analysis.md) for flags,
+namespace rules, local vendor snapshot schema, and remaining format limitations.
+The implementation does not claim general semantic patch verification, full PDB
+symbol decoding, verified attestations, or automatic runtime loader selection.

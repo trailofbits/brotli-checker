@@ -29,7 +29,7 @@ jobs:
           version: '0.13.5'
           python-version: ${{ matrix.python-version }}
       - name: Install development tools
-        run: uv sync --locked --extra flirt
+        run: uv sync --locked --extra flirt --extra analysis
       - name: Check formatting, lint, and types
         if: matrix.python-version == '3.12'
         run: |
@@ -37,12 +37,12 @@ jobs:
           uv run --locked ruff check .
           uv run --locked ty check skills/brotli-checker/scripts scripts tests
       - name: Run offline tests
-        run: uv run --locked --extra flirt pytest
+        run: uv run --locked --extra flirt --extra analysis pytest
       - name: Validate packaged FLIRT corpus
         if: matrix.python-version == '3.12'
         env:
           BROTLI_FLIRT_REFERENCE_TESTS: '1'
-        run: uv run --locked --extra flirt pytest tests/test_flirt_packaged.py --no-cov
+        run: uv run --locked --extra flirt --extra analysis pytest tests/test_flirt_packaged.py --no-cov
 
   macos:
     name: Python 3.12 (macOS)
@@ -57,7 +57,7 @@ jobs:
           version: '0.13.5'
           python-version: '3.12'
       - name: Run portable offline tests
-        run: uv run --locked --extra flirt pytest
+        run: uv run --locked --extra flirt --extra analysis pytest
 
   trailmark:
     name: Trailmark source discovery
@@ -99,15 +99,26 @@ jobs:
       fail-fast: false
       matrix:
         module:
+          - brotli_analysis
           - brotli_binary_data
           - brotli_binary_inventory
           - brotli_binary_match
           - brotli_binary_metadata
           - brotli_binary_signatures
           - brotli_binary_triage
+          - brotli_binary_graph
+          - brotli_binary_layout
+          - brotli_debug_companions
           - brotli_dependencies
+          - brotli_evidence_report
           - brotli_flirt
           - brotli_inventory
+          - brotli_package_provenance
+          - brotli_payloads
+          - brotli_provenance
+          - brotli_providers
+          - brotli_report_finalizer
+          - brotli_reporting_cli
           - brotli_source_discovery
           - brotli_source_leads
     steps:
@@ -123,7 +134,7 @@ jobs:
           MUTATION_MODULE: ${{ matrix.module }}
         run: |
           make known-answers
-          uv run --locked --extra flirt --group mutation pytest --gremlins --no-cov --gremlin-executor=subprocess --gremlin-targets="skills/brotli-checker/scripts/${MUTATION_MODULE}.py"
+          uv run --locked --extra flirt --extra analysis --group mutation pytest --gremlins --no-cov --gremlin-executor=subprocess --gremlin-targets="skills/brotli-checker/scripts/${MUTATION_MODULE}.py"
       - name: Retain mutation evidence
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

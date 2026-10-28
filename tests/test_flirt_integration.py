@@ -166,12 +166,13 @@ def test_requested_missing_backend_is_cli_gap(tmp_path, monkeypatch):
         raise flirt.FlirtUnavailableError
 
     monkeypatch.setattr(inventory, "load_flirt_bundle", unavailable)
+    monkeypatch.setattr(flirt, "load_flirt_bundle", unavailable)
     result, output, error = run_main(target, "--code-references", references, "--flirt", "--json")
     report = json.loads(output)
     assert result == 3
     assert error == ""
     assert report["flirt_requested"] is True
-    assert any(gap["path"] == "<FLIRT>" for gap in report["coverage"]["gaps"])
+    assert any("FLIRT" in gap["reason"] for gap in report["coverage"]["gaps"])
 
 
 def test_invalid_flirt_bundle_is_cli_error(tmp_path):
@@ -259,14 +260,63 @@ def test_optional_real_backend_both_cli_paths_keep_fixed_provenance_unknown(tmp_
     assert report["findings"][0]["flirt"] == item["evidence"]["flirt"]
 
 
-def test_default_cli_does_not_load_optional_backend(tmp_path, monkeypatch):
+def test_explicit_opt_out_does_not_load_backend(tmp_path, monkeypatch):
     monkeypatch.setattr(inventory, "load_flirt_bundle", pytest.fail)
     target = tmp_path / "application"
     target.write_bytes(elf(code(b"no-optional-backend")))
     references = write_catalog(tmp_path, [reference(salt=b"unmatched")])
-    result, output, error = run_main(target, "--code-references", references, "--json")
+    result, output, error = run_main(
+        target, "--code-references", references, "--no-flirt", "--json"
+    )
     assert result == 3
     assert error == ""
     report = json.loads(output)
     assert report["flirt_requested"] is False
     assert report["findings"][0]["evidence"]["flirt"]["status"] == "not_requested"
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_automatic_default_loads_once_and_recognizes_each_file(tmp_path, monkeypatch, binary):
+    function = code(b"automatic-default")
+    catalog = load_fixture(tmp_path, function)
+    calls = []
+
+    def load(path):
+        calls.append(path)
+        return catalog
+
+    monkeypatch.setattr(flirt, "load_flirt_bundle", load)
+    targets = []
+    for name in ("first", "second"):
+        target = tmp_path / name
+        target.write_bytes(elf(function))
+        targets.append(str(target))
+    references = write_catalog(tmp_path, [reference(salt=b"unmatched")])
+    output = io.StringIO()
+    arguments = [*targets, "--code-references", str(references), "--no-xrefs"]
+    if not binary:
+        arguments.append("--json")
+    with contextlib.redirect_stdout(output):
+        (binary_inventory.main if binary else inventory.main)(arguments)
+    report = json.loads(output.getvalue())
+    assert len(calls) == 1
+    assert report["flirt_requested"] is True
+    assert report["flirt_configuration"]["status"] == "enabled"
+    assert len(report["findings"]) == 2
+    assert all(item["patch_status"] in {"unknown", "not_assessed"} for item in report["findings"])
+    for item in report["findings"]:
+        evidence = item if binary else item["evidence"]
+        assert evidence["flirt"]["matches"]
+
+
+def test_source_only_scan_does_not_load_automatic_backend(tmp_path, monkeypatch):
+    monkeypatch.setattr(flirt, "load_flirt_bundle", pytest.fail)
+    target = tmp_path / "notes.txt"
+    target.write_text("ordinary source tree notes")
+    references = write_catalog(tmp_path, [reference(salt=b"unmatched")])
+    result, output, error = run_main(target, "--code-references", references, "--json")
+    assert result == 3  # No findings is not an absence guarantee.
+    assert error == ""
+    report = json.loads(output)
+    assert report["coverage"]["gap_count"] == 0
+    assert report["flirt_configuration"]["status"] == "not_applicable"

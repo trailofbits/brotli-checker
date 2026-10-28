@@ -12,11 +12,11 @@ Each copy keeps its own result.
 It also recognizes decoder tables in stripped or LTO binaries. Table recognition
 finds copies to review; it does not establish their patch status.
 
-Optional [FLIRT recognition](skills/brotli-checker/references/flirt.md) identifies
+Automatic [FLIRT recognition](skills/brotli-checker/references/flirt.md) identifies
 individual decoder functions and code windows for follow-up review, including
 some builds outside the exact-code profiles. It uses our generated Brotli patterns,
 not downloaded proprietary signatures, and does not turn function names into a
-patch verdict. Planned defensive extensions are listed in the
+patch verdict. Implemented defensive layers and remaining qualification work are listed in the
 [roadmap](docs/defensive-roadmap.md).
 
 For source review, [Trailmark](https://github.com/trailofbits/trailmark) maps calls
@@ -44,8 +44,9 @@ You can also name a folder or app package. With only a website address, the skil
 explains what is missing and prepares a request for your hosting provider.
 HTTP headers cannot establish the decoder's patch status.
 
-Requires **Python 3.12–3.15** and [uv](https://docs.astral.sh/uv/) for Trailmark
-source discovery. The standalone scanner uses only the standard library.
+Use **Python 3.14** and [uv](https://docs.astral.sh/uv/) for the full analysis
+profile. The core supports Python 3.12-3.15 without external dependencies, but
+unavailable backends produce explicit coverage gaps when needed.
 
 ## Run the scanner directly
 
@@ -54,7 +55,8 @@ To collect local evidence without an agent:
 ```sh
 git clone https://github.com/trailofbits/brotli-checker.git
 cd brotli-checker
-python3 skills/brotli-checker/scripts/brotli_inventory.py /path/to/application
+uv run --python 3.14 --extra flirt --extra analysis python \
+  skills/brotli-checker/scripts/brotli_inventory.py /path/to/application
 ```
 
 The default output explains findings and next steps. Add `--json` for per-copy

@@ -102,19 +102,20 @@ Symlinks are skipped. A filesystem alias adds no gap when its resolved target wa
 checked directly among the supplied roots; unchecked targets and archive links
 remain gaps.
 
-ZIP-family archives (including JAR, WAR, and wheel), TAR, gzip, bzip2, and XZ are
+ZIP-family archives (including JAR, WAR, and wheel), TAR, gzip, bzip2, XZ,
+regular ar/DEB, RPM/cpio, zstd, and OCI/Docker save images are
 recognized by content signatures and filename hints. Renamed archives and
 extensionless container layers are supported. Members are inspected without
 extracting their paths onto the filesystem. Sequential expansion may spool data
 to temporary storage for random access; set `TMPDIR` to a disk-backed directory
 for large inputs.
 
-Recognized unsupported formats, including Debian/AR, RPM, Zstandard, 7z, RAR,
+Recognized unsupported formats, including thin ar, 7z, RAR,
 SquashFS/Snap/AppImage, and ASAR, produce gaps; supply unpacked files. An
 ELF-prefixed AppImage keeps its outer ELF evidence and also reports the opaque
 payload gap. The scanner does not extract these formats. Unrecognized encodings
-can be missed. Container traversal does not apply whiteouts or reconstruct the
-final image.
+can be missed. OCI/Docker save traversal applies whiteouts to reconstruct each
+final image filesystem; historical layer entries are not called shipped.
 
 Dockerfile/Containerfile names, dotted variants such as `Dockerfile.production`,
 and `.bzl` files use the existing dependency-declaration analysis. Their matches
@@ -190,19 +191,19 @@ interpreting the call neighborhood; missing parser evidence is not a negative re
 
 ## Compiled decoder evidence
 
-For optional individual-function recognition, run:
+For automatic individual-function recognition and bounded analysis, run:
 
 ```sh
-uv run --python 3.14 --extra flirt python skills/brotli-checker/scripts/brotli_inventory.py \
-  /path/to/application --flirt --json
+uv run --python 3.14 --extra flirt --extra analysis python skills/brotli-checker/scripts/brotli_inventory.py \
+  /path/to/application --json
 ```
 
 `--flirt-references PATH` selects a trusted custom bundle and implies `--flirt`.
-Both inventory CLIs support these options. FLIRT reports function offsets and
+Both inventory CLIs enable FLIRT by default; `--no-flirt` explicitly opts out. FLIRT reports function offsets and
 compatible source profiles while leaving patch state independent; a fixed-source
-signature is not a fixed-binary verdict. Missing requested backends, unsupported
+signature is not a fixed-binary verdict. Missing applicable backends, unsupported
 targets, ambiguity, and work limits appear as coverage gaps. Python 3.15 supports
-the core scanner but not the pinned optional backend. See the
+the core scanner but not the pinned FLIRT backend. See the
 [FLIRT guide](../skills/brotli-checker/references/flirt.md) for strict format scope,
 generation, interpretation, and copied-skill commands.
 
@@ -216,9 +217,10 @@ reports "Brotli decoder tables detected; patch review required" and retains exit
 3 unless stronger affected evidence applies. A nonmatch is not proof of absence.
 See [stable signatures and their validation](../skills/brotli-checker/references/binary-signatures.md).
 
-ELF signatures are restricted to load segments. PE/Mach-O/WASM signatures are
-file-content evidence only, explicitly not loader validated; they can identify
-embedded data without proving executable use. Malformed ELF scoping reports a
+ELF signatures are restricted to load segments. PE/Mach-O/Wasm signatures use
+validated loader data ranges or data initializers, with independent universal
+slices. Resource/certificate/custom-section lookalikes are excluded. This does
+not establish executable use or patch state. Malformed layout scoping reports a
 coverage gap instead of silently treating the binary as fully inspected.
 
 The main scanner includes code matching for ELF32 and ELF64 executables and
@@ -394,3 +396,19 @@ invalid-switch handling and status propagation through callers. Keep model
 interpretation separate from exact code matches and preserve unknown status
 when relevant paths are missing. Follow the
 [binary review workflow](../skills/brotli-checker/references/reachability.md#bounded-binary-patch-triage).
+
+## Automatic defensive analysis
+
+FLIRT is now enabled automatically; use `--no-flirt` for an explicit speed/coverage
+tradeoff. In the repository, run the full profile with:
+
+```sh
+uv run --python 3.14 --extra flirt --extra analysis python \
+  skills/brotli-checker/scripts/brotli_inventory.py /supplied/app --json
+```
+
+See [structured analysis](../skills/brotli-checker/references/analysis.md) for
+`--deployment-root`, `--debug-file`, `--sbom`, `--vendor-snapshot`, `--no-xrefs`,
+`--sarif`, `--baseline`, and `--fail-on`. These options also apply to the binary
+inventory CLI. Reports bind scanner inputs and keep package/provider evidence
+separate from patch state. No target or loader is executed.

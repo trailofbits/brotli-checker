@@ -26,7 +26,7 @@ known-answers:
 
 mutations: known-answers
 	rm -f coverage/gremlins/gremlins.json
-	uv run --locked --extra flirt --group mutation pytest --gremlins --no-cov --gremlin-executor=subprocess
+	uv run --locked --extra flirt --extra analysis --group mutation pytest --gremlins --no-cov --gremlin-executor=subprocess
 	uv run --locked --group mutation python scripts/check_mutation_score.py
 
 verify-fingerprints:

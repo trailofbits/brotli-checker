@@ -348,7 +348,9 @@ def test_normal_scanner_uses_code_matches(tmp_path, states, expected_code, expec
     catalog = write_catalog(tmp_path, entries)
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        status = scanner.main([str(app), "--code-references", str(catalog), "--json"])
+        status = scanner.main(
+            [str(app), "--code-references", str(catalog), "--no-flirt", "--no-xrefs", "--json"]
+        )
     report = json.loads(output.getvalue())
     assert status == expected_code
     finding = report["findings"][0]
@@ -408,7 +410,12 @@ def test_elf_prefixed_zip_still_traverses_members(tmp_path):
     catalog = write_catalog(tmp_path, [entry])
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        assert scanner.main([str(path), "--code-references", str(catalog), "--json"]) == 3
+        assert (
+            scanner.main(
+                [str(path), "--code-references", str(catalog), "--no-flirt", "--no-xrefs", "--json"]
+            )
+            == 3
+        )
     report = json.loads(output.getvalue())
     assert report["findings"][-1]["patch_status"] == "fixed_code_match"
     assert report["findings"][-1]["path"].endswith("!bin/inner")
