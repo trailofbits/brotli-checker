@@ -547,6 +547,7 @@ class TestInventory:
                 )
             ),
         ],
+        ids=("ar", "cpio", "rpm"),
     )
     def test_ar_cpio_and_rpm_payloads_are_traversed_without_extraction(self, payload):
         target = self.root / "renamed"

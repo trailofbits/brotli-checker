@@ -1,8 +1,16 @@
 import copy
 import json
+import subprocess
+import sys
 
 import check_mutation_score as gate
 import pytest
+
+ARCHIVE_PARAMETER_TEST = "test_ar_cpio_and_rpm_payloads_are_traversed_without_extraction"
+ARCHIVE_PARAMETER_NODE_PREFIX = f"tests/test_inventory.py::TestInventory::{ARCHIVE_PARAMETER_TEST}"
+ARCHIVE_PARAMETER_NODE_IDS = tuple(
+    f"{ARCHIVE_PARAMETER_NODE_PREFIX}[{archive}]" for archive in ("ar", "cpio", "rpm")
+)
 
 
 @pytest.fixture
@@ -121,6 +129,29 @@ def test_duplicate_cli_pardons_cannot_hide_mutants(report):
     report["summary"].update(total=7, pardoned=2)
     with pytest.raises(ValueError, match="unapproved pardons"):
         gate.check_report(report, set())
+
+
+def test_binary_archive_parameter_node_ids_can_be_reselected():
+    result = subprocess.run(  # noqa: S603 - fixed local test runner and node IDs
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--no-cov",
+            "-p",
+            "no:gremlins",
+            "-o",
+            "addopts=--strict-config --strict-markers",
+            *ARCHIVE_PARAMETER_NODE_IDS,
+        ],
+        check=False,
+        capture_output=True,
+        cwd=gate.ROOT,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "3 passed" in result.stdout
 
 
 def test_unapproved_cli_guard_operator_is_rejected(report):

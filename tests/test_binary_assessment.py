@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/brotli-chec
 import brotli_binary_metadata as metadata
 import brotli_inventory as scanner
 from test_binary_inventory import run_scan
+from test_binary_match import reference, write_catalog
 from test_binary_metadata import elf_with_symbols, encoded_version, x86_return
 
 
@@ -26,6 +27,7 @@ from test_binary_metadata import elf_with_symbols, encoded_version, x86_return
     ],
 )
 def test_reported_versions_warn_but_never_clear_binaries(tmp_path, version, status, exit_code):
+    catalog = write_catalog(tmp_path, [reference(machine=62, salt=b"metadata-only")])
     target = tmp_path / "libbrotli.so"
     target.write_bytes(
         elf_with_symbols(
@@ -34,7 +36,19 @@ def test_reported_versions_warn_but_never_clear_binaries(tmp_path, version, stat
     )
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        assert scanner.main([str(target), "--json"]) == exit_code
+        assert (
+            scanner.main(
+                [
+                    str(target),
+                    "--code-references",
+                    str(catalog),
+                    "--no-flirt",
+                    "--no-xrefs",
+                    "--json",
+                ]
+            )
+            == exit_code
+        )
     report = json.loads(output.getvalue())
     assert len(report["findings"]) == 1
     finding = report["findings"][0]
@@ -49,13 +63,14 @@ def test_reported_versions_warn_but_never_clear_binaries(tmp_path, version, stat
         assert "reports Brotli" in text
         assert "backport" in text
         assert "Possible vulnerable Brotli source" not in text
-    result = run_scan(target)
+    result = run_scan(target, "--code-references", catalog)
     binary = json.loads(result.stdout)["findings"][0]
     assert binary["patch_status"] == ("not_assessed" if status == "unknown" else status)
     assert binary["decoder_metadata"] == finding["evidence"]["decoder_metadata"]
 
 
 def test_imported_version_does_not_warn_as_embedded(tmp_path):
+    catalog = write_catalog(tmp_path, [reference(machine=62, salt=b"metadata-only")])
     target = tmp_path / "consumer.so"
     target.write_bytes(
         elf_with_symbols(
@@ -64,7 +79,7 @@ def test_imported_version_does_not_warn_as_embedded(tmp_path):
             [{"name": "BrotliDecoderVersion", "index": 0}],
         )
     )
-    result = run_scan(target)
+    result = run_scan(target, "--code-references", catalog)
     finding = json.loads(result.stdout)["findings"][0]
     assert finding["patch_status"] == "not_assessed"
     assert finding["linkage"] == "decoder_import"
@@ -76,6 +91,7 @@ def test_metadata_work_limit_records_gap_and_preserves_partial_evidence(
     tmp_path, monkeypatch, patch, exit_code
 ):
     code = x86_return(encoded_version(1, 2, patch))
+    catalog = write_catalog(tmp_path, [reference(machine=62, salt=b"metadata-only")])
     target = tmp_path / "libbrotli.so"
     target.write_bytes(
         elf_with_symbols(
@@ -94,7 +110,19 @@ def test_metadata_work_limit_records_gap_and_preserves_partial_evidence(
     monkeypatch.setattr(metadata, "MAX_MAPPING_WORK", 1)
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        assert scanner.main([str(target), "--json"]) == exit_code
+        assert (
+            scanner.main(
+                [
+                    str(target),
+                    "--code-references",
+                    str(catalog),
+                    "--no-flirt",
+                    "--no-xrefs",
+                    "--json",
+                ]
+            )
+            == exit_code
+        )
     report = json.loads(output.getvalue())
     assert report["coverage"]["gap_count"] == 1
     assert "mapping work limit" in report["coverage"]["gaps"][0]["reason"]
