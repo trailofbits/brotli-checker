@@ -551,3 +551,42 @@ def test_report_roots_must_be_a_string_array_and_sarif_fixed_versions_are_notes(
     value = report(findings=[finding("/scope/version", "upstream_fixed_version")])
     row = subject.render_sarif(value, envelope(value))["runs"][0]["results"][0]
     assert row["level"] == "note"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("scanner", "sha256"),
+        ("catalogs", 0, "sha256"),
+        ("coverage", "files_read"),
+        ("findings", 0, "path"),
+        ("optional_tools",),
+    ],
+    ids=["scanner", "catalog", "coverage", "finding", "envelope"],
+)
+def test_missing_required_stored_fields_raise_validation_error_not_key_error(path):
+    stored = subject.envelope_json(envelope(report(findings=[finding("/scope/a")])))
+    parent = stored
+    for key in path[:-1]:
+        parent = parent[key]
+    del parent[path[-1]]
+    with pytest.raises(ValueError, match=r"Invalid|Unsupported"):
+        subject.decode_envelope(stored)
+
+
+def test_nonstring_hash_and_nonstring_json_keys_are_validation_errors():
+    with pytest.raises(ValueError, match="SHA-256"):
+        subject.build_envelope(
+            report(), scanner=subject.ToolIdentity("scanner", "1", cast("str", 1))
+        )
+    with pytest.raises(ValueError, match="non-JSON"):
+        subject.canonical_json({1: "not-a-string-key"})
+
+
+def test_oversized_stored_finding_population_is_rejected(monkeypatch):
+    stored = subject.envelope_json(
+        envelope(report(findings=[finding("/scope/a"), finding("/scope/b")]))
+    )
+    monkeypatch.setattr(subject, "MAX_REPORT_ITEMS", 1)
+    with pytest.raises(ValueError, match="envelope findings"):
+        subject.decode_envelope(stored)

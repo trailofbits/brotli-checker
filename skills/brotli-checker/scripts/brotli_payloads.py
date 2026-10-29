@@ -100,9 +100,10 @@ class SubrangeStream(io.RawIOBase):
         if size <= 0:
             return 0
         content = self._data[self._offset + self._position : self._offset + self._position + size]
-        target[:size] = content
-        self._position += size
-        return size
+        copied = len(content)
+        target[:copied] = content
+        self._position += copied
+        return copied
 
     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
         if whence == io.SEEK_SET:

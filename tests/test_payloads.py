@@ -232,7 +232,15 @@ def test_subrange_seek_clamps_past_end_and_readinto_preserves_unused_bytes():
 )
 def test_subrange_and_checked_ranges_accept_every_exact_endpoint(offset, size):
     stream = payloads.SubrangeStream(b"abc", offset, size)
-    assert stream.read() == b"abc"[offset : offset + size]
+    # Validate raw counts before RawIOBase.read() passes them to CPython's C buffer.
+    expected = b"abc"[offset : offset + size]
+    target = bytearray(b"." * (size + 1))
+    assert stream.readinto(target) == size
+    assert len(target) == size + 1
+    assert target == expected + b"."
+    assert stream.readinto(bytearray(1)) == 0
+    assert stream.seek(0) == 0
+    assert stream.read() == expected
     assert payloads._checked(b"abc", offset, size) == b"abc"[offset : offset + size]  # noqa: SLF001
 
 
@@ -336,9 +344,9 @@ def test_oci_probe_requires_complete_root_marker_pair_and_honors_first_member_li
     assert payloads.oci_archive_candidate(index_only) is False
     assert payloads.oci_archive_candidate(layout_only) is False
     marker_first = tar_bytes([("manifest.json", b"[]", "file"), ("later", b"x", "file")])
-    assert payloads.oci_archive_candidate(
-        marker_first, payloads.PayloadLimits(max_members=1)
-    ) is True
+    assert (
+        payloads.oci_archive_candidate(marker_first, payloads.PayloadLimits(max_members=1)) is True
+    )
 
 
 def test_ar_and_deb_members_are_slice_streams_without_extraction():
@@ -561,9 +569,12 @@ def test_rpm_header_binary_values_and_exact_string_limit_are_preserved(monkeypat
 
 def test_missing_rpm_digest_populations_are_not_fabricated():
     assert payloads._rpm_file_digests({}, 8) == []  # noqa: SLF001
-    assert payloads._rpm_file_digests(  # noqa: SLF001
-        {1117: ["tool"], 1118: ["/usr/bin/"], 1116: [0], 1035: [""]}, 8
-    ) == []
+    assert (
+        payloads._rpm_file_digests(  # noqa: SLF001
+            {1117: ["tool"], 1118: ["/usr/bin/"], 1116: [0], 1035: [""]}, 8
+        )
+        == []
+    )
 
 
 def test_rpm_file_digest_arrays_require_one_bounded_path_per_digest():
@@ -890,3 +901,24 @@ def test_oci_layout_version_duplicate_descriptors_and_layers_fail_closed():
         payloads.open_oci_filesystems(bad_layer),
     ):
         pass
+
+
+def test_subrange_reports_actual_copied_bytes_on_short_source_reads():
+    class ShortReads(bytes):
+        def __getitem__(self, key):
+            result = super().__getitem__(key)
+            return result[:1] if isinstance(key, slice) else result
+
+    stream = payloads.SubrangeStream(ShortReads(b"abc"), 0, 3)
+    target = bytearray(b"....")
+    assert stream.readinto(target) == 1
+    assert target == b"a..."
+    assert stream.tell() == 1
+    assert stream.readinto(target) == 1
+    assert target == b"b..."
+    assert stream.tell() == 2
+    assert stream.readinto(target) == 1
+    assert target == b"c..."
+    assert stream.tell() == 3
+    assert stream.readinto(target) == 0
+    assert target == b"c..."
