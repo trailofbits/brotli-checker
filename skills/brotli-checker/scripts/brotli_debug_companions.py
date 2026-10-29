@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 
 PT_NOTE = 4
 SHT_NOTE = 7
+SHF_ALLOC = 2
+SHF_EXECINSTR = 4
 NT_GNU_BUILD_ID = 3
 LC_UUID = 0x1B
 IMAGE_DEBUG_TYPE_CODEVIEW = 2
@@ -348,6 +350,9 @@ def _macho_identity(data: Buffer, limits: DebugLimits) -> IdentityInspection:
                 return IdentityInspection(None, (gap,), False)
             uuids.add(data[cursor + 8 : cursor + 24].hex())
         cursor += size
+    if cursor != header_size + sizeofcmds:
+        gap = DebugGap("malformed_macho_identity", "Mach-O load-command sizes are inconsistent")
+        return IdentityInspection(None, (gap,), False)
     if len(uuids) != 1:
         reason = "Mach-O has no LC_UUID" if not uuids else "Mach-O has conflicting LC_UUID values"
         gap = DebugGap("missing_macho_uuid", reason)
@@ -381,6 +386,9 @@ def _pe_identity(data: Buffer, limits: DebugLimits) -> IdentityInspection:
         debug_entry = directory_offset + PE_DEBUG_DIRECTORY_INDEX * 8
         debug_rva = int.from_bytes(optional[debug_entry : debug_entry + 4], "little")
         debug_size = int.from_bytes(optional[debug_entry + 4 : debug_entry + 8], "little")
+        if debug_size > limits.max_identity_bytes:
+            gap = DebugGap("pe_debug_limit", "PE debug-directory byte limit reached")
+            return IdentityInspection(None, (gap,), True)
         section_offset = optional_offset + optional_size
         sections = []
         for index in range(section_count):
@@ -401,7 +409,13 @@ def _pe_identity(data: Buffer, limits: DebugLimits) -> IdentityInspection:
             if kind != IMAGE_DEBUG_TYPE_CODEVIEW:
                 continue
             size = int.from_bytes(row[16:20], "little")
+            if size > limits.max_identity_bytes:
+                gap = DebugGap("pe_debug_limit", "PE CodeView record byte limit reached")
+                return IdentityInspection(None, (gap,), True)
+            address = int.from_bytes(row[20:24], "little")
             raw_offset = int.from_bytes(row[24:28], "little")
+            if _pe_rva_to_offset(address, size, sections) != raw_offset:
+                raise ValueError("PE CodeView RVA and raw file pointer disagree")
             record = checked_slice(data, raw_offset, size)
             identity = _parse_rsds(record)
             if identity is not None:
@@ -424,10 +438,12 @@ def _pe_identity(data: Buffer, limits: DebugLimits) -> IdentityInspection:
 
 
 def _pe_rva_to_offset(rva: int, size: int, sections: list[tuple[int, int, int, int]]) -> int | None:
-    for virtual, memory_size, raw_offset, raw_size in sections:
-        if virtual <= rva and rva + size <= virtual + min(memory_size, raw_size):
-            return raw_offset + rva - virtual
-    return None
+    candidates = {
+        raw_offset + rva - virtual
+        for virtual, memory_size, raw_offset, raw_size in sections
+        if virtual <= rva and rva + size <= virtual + min(memory_size, raw_size)
+    }
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def _parse_rsds(data: bytes) -> tuple[str, int, str] | None:
@@ -453,11 +469,12 @@ def _pdb_identity(data: Buffer, limits: DebugLimits) -> IdentityInspection:
         block_count = int.from_bytes(data[40:44], "little")
         directory_size = int.from_bytes(data[44:48], "little")
         block_map = int.from_bytes(data[52:56], "little")
+        if block_count > limits.max_pdb_blocks or directory_size > limits.max_pdb_directory_bytes:
+            gap = DebugGap("pdb_limit", "PDB block or directory limit reached")
+            return IdentityInspection(None, (gap,), True)
         if (
             block_size < 512
             or block_size & (block_size - 1)
-            or block_count > limits.max_pdb_blocks
-            or directory_size > limits.max_pdb_directory_bytes
             or block_count * block_size > len(data)
         ):
             raise ValueError("Invalid or over-limit PDB block geometry")
@@ -517,44 +534,72 @@ def _pdb_blocks(
     return bytes(content[:size])
 
 
-def _elf_function_hints(data: Buffer, limits: DebugLimits) -> tuple[tuple[FunctionHint, ...], bool]:
+def _elf_function_hints(
+    data: Buffer, limits: DebugLimits
+) -> tuple[tuple[FunctionHint, ...], tuple[DebugGap, ...], bool]:
     try:
         header = elf_header(data)
         if not header[12]:
-            return (), False
+            return (), (), False
         sections = section_headers(data, header)
         parser = ELFLayout.of(header).parser("symbol")
         hints = []
+        malformed = False
         symbols_seen = 0
         for table in sections:
             if table[1] not in (SHT_SYMTAB, SHT_DYNSYM):
                 continue
             if table[9] != parser.size or table[5] % parser.size or table[6] >= len(sections):
-                return (), False
+                gap = DebugGap("malformed_elf_function_hints", "Malformed ELF symbol table")
+                return tuple(hints), (gap,), False
             strings = sections[table[6]]
             if strings[1] != SHT_STRTAB:
-                return (), False
+                gap = DebugGap(
+                    "malformed_elf_function_hints",
+                    "ELF symbol table has no string-table owner",
+                )
+                return tuple(hints), (gap,), False
             start, end = checked_range(data, strings[4], strings[5])
             symbols_seen += table[5] // parser.size
             if symbols_seen > limits.max_symbols:
-                return tuple(hints), True
+                return tuple(hints), (), True
             for name_offset, info, _, index, address, size in symbol_rows(data, header, table):
                 if info & 0xF != STT_FUNC or index == 0:
                     continue
+                span = max(size, 1)
+                if index >= len(sections):
+                    malformed = True
+                    continue
+                owner = sections[index]
+                if (
+                    owner[2] & (SHF_ALLOC | SHF_EXECINSTR) != (SHF_ALLOC | SHF_EXECINSTR)
+                    or address < owner[3]
+                    or address + span > owner[3] + owner[5]
+                ):
+                    malformed = True
+                    continue
                 name = _bounded_string(data, start, end, name_offset)
                 if name:
-                    hints.append(
-                        FunctionHint(
-                            name=name,
-                            virtual_address=address,
-                            size=size,
-                        )
-                    )
                     if len(hints) >= limits.max_function_hints:
-                        return tuple(hints), True
-        return tuple(hints), False
+                        return tuple(hints), (), True
+                    hints.append(FunctionHint(name=name, virtual_address=address, size=size))
+        gaps = (
+            (
+                DebugGap(
+                    "malformed_elf_function_hints",
+                    "ELF function symbol has inconsistent section ownership or bounds",
+                ),
+            )
+            if malformed
+            else ()
+        )
+        return tuple(hints), gaps, False
     except (ValueError, struct.error):
-        return (), False
+        gap = DebugGap(
+            "malformed_elf_function_hints",
+            "ELF function hints could not be parsed safely",
+        )
+        return (), (gap,), False
 
 
 def _layout_function_hints(
@@ -752,7 +797,8 @@ def verify_debug_companions(
         hints = ()
         hint_limited = False
         if inspection.identity.format == "elf":
-            hints, hint_limited = _elf_function_hints(companion.data, limits)
+            hints, hint_gaps, hint_limited = _elf_function_hints(companion.data, limits)
+            gaps.extend(DebugGap(gap.code, gap.reason, companion.label) for gap in hint_gaps)
             if auto_pyelftools:
                 hints, line_gaps, line_limited = _dwarf_line_hints(
                     companion.data, hints, limits, pyelftools_module

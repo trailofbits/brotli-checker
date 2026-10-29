@@ -1,12 +1,19 @@
+import argparse
 import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import brotli_analysis as analysis
+import pytest
 from brotli_analysis import MAX_ANALYSIS_GAPS, AnalysisSession, scan_with_analysis
 from brotli_binary_data import sha256_data
+from brotli_debug_companions import SuppliedCompanion
+from brotli_inventory import Inventory
+from brotli_package_provenance import load_vendor_snapshot
 from test_binary_match import elf, reference, write_catalog
+from test_debug_companions import elf_note, elf_section_note, pdb, pe_rsds
 from test_flirt_integration import run_main
 
 
@@ -55,6 +62,8 @@ def test_archive_namespaces_are_isolated_and_traversal_is_unresolved():
     assert b["namespace"] == second["id"]
     assert a["namespace"] != b["namespace"]
     assert escaped["namespace"].startswith("unresolved:")
+    assert escaped["deployment_root"] is False
+    assert "_hashes" not in escaped
     assert session.gaps
 
 
@@ -235,3 +244,201 @@ def test_image_registration_and_members_rollback_together():
     assert len(session.artifacts) == 1
     unresolved = record(session, b"later", "/supplied/images.tar!image[0]!etc/os-release", 1)
     assert unresolved["namespace"] == parent["id"]
+
+
+@pytest.mark.parametrize("member", ["../host", "/etc/os-release", "etc\\os-release"])
+def test_unsafe_image_members_never_acquire_deployment_scope(member):
+    session = AnalysisSession([Path("/supplied")], xrefs=False)
+    record(session, b"archive", "/supplied/image.tar")
+    session.register_image("/supplied/image.tar!image[0]", "/supplied/image.tar", 0, "manifest", ())
+    item = record(session, b"ID=host", "/supplied/image.tar!image[0]!" + member, 1)
+    assert item["namespace"].startswith("unresolved:")
+    assert item["deployment_root"] is False
+    assert "_metadata" not in item
+    assert "_hashes" not in item
+    assert any("unsafe" in gap["reason"] for gap in session.gaps)
+
+
+def test_unprovided_parent_does_not_create_deployment_or_hash_ownership():
+    session = AnalysisSession([Path("/supplied")])
+    item = record(session, b"ID=host", "/missing.tar!etc/os-release", 1)
+    assert item["deployment_root"] is False
+    assert item["namespace"].startswith("unresolved:")
+    assert "_hashes" not in item
+    assert session.enrich(b"data", "/not-recorded", {}) == {}
+    image = session.register_image("missing!image", "missing", 0, "manifest", ())
+    assert image["parent"] is None
+    assert image["id"].startswith("unresolved-image:")
+    assert any("parent artifact" in gap["reason"] for gap in session.gaps)
+
+
+def test_nested_deployment_root_owns_its_metadata_not_the_outer_root():
+    session = AnalysisSession(
+        [Path("/images")], deployment_roots=[Path("/images"), Path("/images/child")]
+    )
+    item = record(session, b"ID=debian", "/images/child/etc/os-release")
+    assert item["namespace"] == "deployment:/images/child"
+    assert item["logical_path"] == "/etc/os-release"
+    assert item["_metadata"] == b"ID=debian"
+    ordinary = record(session, b"ID=host", "/etc/os-release")
+    assert ordinary["deployment_root"] is False
+    assert "_metadata" not in ordinary
+
+
+def test_image_history_budget_is_cumulative_not_per_image(monkeypatch):
+    monkeypatch.setattr(analysis, "MAX_IMAGE_HISTORY", 2)
+    session = AnalysisSession([Path("/supplied")])
+    record(session, b"archive", "/supplied/image.tar")
+    history = ({"path": "first"}, {"path": "second"})
+    first = session.register_image(
+        "/supplied/image.tar!one", "/supplied/image.tar", 0, "one", history
+    )
+    second = session.register_image(
+        "/supplied/image.tar!two", "/supplied/image.tar", 0, "two", history
+    )
+    assert len(first["history"]) == 2
+    assert first["history_omitted"] == 0
+    assert second["history"] == ()
+    assert second["history_omitted"] == 2
+    assert session.image_history_count == 2
+    assert any("history retention" in gap["reason"] for gap in session.gaps)
+
+
+def test_metadata_budget_accepts_exact_limit_and_rejects_cumulative_overflow(monkeypatch):
+    raw = b'{"bomFormat":"CycloneDX","specVersion":"1.6"}'
+    monkeypatch.setattr(analysis, "MAX_METADATA_BYTES", len(raw))
+    session = AnalysisSession([Path("/supplied")])
+    first = record(session, raw, "/supplied/first.cdx.json")
+    second = record(session, raw, "/supplied/second.cdx.json")
+    assert "provenance" in first
+    assert "provenance" not in second
+    assert session.metadata_bytes == len(raw)
+    assert any("cumulative byte budget" in gap["reason"] for gap in session.gaps)
+    irrelevant = record(session, b"x", "/supplied/unrelated.md5sums")
+    assert "_metadata" not in irrelevant
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_sbom_relation_limit_retains_exact_complete_prefix(monkeypatch, count):
+    monkeypatch.setattr(analysis, "MAX_RELATIONS", 2)
+    session = AnalysisSession([Path("/supplied")])
+    targets = [record(session, b"same", f"/supplied/copy-{index}") for index in range(count)]
+    document = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "components": [
+            {
+                "name": "brotli",
+                "type": "library",
+                "bom-ref": "decoder",
+                "hashes": [{"alg": "SHA-256", "content": targets[0]["sha256"]}],
+            }
+        ],
+    }
+    record(session, json.dumps(document).encode(), "/supplied/bom.json")
+    result = session.finish()
+    assert [edge["target"] for edge in result["relations"]] == [item["id"] for item in targets[:2]]
+    assert any("Relationship budget" in gap["reason"] for gap in result["gaps"]) == (count > 2)
+
+
+@pytest.mark.parametrize(
+    ("vendor", "release", "matches"),
+    [("debian", "13", True), ("ubuntu", "13", False), ("debian", "12", False)],
+)
+def test_vendor_assertion_requires_both_same_root_os_fields(vendor, release, matches):
+    snapshot = load_vendor_snapshot(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "snapshot_date": "2026-10-28",
+                "vendor": "debian",
+                "release": "13",
+                "assertions": [
+                    {
+                        "package": "libbrotli1",
+                        "fixed_version": "1.2.1-1",
+                        "advisory_url": "https://vendor.example/advisory",
+                    }
+                ],
+            }
+        )
+    )
+    session = AnalysisSession(
+        [Path("/image")], deployment_roots=[Path("/image")], snapshots=(snapshot,)
+    )
+    record(
+        session,
+        (
+            b"Package: libbrotli1\nStatus: install ok installed\n"
+            b"Version: 1.2.1-1\nArchitecture: amd64\n\n"
+        ),
+        "/image/var/lib/dpkg/status",
+    )
+    record(
+        session,
+        f'#ID=forged\n#comment\nID={vendor}\nVERSION_ID="{release}"\n'.encode(),
+        "/image/etc/os-release",
+    )
+    result = session.finish()
+    assert bool(result["vendor_assertions"]) is matches
+    if matches:
+        assert result["vendor_assertions"][0]["patch_status"] == "unknown"
+        assert result["vendor_assertions"][0]["status"] == "meets_vendor_fixed_version"
+    else:
+        assert any("does not match" in gap["reason"] for gap in result["gaps"])
+
+
+@pytest.mark.parametrize("extra_byte", [False, True])
+def test_vendor_snapshot_read_limit_is_inclusive_and_detects_extra_byte(
+    tmp_path, monkeypatch, extra_byte
+):
+    raw = json.dumps(
+        {
+            "schema_version": 1,
+            "snapshot_date": "2026-10-28",
+            "vendor": "debian",
+            "release": "13",
+            "assertions": [],
+        }
+    ).encode()
+    monkeypatch.setattr(analysis, "MAX_METADATA_BYTES", len(raw))
+    path = tmp_path / "snapshot.json"
+    path.write_bytes(raw + (b" " if extra_byte else b""))
+    inventory = Inventory({"fingerprints": []}, None, None, 10, 0)
+    args = argparse.Namespace(
+        debug_file=[], vendor_snapshot=[path], deployment_root=[], no_xrefs=True, sbom=[]
+    )
+    if extra_byte:
+        with pytest.raises(ValueError, match="snapshot exceeds metadata byte budget"):
+            scan_with_analysis(inventory, [], args)
+    else:
+        result = scan_with_analysis(inventory, [], args)
+        assert result["analysis_configuration"]["vendor_snapshots"] == [str(path)]
+        assert inventory.gap_count == 0
+
+
+@pytest.mark.parametrize(
+    "path", ["/image/unrelated.md5sums", "/image/var/lib/dpkg/info/not-a-record"]
+)
+def test_unrelated_deployment_files_do_not_consume_package_metadata_budget(path):
+    session = AnalysisSession([Path("/image")], deployment_roots=[Path("/image")])
+    item = record(session, b"unrelated", path)
+    assert "_metadata" not in item
+    assert session.metadata_bytes == 0
+
+
+@pytest.mark.parametrize("kind", ["elf", "pe"])
+def test_supplied_debug_evidence_is_routed_for_both_native_layouts(kind):
+    if kind == "elf":
+        artifact = elf_note(b"identity")
+        companion = SuppliedCompanion("app.debug", elf_section_note(b"identity"))
+    else:
+        guid = bytes(range(16))
+        artifact = pe_rsds(guid, 7)
+        companion = SuppliedCompanion("app.pdb", pdb(guid, 7))
+    session = AnalysisSession([Path("/supplied")], xrefs=False, companions=(companion,))
+    record(session, artifact, "/supplied/app")
+    result = session.enrich(artifact, "/supplied/app", {"detection_status": "not_detected"})
+    assert result["debug_companions"]["status"] == "verified"
+    assert result["debug_companions"]["matches"][0]["patch_status"] == "unknown"
+    assert "function_graph" not in result

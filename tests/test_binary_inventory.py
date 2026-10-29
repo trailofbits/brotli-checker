@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,47 @@ SCRIPT = (
 )
 sys.path.insert(0, str(SCRIPT.parent))
 import brotli_binary_data as binary_data  # noqa: E402
+import brotli_binary_match as binary_match  # noqa: E402
+
+
+def _reference_temp_parent(arguments):
+    scanned_directories = []
+    for argument in arguments:
+        path = Path(str(argument))
+        if path.is_dir():
+            scanned_directories.append(path.resolve())
+    candidates = [Path(tempfile.gettempdir()).resolve(), SCRIPT.parents[3].parent.resolve()]
+    for candidate in candidates:
+        if not any(
+            candidate == root or candidate.is_relative_to(root) for root in scanned_directories
+        ):
+            return candidate
+    msg = "Cannot place the test reference catalog outside the scanned roots"
+    raise RuntimeError(msg)
+
+
+def _write_small_reference_catalog(path):
+    references = []
+    for machine, bits, byteorder in sorted(binary_match.TARGETS):
+        identity = f"{machine}-{bits}-{byteorder}"
+        digest = hashlib.sha256(("test-only-reference-" + identity).encode()).digest()
+        references.append(
+            {
+                "id": "test-only-" + identity,
+                "state": "fixed",
+                "machine": machine,
+                "elf_class": bits,
+                "byteorder": byteorder,
+                "source_sha256": "a" * 64,
+                "object_sha256": "b" * 64,
+                "source": "Synthetic test-only non-Brotli reference",
+                "compiler": "test fixture",
+                "flags": "test fixture",
+                "code": (digest * 8).hex(),
+                "mask": (b"\xff" * 256).hex(),
+            }
+        )
+    path.write_text(json.dumps({"schema_version": 1, "references": references}))
 
 
 def run_scan(*arguments):
@@ -25,15 +67,44 @@ def run_scan(*arguments):
     # Reference fixtures contain arbitrary bytes, not an instruction-decoding corpus.
     arguments = (*arguments, "--no-xrefs")
     stdout, stderr = io.StringIO(), io.StringIO()
-    with (
-        contextlib.redirect_stdout(stdout),
-        contextlib.redirect_stderr(stderr),
-    ):
+    with contextlib.ExitStack() as stack:
+        if "--code-references" not in map(str, arguments) and not any(
+            str(argument).startswith("--code-references=") for argument in arguments
+        ):
+            directory = Path(
+                stack.enter_context(
+                    tempfile.TemporaryDirectory(
+                        prefix="brotli-test-references-",
+                        dir=_reference_temp_parent(arguments),
+                    )
+                )
+            )
+            references = directory / "references.json"
+            _write_small_reference_catalog(references)
+            arguments = (*arguments, "--code-references", references)
+        stack.enter_context(contextlib.redirect_stdout(stdout))
+        stack.enter_context(contextlib.redirect_stderr(stderr))
         try:
             code = binary_inventory.main(list(map(str, arguments)))
         except SystemExit as result:
             code = result.code
     return SimpleNamespace(returncode=code, stdout=stdout.getvalue(), stderr=stderr.getvalue())
+
+
+def test_default_test_references_are_outside_the_scan_and_ephemeral(tmp_path, monkeypatch):
+    (tmp_path / "notes.txt").write_text("nothing to inventory")
+    written = []
+    original = _write_small_reference_catalog
+
+    def tracked(path):
+        written.append(path)
+        assert not path.is_relative_to(tmp_path)
+        original(path)
+
+    monkeypatch.setattr(sys.modules[__name__], "_write_small_reference_catalog", tracked)
+    assert run_scan(tmp_path).returncode == 0
+    assert len(written) == 1
+    assert not written[0].exists()
 
 
 @pytest.mark.parametrize("magic", [b"\x7fELF", b"MZ", b"\xcf\xfa\xed\xfe", b"\0asm", b"!<arch>\n"])

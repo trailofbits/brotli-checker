@@ -210,3 +210,327 @@ def test_recursive_json_is_rejected(monkeypatch):
     monkeypatch.setattr(subject.json, "loads", recursive)
     with pytest.raises(ValueError, match="Invalid structured provenance JSON"):
         subject.parse_provenance_json("{}")
+
+
+@pytest.mark.parametrize(
+    ("value", "field"),
+    [
+        (
+            subject.ProvenanceComponent("id", "library", "name", None, None, (), "name_only"),
+            "name",
+        ),
+        (subject.ProvenanceRelation("a", "b", "contains"), "kind"),
+        (subject.CompletenessDeclaration("complete", (), ()), "aggregate"),
+        (subject.ArtifactBinding("id", "unresolved", "a" * 64, "gap"), "gap"),
+    ],
+)
+def test_provenance_evidence_nodes_are_immutable(value, field):
+    with pytest.raises(FrozenInstanceError):
+        setattr(value, field, "changed")
+
+
+def test_cyclonedx_string_hash_and_component_limits_are_exact(monkeypatch):
+    monkeypatch.setattr(subject, "MAX_STRING_CHARS", 4)
+    accepted = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "components": [{"bom-ref": "id", "name": "four"}],
+            }
+        )
+    )
+    rejected = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "components": [{"bom-ref": "id", "name": "five!"}],
+            }
+        )
+    )
+    assert accepted.components[0].name == "four"
+    assert not any("character limit" in gap for gap in accepted.gaps)
+    assert rejected.components == ()
+    assert any("character limit" in gap for gap in rejected.gaps)
+
+    monkeypatch.setattr(subject, "MAX_STRING_CHARS", 1024)
+    monkeypatch.setattr(subject, "MAX_HASHES_PER_COMPONENT", 1)
+    one_hash = {"alg": "SHA-256", "content": "a" * 64}
+    hash_limited = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "components": [
+                    {"bom-ref": "one", "name": "one", "hashes": [one_hash]},
+                    {
+                        "bom-ref": "two",
+                        "name": "two",
+                        "hashes": [one_hash, {"alg": "SHA-1", "content": "b" * 40}],
+                    },
+                    {
+                        "bom-ref": "bad-length",
+                        "name": "bad-length",
+                        "hashes": [{"alg": "SHA-256", "content": "c" * 63}],
+                    },
+                    {
+                        "bom-ref": "bad-hex",
+                        "name": "bad-hex",
+                        "hashes": [{"alg": "SHA-256", "content": "g" * 64}],
+                    },
+                ],
+            }
+        )
+    )
+    assert hash_limited.components[0].hashes == (subject.ProvenanceHash("SHA-256", "a" * 64),)
+    assert hash_limited.components[1].hashes == (subject.ProvenanceHash("SHA-256", "a" * 64),)
+    assert hash_limited.components[2].hashes == hash_limited.components[3].hashes == ()
+    assert sum("hash limit reached" in gap for gap in hash_limited.gaps) == 1
+    assert sum("Invalid" in gap and "SHA-256" in gap for gap in hash_limited.gaps) == 2
+
+    monkeypatch.setattr(subject, "MAX_COMPONENTS", 1)
+    exact = subject.parse_provenance_json(
+        '{"bomFormat":"CycloneDX","specVersion":"1.6",'
+        '"components":[{"bom-ref":"one","name":"one"}]}'
+    )
+    over = subject.parse_provenance_json(
+        '{"bomFormat":"CycloneDX","specVersion":"1.6",'
+        '"components":[{"bom-ref":"one","name":"one"},{"bom-ref":"two","name":"two"}]}'
+    )
+    assert len(exact.components) == 1
+    assert "Component limit reached" not in exact.gaps
+    assert len(over.components) == 1
+    assert "Component limit reached" in over.gaps
+
+
+def test_cyclonedx_relationship_and_completeness_boundaries(monkeypatch):
+    malformed = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "components": [
+                    {"purl": "pkg:generic/one", "name": "one"},
+                    {"bom-ref": "two", "name": "two"},
+                    {"bom-ref": "missing-name"},
+                ],
+                "dependencies": [42, {"ref": 42}, {"ref": "two", "dependsOn": [42]}],
+                "compositions": [
+                    42,
+                    {"aggregate": "invalid"},
+                    {"aggregate": "complete", "assemblies": "one"},
+                    {"aggregate": "complete", "assemblies": [42]},
+                    {"aggregate": "complete", "dependencies": "two"},
+                    {"aggregate": "complete", "dependencies": [42]},
+                ],
+            }
+        )
+    )
+    assert malformed.spec_version == "unknown"
+    assert malformed.components[0].identifier == "pkg:generic/one"
+    assert malformed.components[0].kind == "library"
+    assert malformed.relations == ()
+    assert malformed.completeness == ()
+    assert any("specVersion" in gap for gap in malformed.gaps)
+    assert any("components[2].name" in gap for gap in malformed.gaps)
+    assert sum("Invalid CycloneDX dependency entry" in gap for gap in malformed.gaps) == 2
+    assert any("dependency target" in gap for gap in malformed.gaps)
+    assert sum("completeness declaration" in gap for gap in malformed.gaps) == 2
+    assert sum("completeness assemblies" in gap for gap in malformed.gaps) == 2
+    assert sum("completeness dependencies" in gap for gap in malformed.gaps) == 2
+
+    monkeypatch.setattr(subject, "MAX_RELATIONS", 1)
+    related = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "components": [
+                    {"bom-ref": "one", "name": "one"},
+                    {"bom-ref": "two", "name": "two"},
+                    {"bom-ref": "three", "name": "three"},
+                ],
+                "dependencies": [
+                    {"ref": "one", "dependsOn": ["two"]},
+                    {"ref": "two", "dependsOn": ["three"]},
+                ],
+            }
+        )
+    )
+    assert related.relations == (subject.ProvenanceRelation("one", "two", "depends_on"),)
+    assert "Relationship limit reached" in related.gaps
+
+    monkeypatch.setattr(subject, "MAX_COMPLETENESS_DECLARATIONS", 1)
+    monkeypatch.setattr(subject, "MAX_COMPLETENESS_REFERENCES", 1)
+    complete = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "components": [{"bom-ref": "one", "name": "one"}],
+                "compositions": [
+                    {"aggregate": "complete", "assemblies": ["one"], "dependencies": ["one"]},
+                    {"aggregate": "complete"},
+                ],
+            }
+        )
+    )
+    assert complete.completeness == ()
+    assert "Completeness reference limit reached" in complete.gaps
+
+    exact = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "components": [{"bom-ref": "one", "name": "one"}],
+                "compositions": [
+                    {"aggregate": "complete", "assemblies": ["one"]},
+                    {"aggregate": "unknown"},
+                ],
+            }
+        )
+    )
+    assert exact.completeness == (subject.CompletenessDeclaration("complete", ("one",), ()),)
+    assert "Completeness reference limit reached" not in exact.gaps
+    assert "Completeness declaration limit reached" in exact.gaps
+
+
+def test_spdx_fallbacks_malformed_fields_and_exact_limits(monkeypatch):
+    malformed = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "spdxVersion": "SPDX-2.3",
+                "packages": [
+                    {"name": "missing-id"},
+                    {"SPDXID": "SPDXRef-MissingName"},
+                    {
+                        "SPDXID": "SPDXRef-BadType",
+                        "name": "bad-type",
+                        "externalRefs": [
+                            {"referenceType": 1, "referenceLocator": "pkg:generic/bad"}
+                        ],
+                    },
+                    {
+                        "SPDXID": "SPDXRef-BadLocator",
+                        "name": "bad-locator",
+                        "externalRefs": [{"referenceType": "purl", "referenceLocator": 1}],
+                    },
+                    {
+                        "SPDXID": "SPDXRef-Conflict",
+                        "name": "conflict",
+                        "externalRefs": [
+                            {"referenceType": "purl", "referenceLocator": "pkg:generic/a"},
+                            {"referenceType": "purl", "referenceLocator": "pkg:generic/b"},
+                        ],
+                    },
+                ],
+                "documentDescribes": ["SPDXRef-BadType"],
+                "relationships": [
+                    {
+                        "spdxElementId": 1,
+                        "relationshipType": "CONTAINS",
+                        "relatedSpdxElement": "SPDXRef-BadType",
+                    }
+                ],
+            }
+        )
+    )
+    assert [item.identifier for item in malformed.components] == [
+        "SPDXRef-BadType",
+        "SPDXRef-BadLocator",
+        "SPDXRef-Conflict",
+    ]
+    assert malformed.components[0].purl is None
+    assert malformed.components[1].purl is None
+    assert malformed.components[2].purl is None
+    assert malformed.relations == (
+        subject.ProvenanceRelation("SPDXRef-DOCUMENT", "SPDXRef-BadType", "describes"),
+    )
+    assert any("Conflicting" in gap for gap in malformed.gaps)
+    assert any("packages[0].SPDXID" in gap for gap in malformed.gaps)
+    assert any("packages[1].name" in gap for gap in malformed.gaps)
+    assert any("Invalid SPDX relationship" in gap for gap in malformed.gaps)
+
+    monkeypatch.setattr(subject, "MAX_EXTERNAL_REFS_PER_COMPONENT", 1)
+    limited_ref = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "spdxVersion": "SPDX-2.3",
+                "packages": [
+                    {
+                        "SPDXID": "SPDXRef-One",
+                        "name": "one",
+                        "externalRefs": [
+                            {"referenceType": "purl", "referenceLocator": "pkg:generic/one"},
+                            {"referenceType": "purl", "referenceLocator": "pkg:generic/two"},
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    assert limited_ref.components[0].purl == "pkg:generic/one"
+    assert any("externalRef limit reached" in gap for gap in limited_ref.gaps)
+
+    monkeypatch.setattr(subject, "MAX_COMPONENTS", 1)
+    limited_components = subject.parse_provenance_json(
+        json.dumps(
+            {
+                "spdxVersion": "SPDX-2.3",
+                "packages": [
+                    {"SPDXID": "SPDXRef-One", "name": "one"},
+                    {"SPDXID": "SPDXRef-Two", "name": "two"},
+                ],
+            }
+        )
+    )
+    assert [item.identifier for item in limited_components.components] == ["SPDXRef-One"]
+    assert "Component limit reached" in limited_components.gaps
+
+    gaps = []
+    missing_version = subject._spdx({}, gaps)  # noqa: SLF001 - format parser fallback contract
+    assert missing_version.spec_version == "unknown"
+    assert gaps == ["Missing or invalid SPDX spdxVersion"]
+
+
+def test_relation_helpers_enforce_population_caps_before_append(monkeypatch):
+    monkeypatch.setattr(subject, "MAX_RELATIONS", 1)
+    relation = subject.ProvenanceRelation("one", "two", "depends_on")
+    relations = [relation]
+    gaps = []
+    assert (
+        subject._append_relation(  # noqa: SLF001 - defensive parser budget boundary
+            relation, relations, {"one", "two"}, gaps
+        )
+        is False
+    )
+    assert relations == [relation]
+    assert gaps == ["Relationship limit reached"]
+
+    monkeypatch.setattr(subject, "MAX_COMPONENTS", 1)
+    entries = subject._cyclonedx_entries(  # noqa: SLF001 - bounded traversal contract
+        {
+            "components": [
+                {"bom-ref": "one", "name": "one"},
+                {"bom-ref": "two", "name": "two"},
+                {"bom-ref": "three", "name": "three"},
+            ]
+        },
+        gaps := [],
+    )
+    assert len(entries) == 2
+    assert gaps == ["Component limit reached"]
+
+
+def test_document_and_binding_exact_boundaries(monkeypatch):
+    monkeypatch.setattr(subject, "MAX_DOCUMENT_CHARS", 2)
+    with pytest.raises(ValueError, match="Unsupported structured provenance"):
+        subject.parse_provenance_json("{}")
+
+    component = subject.ProvenanceComponent(
+        "brotli", "library", "brotli", None, None, (), "name_only"
+    )
+    binding = subject.bind_component_hash(component, "a" * 64)
+    assert binding.evidence_strength == "unresolved"
+    assert binding.gap == "Component has no declared SHA-256 to bind to the artifact"

@@ -28,3 +28,14 @@ def test_fuzz_entry_does_not_hide_unexpected_parser_failures(monkeypatch):
     monkeypatch.setattr(subject, "load_vendor_snapshot", broken)
     with pytest.raises(RuntimeError, match="unexpected invariant"):
         subject.fuzz_one(b"\1{}")
+
+
+def test_fuzz_vendor_snapshot_structured_types_are_expected_rejections():
+    malformed = {
+        "schema_version": 1,
+        "snapshot_date": "2026-10-28",
+        "vendor": [],
+        "release": "13",
+        "assertions": [],
+    }
+    subject.fuzz_one(b"\1" + json.dumps(malformed).encode())

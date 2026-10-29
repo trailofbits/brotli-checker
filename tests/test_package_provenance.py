@@ -265,6 +265,43 @@ def test_vendor_snapshot_rejects_duplicates_http_and_bad_dates():
         subject.load_vendor_snapshot(json.dumps(invalid_date))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("vendor", []),
+        ("vendor", {}),
+        ("vendor", 1),
+        ("snapshot_date", []),
+        ("release", {}),
+        ("assertions", {}),
+    ],
+)
+def test_vendor_snapshot_structured_field_types_fail_closed(field, value):
+    malformed = json.loads(snapshot())
+    malformed[field] = value
+    with pytest.raises(ValueError, match="Invalid vendor snapshot schema"):
+        subject.load_vendor_snapshot(json.dumps(malformed))
+
+
+@pytest.mark.parametrize("algorithm", [[], {}, "8", True])
+def test_rpm_digest_algorithm_structured_types_fail_closed(algorithm):
+    metadata = {
+        "name": "brotli",
+        "version": "1.2.1",
+        "release": "1",
+        "arch": "x86_64",
+        "file_digests": [
+            {
+                "path": "usr/lib64/libbrotlidec.so.1",
+                "digest": "a" * 64,
+                "algorithm": algorithm,
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="Unsupported RPM file digest"):
+        subject.package_from_rpm_metadata(metadata)
+
+
 def test_ambiguous_and_unowned_package_paths_remain_explicit():
     shared = subject.PackageFile("usr/lib/libbrotli.so")
     database = subject.PackageDatabase(
@@ -278,3 +315,20 @@ def test_ambiguous_and_unowned_package_paths_remain_explicit():
 
     assert subject.resolve_ownership("usr/lib/libbrotli.so", b"x", database).status == ("ambiguous")
     assert subject.resolve_ownership("usr/lib/other.so", b"x", database).status == "unowned"
+
+
+@pytest.mark.parametrize(
+    "compare", [subject.debian_version_compare, subject.rpm_version_compare], ids=["debian", "rpm"]
+)
+def test_native_epochs_reject_unicode_digits(compare):
+    with pytest.raises(ValueError, match="epoch"):
+        compare("\u0661:1.0", "1:1.0")
+
+
+@pytest.mark.parametrize(
+    "version", ["\u0661.0", "1.\u0661", "1.0-r\u0661"], ids=["initial", "component", "revision"]
+)
+def test_apk_numbers_are_ascii_digits(version):
+    # apk-package(5) defines number components as digits 0-9.
+    with pytest.raises(ValueError, match="apk version"):
+        subject.apk_version_compare(version, "1.0")

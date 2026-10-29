@@ -1,9 +1,12 @@
 import contextlib
 import io
 import json
+from argparse import Namespace
 
 import brotli_inventory as inventory
 import brotli_report_finalizer as finalizer
+import brotli_reporting_cli as reporting
+import pytest
 
 
 def run(*arguments):
@@ -129,3 +132,55 @@ def test_sarif_is_rendered_from_pre_attach_envelope():
     assert sarif["version"] == "2.1.0"
     assert sarif["runs"][0]["properties"]["report_sha256"]
     assert sarif["runs"][0]["results"][0]["level"] == "error"
+
+
+def reporting_args(tmp_path, **overrides):
+    values = {
+        "vendor_snapshot": [],
+        "flirt": False,
+        "flirt_references": None,
+        "catalog": None,
+        "debug_file": [],
+        "code_references": tmp_path / "references.json",
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
+
+def test_vendor_snapshot_identity_reads_the_exact_allowed_boundary(tmp_path, monkeypatch):
+    snapshot = tmp_path / "vendor.json"
+    snapshot.write_bytes(b"abc")
+    monkeypatch.setattr(reporting, "MAX_FEED_BYTES", 3)
+    captured = []
+    sentinel = object()
+
+    def collect(**kwargs):
+        captured.append(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(reporting, "collect_cli_identities", collect)
+    evidence = reporting.CliEvidence(
+        reporting_args(tmp_path, vendor_snapshot=[snapshot]), tmp_path / "fingerprints.json"
+    )
+
+    assert evidence.before is sentinel
+    assert captured[0]["vendor_feeds"][0].data == b"abc"
+    snapshot.write_bytes(b"abcd")
+    with pytest.raises(ValueError, match="exceeds metadata byte budget"):
+        evidence.collect()
+
+
+def test_enabled_flirt_uses_packaged_bundle_when_no_override_is_supplied(tmp_path, monkeypatch):
+    captured = []
+
+    def collect(**kwargs):
+        captured.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(reporting, "collect_cli_identities", collect)
+    reporting.CliEvidence(
+        reporting_args(tmp_path, flirt=True),
+        tmp_path / "fingerprints.json",
+    )
+
+    assert captured[0]["flirt_bundle"] == reporting.DEFAULT_FLIRT_BUNDLE

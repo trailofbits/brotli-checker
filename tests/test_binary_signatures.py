@@ -210,6 +210,121 @@ def test_chunk_boundary_and_sparse_access_preserve_offsets(tmp_path, monkeypatch
     assert row["format"] == "wasm"
 
 
+def test_chunk_reads_include_exactly_one_anchor_overlap(monkeypatch):
+    monkeypatch.setattr(signatures, "CHUNK_BYTES", 128)
+
+    class MeasuredBytes(bytes):
+        slices: list[tuple[int, int]]
+
+        def __new__(cls, value):
+            instance = super().__new__(cls, value)
+            instance.slices = []
+            return instance
+
+        def __getitem__(self, key):
+            if isinstance(key, slice):
+                self.slices.append((key.start, key.stop))
+            return super().__getitem__(key)
+
+    data = MeasuredBytes(b"x" * 400)
+    assert signatures.scan_tables(data, [(0, len(data))]) == ({}, False)
+    assert max(stop - start for start, stop in data.slices) == 128 + signatures.ANCHOR_BYTES - 1
+
+
+def test_overlap_boundary_anchor_counts_once_and_exact_budget_is_permitted(monkeypatch):
+    monkeypatch.setattr(signatures, "CHUNK_BYTES", 128)
+    anchor = signatures.SIGNATURES["command_lut_le"][: signatures.ANCHOR_BYTES]
+    data = b"x" * 128 + anchor
+    found, limited, used = signatures._scan_tables(data, [(0, len(data))], 1)  # noqa: SLF001
+    assert found == {}
+    assert not limited
+    assert used == 1
+    found, limited, used = signatures._scan_tables(anchor, [(0, len(anchor))], 1)  # noqa: SLF001
+    assert found == {}
+    assert not limited
+    assert used == 1
+
+
+def test_candidate_budget_is_global_across_universal_slices(monkeypatch):
+    anchor = signatures.SIGNATURES["command_lut_le"][: signatures.ANCHOR_BYTES]
+    data = anchor + b"x" + anchor
+
+    def child(offset):
+        return {
+            "kind": "mach_o",
+            "machine": "x86_64",
+            "bits": 64,
+            "byteorder": "little",
+            "ranges": {"data": [{"file_offset": offset, "size": len(anchor)}]},
+            "gaps": [],
+            "slice_offset": offset,
+        }
+
+    layout = {"kind": "mach_o_universal", "gaps": [], "slices": [child(0), child(len(anchor) + 1)]}
+    monkeypatch.setattr(signatures, "MAX_CANDIDATES", 1)
+    monkeypatch.setattr(signatures, "inspect_layout", lambda _data: layout)
+    matches, limited, _ = signatures._layout_scoped_tables(data)  # noqa: SLF001
+    assert matches == []
+    assert limited
+
+
+def test_pe_loader_address_covers_table_at_exact_data_boundaries():
+    prefix = b"mapped-prefix"
+    table = signatures.SIGNATURES["command_lut_le"]
+    result = signatures.recognize_decoder_data(pe_data(prefix + table))
+    row = result["matches"][0]
+    assert row["file_offset"] == 0x200 + len(prefix)
+    assert row["virtual_addresses"] == [0x1000 + len(prefix)]
+    assert result["reason"] == (
+        "Decoder table signatures identify data, not patch state or executable use."
+    )
+
+
+def test_elf_virtual_address_comes_only_from_the_containing_load_segment():
+    table = signatures.SIGNATURES["command_lut_le"]
+    prefix = b"inside-second-segment"
+    first = b"ordinary"
+    header_size = matcher.ELF_HEADER.size
+    program_size = matcher.PROGRAM_HEADER.size
+    first_offset = header_size + 2 * program_size
+    second_offset = first_offset + len(first)
+    header = matcher.ELF_HEADER.pack(
+        b"\x7fELF\x02\x01\x01" + bytes(9),
+        3,
+        matcher.EM_AARCH64,
+        1,
+        0,
+        header_size,
+        0,
+        0,
+        header_size,
+        program_size,
+        2,
+        0,
+        0,
+        0,
+    )
+    programs = b"".join(
+        [
+            matcher.PROGRAM_HEADER.pack(
+                1, 4, first_offset, 0x1000, 0x1000, len(first), len(first), 1
+            ),
+            matcher.PROGRAM_HEADER.pack(
+                1,
+                4,
+                second_offset,
+                0x8000,
+                0x8000,
+                len(prefix) + len(table),
+                len(prefix) + len(table),
+                1,
+            ),
+        ]
+    )
+    result = signatures.recognize_decoder_data(header + programs + first + prefix + table)
+    assert result["matches"][0]["virtual_addresses"] == [0x8000 + len(prefix)]
+
+
 def test_load_segment_beyond_six_gibibytes_skips_sparse_padding(tmp_path, monkeypatch):
     table = signatures.SIGNATURES["command_lut_le"]
     template = elf(table)

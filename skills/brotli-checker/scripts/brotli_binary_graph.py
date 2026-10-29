@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 import json
 import re
+import struct
 from bisect import bisect_right, insort
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
@@ -37,8 +38,10 @@ PT_LOAD = 1
 PT_GNU_EH_FRAME = 0x6474E550
 PF_X = 1
 SHT_RELA = 4
+SHT_NOBITS = 8
 SHT_REL = 9
 SHN_UNDEF = 0
+SHF_ALLOC = 2
 DW_EH_PE_OMIT = 0xFF
 DW_EH_PE_PCREL = 0x10
 DW_EH_PE_DATAREL = 0x30
@@ -70,6 +73,22 @@ AARCH64_CHUNK_BYTES = 64 * 1024
 DERIVED_FUNCTION_METHODS = frozenset(
     {"elf_symbol", "eh_frame_hdr", "direct_branch_target", "reference_site_only"}
 )
+RELOCATION_WIDTHS = {
+    EM_X86_64: {2: 4, 4: 4, 9: 4, 10: 4, 11: 4, 41: 4, 42: 4},
+    EM_AARCH64: {
+        257: 8,
+        260: 8,
+        261: 4,
+        275: 4,
+        277: 4,
+        282: 4,
+        283: 4,
+        311: 4,
+        312: 4,
+        313: 4,
+        314: 4,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -249,40 +268,85 @@ class _GraphBuilder:
             raise ValueError(msg)
         self.layout = ELFLayout.of(self.header)
         self.machine = self.header[2]
-        self.segments = [
-            (offset, virtual, size, flags)
-            for kind, flags, offset, virtual, _, size, _, _ in program_headers(data, self.header)
-            if kind == PT_LOAD and size
-        ]
+        self.gaps = _GapCollector(limits.max_gaps)
+        self.segments = []
+        for kind, flags, offset, virtual, _, size, memory_size, _ in program_headers(
+            data, self.header
+        ):
+            if kind != PT_LOAD or not size:
+                continue
+            try:
+                checked_range(data, offset, size)
+            except ValueError:
+                self.gaps.add(
+                    "malformed_load_segment",
+                    "PT_LOAD file range is outside the supplied artifact",
+                    offset,
+                )
+                continue
+            if size > memory_size:
+                self.gaps.add(
+                    "malformed_load_segment",
+                    "PT_LOAD file size exceeds its memory size",
+                    offset,
+                )
+                continue
+            self.segments.append((offset, virtual, size, flags))
         self.functions: dict[int, _FunctionBuilder] = {}
         self.function_starts: list[int] = []
+        self.function_owner_ranges: list[tuple[int, int, int]] = []
+        self.function_owner_starts: list[int] = []
+        self.function_covered_ranges: list[tuple[int, int]] = []
+        self.function_covered_starts: list[int] = []
+        self.function_bounds_finalized = False
         self.artifacts: dict[str, ArtifactNode] = {}
         self.edges: set[GraphEdge] = set()
-        self.gaps = _GapCollector(limits.max_gaps)
         self.instructions_seen = 0
         self.decode_bytes = 0
+
+    def _unique_mapping(
+        self,
+        candidates: set[int],
+        *,
+        file_offset: int | None = None,
+    ) -> int | None:
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        if len(candidates) > 1:
+            self.gaps.add(
+                "ambiguous_load_mapping",
+                "ELF range has multiple conflicting PT_LOAD mappings",
+                file_offset,
+            )
+        return None
 
     def address_to_offset(
         self, address: int, size: int = 1, *, executable: bool = False
     ) -> int | None:
-        for offset, virtual, file_size, flags in self.segments:
-            if executable and not flags & PF_X:
-                continue
-            if virtual <= address and address + size <= virtual + file_size:
-                return offset + address - virtual
-        return None
+        candidates = {
+            offset + address - virtual
+            for offset, virtual, file_size, flags in self.segments
+            if (not executable or flags & PF_X)
+            and virtual <= address
+            and address + size <= virtual + file_size
+        }
+        return self._unique_mapping(candidates)
 
     def offset_to_address(self, offset: int, size: int = 1) -> int | None:
-        for segment_offset, virtual, file_size, _ in self.segments:
-            if segment_offset <= offset and offset + size <= segment_offset + file_size:
-                return virtual + offset - segment_offset
-        return None
+        candidates = {
+            virtual + offset - segment_offset
+            for segment_offset, virtual, file_size, _ in self.segments
+            if segment_offset <= offset and offset + size <= segment_offset + file_size
+        }
+        return self._unique_mapping(candidates, file_offset=offset)
 
     def executable_end(self, offset: int) -> int | None:
-        for segment_offset, _, file_size, flags in self.segments:
-            if flags & PF_X and segment_offset <= offset < segment_offset + file_size:
-                return segment_offset + file_size
-        return None
+        candidates = {
+            segment_offset + file_size
+            for segment_offset, _, file_size, flags in self.segments
+            if flags & PF_X and segment_offset <= offset < segment_offset + file_size
+        }
+        return self._unique_mapping(candidates, file_offset=offset)
 
     def add_function(
         self,
@@ -298,14 +362,87 @@ class _GraphBuilder:
             return None
         value = self.functions.get(offset)
         if value is None:
+            if self.function_bounds_finalized and self._range_overlaps_functions(
+                offset, offset + max(size, 1)
+            ):
+                self.gaps.add(
+                    "ambiguous_function_bounds",
+                    "Derived function bounds overlap an existing distinct function",
+                    offset,
+                )
+                return None
             value = _FunctionBuilder(offset, address, max(size, 1), set(), set())
             self.functions[offset] = value
             insort(self.function_starts, offset)
+            if self.function_bounds_finalized:
+                insort(self.function_owner_ranges, (offset, offset + value.size, offset))
+                insort(self.function_owner_starts, offset)
+                insort(self.function_covered_ranges, (offset, offset + value.size))
+                insort(self.function_covered_starts, offset)
+        previous_size = value.size
         value.size = max(value.size, size, 1)
         if name:
             value.names.add(name)
         value.methods.add(method)
+        if self.function_bounds_finalized and value.size != previous_size:
+            self.finalize_function_bounds()
         return _function_id(offset)
+
+    def finalize_function_bounds(self) -> None:  # noqa: C901, PLR0912 -- Interval sweep.
+        events: dict[int, list[tuple[bool, int]]] = {}
+        for value in self.functions.values():
+            events.setdefault(value.file_offset, []).append((True, value.file_offset))
+            events.setdefault(value.file_offset + value.size, []).append((False, value.file_offset))
+        owners: list[tuple[int, int, int]] = []
+        covered: list[tuple[int, int]] = []
+        ambiguous: list[tuple[int, int]] = []
+        active: set[int] = set()
+        previous: int | None = None
+        for position in sorted(events):
+            if previous is not None and previous < position and active:
+                if covered and covered[-1][1] == previous:
+                    covered[-1] = (covered[-1][0], position)
+                else:
+                    covered.append((previous, position))
+                if len(active) == 1:
+                    owner = next(iter(active))
+                    if owners and owners[-1][1:] == (previous, owner):
+                        owners[-1] = (owners[-1][0], position, owner)
+                    else:
+                        owners.append((previous, position, owner))
+                elif ambiguous and ambiguous[-1][1] == previous:
+                    ambiguous[-1] = (ambiguous[-1][0], position)
+                else:
+                    ambiguous.append((previous, position))
+            for starting, owner in events[position]:
+                if starting:
+                    active.add(owner)
+                else:
+                    active.discard(owner)
+            previous = position
+        self.function_owner_ranges = owners
+        self.function_owner_starts = [item[0] for item in owners]
+        self.function_covered_ranges = covered
+        self.function_covered_starts = [item[0] for item in covered]
+        self.function_bounds_finalized = True
+        for start, _ in ambiguous:
+            self.gaps.add(
+                "ambiguous_function_bounds",
+                "Distinct function starts have overlapping bounds; ownership is unresolved",
+                start,
+            )
+
+    def _range_overlaps_functions(self, start: int, end: int) -> bool:
+        if not self.function_covered_ranges or end <= start:
+            return False
+        index = bisect_right(self.function_covered_starts, start) - 1
+        if index >= 0 and self.function_covered_ranges[index][1] > start:
+            return True
+        next_index = index + 1
+        return (
+            next_index < len(self.function_covered_ranges)
+            and self.function_covered_ranges[next_index][0] < end
+        )
 
     def add_artifact(self, seed: GraphSeed) -> ArtifactNode:
         node = ArtifactNode(
@@ -319,19 +456,31 @@ class _GraphBuilder:
         self.artifacts[node.identifier] = node
         return node
 
-    def function_at(self, offset: int) -> _FunctionBuilder | None:
-        if not self.functions:
+    def function_at(self, offset: int, size: int = 1) -> _FunctionBuilder | None:
+        if not self.function_bounds_finalized:
+            self.finalize_function_bounds()
+        if not self.function_owner_ranges:
             return None
-        index = bisect_right(self.function_starts, offset) - 1
+        index = bisect_right(self.function_owner_starts, offset) - 1
         if index < 0:
             return None
-        value = self.functions[self.function_starts[index]]
-        return value if offset < value.file_offset + value.size else None
+        start, end, owner = self.function_owner_ranges[index]
+        if start <= offset and offset + size <= end:
+            return self.functions[owner]
+        if self._range_overlaps_functions(offset, offset + size):
+            self.gaps.add(
+                "ambiguous_function_bounds",
+                "Instruction range does not have unique function ownership",
+                offset,
+            )
+        return None
 
     def source_function(self, offset: int, address: int, size: int) -> str | None:
-        value = self.function_at(offset)
+        value = self.function_at(offset, size)
         if value is not None:
             return _function_id(value.file_offset)
+        if self._range_overlaps_functions(offset, offset + size):
+            return None
         self.gaps.add(
             "function_bounds_unavailable",
             "Reference site has no symbol, unwind, or supplied function bounds",
@@ -340,14 +489,19 @@ class _GraphBuilder:
         return self.add_function(offset, address, size, name=None, method="reference_site_only")
 
     def artifact_for_offset(self, offset: int) -> ArtifactNode | None:
-        return next(
-            (
-                artifact
-                for artifact in self.artifacts.values()
-                if artifact.file_offset <= offset < artifact.file_offset + artifact.size
-            ),
-            None,
-        )
+        candidates = [
+            artifact
+            for artifact in self.artifacts.values()
+            if artifact.file_offset <= offset < artifact.file_offset + artifact.size
+        ]
+        if len(candidates) > 1:
+            self.gaps.add(
+                "ambiguous_artifact_ownership",
+                "Reference target belongs to multiple supplied artifact seeds",
+                offset,
+            )
+            return None
+        return candidates[0] if candidates else None
 
     def target_function(self, offset: int, address: int) -> str | None:
         value = self.function_at(offset)
@@ -489,7 +643,49 @@ def _validate_seeds(builder: _GraphBuilder, seeds: Iterable[GraphSeed]) -> None:
             builder.add_artifact(seed)
 
 
-def _read_symbol_functions(builder: _GraphBuilder) -> None:  # noqa: C901
+def _owned_symbol_offset(  # noqa: PLR0913 -- Complete ownership query.
+    builder: _GraphBuilder,
+    sections: list[tuple],
+    section_index: int,
+    address: int,
+    size: int,
+    *,
+    executable: bool,
+    gap_code: str,
+    subject: str,
+) -> int | None:
+    if section_index >= len(sections):
+        builder.gaps.add(gap_code, f"{subject} has no valid owning section")
+        return None
+    owner = sections[section_index]
+    required_flags = SHF_ALLOC | (PF_X if executable else 0)
+    span = max(size, 1)
+    if (
+        owner[1] == SHT_NOBITS
+        or owner[2] & required_flags != required_flags
+        or address < owner[3]
+        or address + span > owner[3] + owner[5]
+    ):
+        builder.gaps.add(gap_code, f"{subject} is outside its allocated file-backed section")
+        return None
+    try:
+        checked_range(builder.data, owner[4], owner[5])
+    except ValueError:
+        builder.gaps.add(gap_code, f"{subject} section is outside the supplied artifact")
+        return None
+    expected = owner[4] + address - owner[3]
+    mapped = builder.address_to_offset(address, span, executable=executable)
+    if mapped != expected:
+        builder.gaps.add(
+            gap_code,
+            f"{subject} section disagrees with its PT_LOAD mapping",
+            expected,
+        )
+        return None
+    return mapped
+
+
+def _read_symbol_functions_checked(builder: _GraphBuilder) -> None:  # noqa: C901
     if not builder.header[12]:
         return
     sections = section_headers(builder.data, builder.header)
@@ -515,11 +711,27 @@ def _read_symbol_functions(builder: _GraphBuilder) -> None:  # noqa: C901
         ):
             if info & 0xF != STT_FUNC or index == SHN_UNDEF:
                 continue
-            offset = builder.address_to_offset(address, max(size, 1), executable=True)
+            offset = _owned_symbol_offset(
+                builder,
+                sections,
+                index,
+                address,
+                size,
+                executable=True,
+                gap_code="inconsistent_function_symbol",
+                subject="Function symbol",
+            )
             if offset is None:
                 continue
             name = _string(builder.data, string_start, string_end, name_offset)
             builder.add_function(offset, address, max(size, 1), name=name, method="elf_symbol")
+
+
+def _read_symbol_functions(builder: _GraphBuilder) -> None:
+    try:
+        _read_symbol_functions_checked(builder)
+    except (ValueError, struct.error) as error:
+        builder.gaps.add("malformed_symbols", f"Cannot parse ELF function symbols: {error}")
 
 
 def _string(data: Buffer, start: int, end: int, offset: int) -> str | None:
@@ -558,15 +770,23 @@ def _parse_eh_frame_header(builder: _GraphBuilder, offset: int, virtual: int, si
         msg = "Unsupported .eh_frame_hdr version"
         raise ValueError(msg)
     cursor = 4
-    _, cursor = _encoded_value(raw, cursor, raw[1], virtual, virtual, builder.layout.bits)
-    count, cursor = _encoded_value(raw, cursor, raw[2], virtual, virtual, builder.layout.bits)
+    _, cursor = _encoded_value(
+        raw, cursor, raw[1], virtual, virtual, builder.layout.bits, builder.layout.byteorder
+    )
+    count, cursor = _encoded_value(
+        raw, cursor, raw[2], virtual, virtual, builder.layout.bits, builder.layout.byteorder
+    )
     if count < 0 or count > builder.limits.max_functions:
         msg = ".eh_frame_hdr function count exceeds the graph limit"
         raise ValueError(msg)
     starts = []
     for _ in range(count):
-        address, cursor = _encoded_value(raw, cursor, raw[3], virtual, virtual, builder.layout.bits)
-        _, cursor = _encoded_value(raw, cursor, raw[3], virtual, virtual, builder.layout.bits)
+        address, cursor = _encoded_value(
+            raw, cursor, raw[3], virtual, virtual, builder.layout.bits, builder.layout.byteorder
+        )
+        _, cursor = _encoded_value(
+            raw, cursor, raw[3], virtual, virtual, builder.layout.bits, builder.layout.byteorder
+        )
         file_offset = builder.address_to_offset(address, 1, executable=True)
         if file_offset is not None:
             starts.append((file_offset, address))
@@ -591,6 +811,7 @@ def _encoded_value(  # noqa: PLR0913, PLR0917
     section_address: int,
     datarel_base: int,
     bits: int,
+    byteorder: Literal["little", "big"] = "little",
 ) -> tuple[int, int]:
     if encoding == DW_EH_PE_OMIT or encoding & DW_EH_PE_INDIRECT:
         msg = "Unsupported omitted/indirect .eh_frame_hdr encoding"
@@ -611,7 +832,7 @@ def _encoded_value(  # noqa: PLR0913, PLR0917
     if cursor + size > len(data):
         msg = "Truncated .eh_frame_hdr table"
         raise ValueError(msg)
-    value = int.from_bytes(data[cursor : cursor + size], "little", signed=signed)
+    value = int.from_bytes(data[cursor : cursor + size], byteorder, signed=signed)
     application = encoding & 0x70
     if application == DW_EH_PE_PCREL:
         value += section_address + cursor
@@ -891,10 +1112,10 @@ def _decode_aarch64(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
     )
     for window in _decode_ranges(builder, remaining, alignment=4):
         pending_adrp: tuple[int, int, int] | None = None
-        if (window.file_offset - window.virtual_address) % 4:
+        if (window.file_offset - window.virtual_address) % 4 or window.size % 4:
             builder.gaps.add(
                 "unsupported_instruction_mode",
-                "AArch64 executable mapping is not instruction aligned",
+                "AArch64 executable mapping or decode window is not instruction aligned",
                 window.file_offset,
             )
             continue
@@ -944,11 +1165,12 @@ def _decode_aarch64(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
                     _add_direct_branch(
                         builder,
                         offset,
+                        4,
                         address + immediate,
                         call=word & 0xFC000000 == AARCH64_BL,
                     )
                 elif word & 0xFFFFFC1F in (AARCH64_BR, AARCH64_BLR):
-                    if builder.function_at(offset) is not None:
+                    if builder.function_at(offset, 4) is not None:
                         builder.gaps.add(
                             "unresolved_indirect_transfer",
                             "AArch64 indirect branch/call target is unresolved",
@@ -962,12 +1184,13 @@ def _sign_extend(value: int, bits: int) -> int:
     return (value ^ sign) - sign
 
 
-def _add_data_reference(
+def _add_data_reference(  # noqa: PLR0913 -- Bound instruction and target evidence.
     builder: _GraphBuilder,
     instruction_offset: int,
     instruction_address: int,
     target: int,
     *,
+    instruction_size: int = 4,
     kind: Literal["pc_relative_reference", "absolute_reference"] = "pc_relative_reference",
 ) -> None:
     target_offset = builder.address_to_offset(target)
@@ -976,7 +1199,7 @@ def _add_data_reference(
     artifact = builder.artifact_for_offset(target_offset)
     if artifact is None:
         return
-    source = builder.source_function(instruction_offset, instruction_address, 4)
+    source = builder.source_function(instruction_offset, instruction_address, instruction_size)
     if source is not None:
         builder.add_edge(
             GraphEdge(
@@ -992,6 +1215,7 @@ def _add_data_reference(
 def _add_direct_branch(
     builder: _GraphBuilder,
     instruction_offset: int,
+    instruction_size: int,
     target: int,
     *,
     call: bool,
@@ -999,7 +1223,7 @@ def _add_direct_branch(
     target_offset = builder.address_to_offset(target, executable=True)
     if target_offset is None:
         return
-    source_value = builder.function_at(instruction_offset)
+    source_value = builder.function_at(instruction_offset, instruction_size)
     source = _function_id(source_value.file_offset) if source_value is not None else None
     target_id = builder.target_function(target_offset, target)
     if source is not None and target_id is not None:
@@ -1024,6 +1248,12 @@ def _decode_x86(  # noqa: C901, PLR0912
         if builder.instructions_seen > builder.limits.max_instructions:
             builder.gaps.add("instruction_limit", "Decoded-instruction limit reached")
             return
+        if not instruction.raw:
+            builder.gaps.add(
+                "unbound_disassembly",
+                "Decoded instruction has no bytes to bind to the executable file",
+            )
+            continue
         offset = builder.address_to_offset(
             instruction.address, len(instruction.raw), executable=True
         )
@@ -1049,29 +1279,36 @@ def _decode_x86(  # noqa: C901, PLR0912
             and mnemonic in X86_CALLS
         ):
             target = instruction.address + len(raw) + int.from_bytes(raw[1:], "little", signed=True)
-            _add_direct_branch(builder, offset, target, call=True)
+            _add_direct_branch(builder, offset, len(raw), target, call=True)
         elif raw[0] in (X86_JUMP_REL32, X86_JUMP_REL8) and mnemonic in X86_JUMPS:
             width = 4 if raw[0] == X86_JUMP_REL32 else 1
             if len(raw) == width + 1:
                 target = (
                     instruction.address + len(raw) + int.from_bytes(raw[1:], "little", signed=True)
                 )
-                _add_direct_branch(builder, offset, target, call=False)
+                _add_direct_branch(builder, offset, len(raw), target, call=False)
         elif mnemonic in X86_CALLS | X86_JUMPS:
-            if builder.function_at(offset) is not None:
+            if builder.function_at(offset, len(raw)) is not None:
                 builder.gaps.add(
                     "unresolved_indirect_transfer",
                     "x86-64 indirect or unsupported branch target is unresolved",
                 )
         if instruction.pc_relative_targets:
             for target in instruction.pc_relative_targets:
-                _add_data_reference(builder, offset, instruction.address, target)
+                _add_data_reference(
+                    builder,
+                    offset,
+                    instruction.address,
+                    target,
+                    instruction_size=len(raw),
+                )
         for target in instruction.absolute_targets:
             _add_data_reference(
                 builder,
                 offset,
                 instruction.address,
                 target,
+                instruction_size=len(raw),
                 kind="absolute_reference",
             )
         rip_operand = "(%rip)" in instruction.operands or "[rip" in instruction.operands
@@ -1091,7 +1328,13 @@ def _decode_x86(  # noqa: C901, PLR0912
                     offset,
                 )
             else:
-                _add_data_reference(builder, offset, instruction.address, computed)
+                _add_data_reference(
+                    builder,
+                    offset,
+                    instruction.address,
+                    computed,
+                    instruction_size=len(raw),
+                )
     if not supplied:
         builder.gaps.add(
             "disassembly_unavailable",
@@ -1099,15 +1342,31 @@ def _decode_x86(  # noqa: C901, PLR0912
         )
 
 
-def _read_relocations(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
+def _relocation_symbol_offset(
+    builder: _GraphBuilder,
+    sections: list[tuple],
+    section_index: int,
+    address: int,
+    size: int,
+) -> int | None:
+    return _owned_symbol_offset(
+        builder,
+        sections,
+        section_index,
+        address,
+        size,
+        executable=False,
+        gap_code="inconsistent_relocation_symbol",
+        subject="Relocation symbol",
+    )
+
+
+def _read_relocations_checked(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
     if not builder.header[12]:
         return
     sections = section_headers(builder.data, builder.header)
     relocations_seen = 0
-    supported = {
-        EM_X86_64: {2, 4, 9, 10, 11, 41, 42},
-        EM_AARCH64: {257, 260, 261, 275, 277, 282, 283, 311, 312, 313, 314},
-    }.get(builder.machine, set())
+    widths = RELOCATION_WIDTHS.get(builder.machine, {})
     for relocation in sections:
         if relocation[1] not in (SHT_REL, SHT_RELA):
             continue
@@ -1130,7 +1389,7 @@ def _read_relocations(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
                 return
             site_address, info = row[:2]
             kind = info & (0xFFFFFFFF if builder.layout.bits == ELF64_BITS else 0xFF)
-            if kind not in supported:
+            if kind not in widths:
                 builder.gaps.add(
                     "unsupported_relocation",
                     f"Unsupported relocation type {kind} for machine {builder.machine}",
@@ -1158,11 +1417,18 @@ def _read_relocations(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
                     "Relocation target is an undefined external symbol",
                 )
                 continue
-            site_offset = builder.address_to_offset(site_address, executable=True)
-            target_offset = builder.address_to_offset(symbol_address, max(symbol_size, 1))
+            width = widths[kind]
+            site_offset = builder.address_to_offset(site_address, width, executable=True)
+            target_offset = _relocation_symbol_offset(
+                builder,
+                sections,
+                symbol_section,
+                symbol_address,
+                symbol_size,
+            )
             if site_offset is None or target_offset is None:
                 continue
-            source = builder.source_function(site_offset, site_address, 1)
+            source = builder.source_function(site_offset, site_address, width)
             artifact = builder.artifact_for_offset(target_offset)
             target_function = builder.function_at(target_offset)
             target = (
@@ -1184,6 +1450,13 @@ def _read_relocations(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
                 )
 
 
+def _read_relocations(builder: _GraphBuilder) -> None:
+    try:
+        _read_relocations_checked(builder)
+    except (ValueError, struct.error) as error:
+        builder.gaps.add("malformed_relocation", f"Cannot parse ELF relocations: {error}")
+
+
 def build_elf_graph(  # noqa: C901, PLR0913
     data: Buffer,
     seeds: Iterable[GraphSeed] = (),
@@ -1199,6 +1472,7 @@ def build_elf_graph(  # noqa: C901, PLR0913
     _validate_seeds(builder, seeds)
     _read_symbol_functions(builder)
     _read_eh_frame_starts(builder)
+    builder.finalize_function_bounds()
     _read_relocations(builder)
     supplied: Iterable[DecodedInstruction]
     if isinstance(instructions, InstructionPacket):

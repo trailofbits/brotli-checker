@@ -4,10 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import Counter
 from pathlib import Path
+
+from mutation_shards import (
+    MANIFEST_NAME,
+    decode_population,
+    population_sha256,
+    report_population,
+    sha256_file,
+    shard_plan,
+    validate_manifest,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "skills/brotli-checker/scripts"
@@ -109,6 +120,109 @@ def combine_reports(reports: list[dict]) -> dict:
     }
 
 
+def _load_manifested_report(path: Path) -> tuple[dict, dict, Counter]:  # noqa: C901
+    raw = path.read_bytes()
+    report = json.loads(raw)
+    if not isinstance(report, dict):
+        msg = "Mutation report root must be an object."
+        raise ValueError(msg)  # noqa: TRY004 - JSON value boundary.
+    rows, _ = validate_results(report)
+    manifest_path = path.parent / MANIFEST_NAME
+    manifest = validate_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
+    module = manifest["module"]
+    source = SOURCE / f"{module}.py"
+    if not source.is_file():
+        msg = "Mutation shard manifest names an unknown scanner module."
+        raise ValueError(msg)
+    plan = shard_plan(module)
+    shard = manifest["shard"]
+    if shard not in plan or manifest["operators"] != list(plan[shard]):
+        msg = "Mutation shard manifest is not in the maintained operator plan."
+        raise ValueError(msg)
+    if manifest["source_sha256"] != sha256_file(source):
+        msg = "Mutation shard source identity does not match the checked-out scanner."
+        raise ValueError(msg)
+    if manifest["report_sha256"] != hashlib.sha256(raw).hexdigest():
+        msg = "Mutation shard report digest does not match its manifest."
+        raise ValueError(msg)
+    if len(rows) != manifest["shard_mutant_count"]:
+        msg = "Mutation shard result count does not match its manifest."
+        raise ValueError(msg)
+    allowed_operators = set(plan[shard])
+    for row in rows:
+        if (
+            Path(row.get("file_path", "")).name != source.name
+            or row.get("operator") not in allowed_operators
+        ):
+            msg = "Mutation shard result is outside its declared file/operator population."
+            raise ValueError(msg)
+    result_population = report_population(rows)
+    if population_sha256(result_population) != manifest["shard_result_population_sha256"]:
+        msg = "Mutation shard result population digest does not match its manifest."
+        raise ValueError(msg)
+    population = decode_population(manifest["shard_population"])
+    return report, manifest, population
+
+
+def combine_manifested_reports(  # noqa: C901 - One cross-shard validation boundary.
+    paths: list[Path], *, expected_modules: set[str] | None = None
+) -> dict:
+    """Combine hash-bound operator shards only after proving the complete maintained plan."""
+    expected = (
+        expected_modules
+        if expected_modules is not None
+        else {path.stem for path in SOURCE.glob("*.py")}
+    )
+    by_module: dict[str, dict[str, tuple[dict, dict, Counter]]] = {}
+    for path in paths:
+        report, manifest, population = _load_manifested_report(path)
+        module, shard = manifest["module"], manifest["shard"]
+        if shard in by_module.setdefault(module, {}):
+            msg = "Duplicate mutation operator shard."
+            raise ValueError(msg)
+        by_module[module][shard] = report, manifest, population
+    if set(by_module) != expected:
+        msg = "Mutation shards do not cover exactly every scanner module."
+        raise ValueError(msg)
+
+    results = []
+    for module in sorted(by_module):
+        shards = by_module[module]
+        plan = shard_plan(module)
+        if set(shards) != set(plan):
+            msg = f"Mutation operator shards are incomplete for {module}."
+            raise ValueError(msg)
+        manifests = [value[1] for value in shards.values()]
+        default_counts = {item["default_mutant_count"] for item in manifests}
+        default_digests = {item["default_population_sha256"] for item in manifests}
+        if len(default_counts) != 1 or len(default_digests) != 1:
+            msg = f"Mutation shards disagree about the default population for {module}."
+            raise ValueError(msg)
+        combined_population = Counter()
+        for shard in plan:
+            report, _, population = shards[shard]
+            combined_population.update(population)
+            results.extend(
+                {**row, "file_path": str(SOURCE / f"{module}.py")} for row in report["results"]
+            )
+        if sum(combined_population.values()) != next(iter(default_counts)) or population_sha256(
+            combined_population
+        ) != next(iter(default_digests)):
+            msg = f"Mutation operator shards change the default population for {module}."
+            raise ValueError(msg)
+    counts = Counter(row["status"] for row in results)
+    return {
+        "summary": {"total": len(results), **{key: counts[key] for key in STATUSES}},
+        "results": results,
+    }
+
+
+def _reject_mixed_manifest_modes(manifests: list[bool]) -> None:
+    if any(manifests) and not all(manifests):
+        msg = "Mutation evidence mixes manifested and legacy shards."
+        raise ValueError(msg)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -116,8 +230,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        reports = [json.loads(path.read_text(encoding="utf-8")) for path in args.reports]
-        report = combine_reports(reports) if len(reports) > 1 else reports[0]
+        manifests = [(path.parent / MANIFEST_NAME).is_file() for path in args.reports]
+        _reject_mixed_manifest_modes(manifests)
+        if manifests and all(manifests):
+            report = combine_manifested_reports(args.reports)
+        else:
+            reports = [json.loads(path.read_text(encoding="utf-8")) for path in args.reports]
+            report = combine_reports(reports) if len(reports) > 1 else reports[0]
         score = check_report(report, {path.resolve() for path in SOURCE.glob("*.py")})
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"Mutation check failed: {error}", file=sys.stderr)

@@ -452,7 +452,7 @@ def package_from_rpm_metadata(  # noqa: C901 -- Bounded RPM identity/digest vali
         path = _path(entry.get("path", ""))
         algorithm = entry.get("algorithm")
         digest = entry.get("digest")
-        if algorithm not in algorithms or not isinstance(digest, str):
+        if type(algorithm) is not int or algorithm not in algorithms or not isinstance(digest, str):
             msg = f"Unsupported RPM file digest: {path}"
             raise ValueError(msg)
         algorithm_name, size = algorithms[algorithm]
@@ -624,7 +624,7 @@ def _split_debian(value: str) -> tuple[int, str, str]:
         raise ValueError(msg)
     epoch_text, separator, remainder = value.partition(":")
     if separator:
-        if not epoch_text.isdigit():
+        if not epoch_text.isascii() or not epoch_text.isdigit():
             msg = "Invalid Debian version epoch"
             raise ValueError(msg)
         epoch = int(epoch_text)
@@ -689,7 +689,7 @@ def _split_rpm(value: str) -> tuple[int, str, str]:
         raise ValueError(msg)
     epoch_text, separator, remainder = value.partition(":")
     if separator:
-        if not epoch_text.isdigit():
+        if not epoch_text.isascii() or not epoch_text.isdigit():
             msg = "Invalid RPM version epoch"
             raise ValueError(msg)
         epoch = int(epoch_text)
@@ -770,7 +770,7 @@ def rpm_version_compare(left: str, right: str) -> int:
 def _apk_tokens(  # noqa: C901, PLR0912, PLR0915 -- Mirrors apk token state.
     value: str,
 ) -> list[tuple[int, int | str, str]]:
-    if not value or len(value) > MAX_FIELD_CHARS or not value[0].isdigit():
+    if not value or not value.isascii() or len(value) > MAX_FIELD_CHARS or not value[0].isdigit():
         msg = "Invalid apk version"
         raise ValueError(msg)
     tokens: list[tuple[int, int | str, str]] = []
@@ -883,6 +883,7 @@ def load_vendor_snapshot(text: str) -> VendorSnapshot:  # noqa: C901
     if (
         type(metadata["schema_version"]) is not int
         or metadata["schema_version"] != 1
+        or not isinstance(vendor, str)
         or vendor not in {"debian", "ubuntu", "redhat"}
         or not isinstance(snapshot_date, str)
         or DATE.fullmatch(snapshot_date) is None

@@ -143,11 +143,80 @@ def docker_save(layers):
     return tar_bytes(entries)
 
 
+def test_payload_limits_subranges_and_names_enforce_exact_boundaries():
+    with pytest.raises(ValueError, match="nonnegative"):
+        payloads.PayloadLimits(max_members=-1)
+    with pytest.raises(payloads.PayloadError, match="outside input"):
+        payloads.SubrangeStream(b"abc", 2, 2)
+    stream = payloads.SubrangeStream(b"012345", 1, 3)
+    assert stream.readable()
+    assert stream.seekable()
+    assert stream.tell() == 0
+    assert stream.read(2) == b"12"
+    assert stream.seek(-1, io.SEEK_CUR) == 1
+    assert stream.read() == b"23"
+    assert stream.seek(-1, io.SEEK_END) == 2
+    assert stream.read() == b"3"
+    with pytest.raises(ValueError, match="whence"):
+        stream.seek(0, 99)
+    with pytest.raises(OSError, match="negative"):
+        stream.seek(-1)
+    stream.close()
+    with pytest.raises(ValueError, match="closed"):
+        stream.read(1)
+    for unsafe in ("", "/absolute", "../parent", "control\nname", "x" * 4097):
+        with pytest.raises(payloads.PayloadError):
+            payloads._safe_name(unsafe)  # noqa: SLF001 -- Direct defensive boundary.
+    with pytest.raises(payloads.PayloadError, match="range outside"):
+        payloads._checked(b"abc", 2, 2)  # noqa: SLF001 -- Direct range boundary.
+
+
+def test_bounded_member_total_is_independent_of_per_member_limit():
+    members = iter(
+        [
+            payloads.PayloadMember("a", 3, b"aaa"),
+            payloads.PayloadMember("b", 3, b"bbb"),
+        ]
+    )
+    with pytest.raises(payloads.PayloadError, match="cumulative"):
+        list(
+            payloads._bounded_members(  # noqa: SLF001 -- Direct aggregate-limit contract.
+                members,
+                payloads.PayloadLimits(max_members=2, max_member_bytes=3, max_total_bytes=5),
+            )
+        )
+
+
+def test_payload_kind_and_dispatch_cover_each_supported_member_family():
+    cpio = cpio_newc([("file", b"x", stat.S_IFREG | 0o600)])
+    ar = ar_archive(("file/", b"x"))
+    deb = ar_archive(("debian-binary/", b"2.0\n"), ("data.tar/", b"x"))
+    assert payloads.payload_kind(ar) == "ar"
+    assert payloads.payload_kind(deb) == "deb"
+    assert payloads.payload_kind(payloads.RPM_MAGIC + bytes(100)) == "rpm"
+    assert payloads.payload_kind(payloads.ZSTD_MAGIC + bytes(4)) == "zstd"
+    assert payloads.payload_kind(cpio) == "cpio"
+    assert payloads.payload_kind(b"opaque", "image.oci") == "oci"
+    assert payloads.payload_kind(b"opaque") is None
+    assert next(payloads.iter_payload_members(ar, "ar")).read() == b"x"
+    assert next(payloads.iter_payload_members(deb, "deb")).name == "data.tar"
+    assert next(payloads.iter_payload_members(cpio, "cpio")).read() == b"x"
+    with pytest.raises(payloads.PayloadError, match="unsupported payload kind"):
+        next(payloads.iter_payload_members(b"opaque", "unknown"))
+
+
 def test_oci_probe_does_not_apply_oci_name_rules_to_ordinary_tar():
     ordinary = tar_bytes([("hostile\nname", b"data", "file")])
     assert not payloads.oci_archive_candidate(ordinary)
     image = docker_save({"layer/layer.tar": tar_bytes([("app/file", b"data", "file")])})
     assert payloads.oci_archive_candidate(image)
+
+
+def test_oci_probe_limits_and_malformed_tar_are_fail_closed():
+    many = tar_bytes([("first", b"a", "file"), ("manifest.json", b"[]", "file")])
+    assert not payloads.oci_archive_candidate(many, payloads.PayloadLimits(max_members=1))
+    with pytest.raises(payloads.PayloadError, match="cannot inspect tar"):
+        payloads.oci_archive_candidate(b"not a tar archive")
 
 
 def test_ar_and_deb_members_are_slice_streams_without_extraction():
@@ -209,6 +278,22 @@ def test_ar_and_deb_malformed_headers_fail_before_member_use():
         list(payloads.iter_deb_members(ar_archive(("debian-binary/", b"2.1\n"))))
 
 
+def test_ar_extended_names_symbol_tables_and_alignment_are_validated():
+    bad_bsd = payloads.AR_MAGIC + ar_member("#1/not-a-size", b"data")
+    with pytest.raises(payloads.PayloadError, match="BSD ar extended"):
+        list(payloads.iter_ar_members(bad_bsd))
+    unterminated = payloads.AR_MAGIC + ar_member("//", b"long-name") + ar_member("/0", b"x")
+    with pytest.raises(payloads.PayloadError, match="unterminated GNU"):
+        list(payloads.iter_ar_members(unterminated))
+    symbols = payloads.AR_MAGIC + ar_member("/", b"index") + ar_member("real/", b"data")
+    assert [member.name for member in payloads.iter_ar_members(symbols)] == ["real"]
+    truncated_padding = ar_archive(("odd/", b"x"))[:-1]
+    with pytest.raises(payloads.PayloadError, match="alignment"):
+        list(payloads.iter_ar_members(truncated_padding))
+    with pytest.raises(payloads.PayloadError, match="empty Debian"):
+        list(payloads.iter_deb_members(payloads.AR_MAGIC))
+
+
 def test_cpio_newc_crc_paths_types_and_limits():
     archive = cpio_newc([("usr/lib/libbrotli.so", b"decoder", stat.S_IFREG | 0o644)], crc=True)
     members = list(payloads.iter_cpio_members(archive))
@@ -241,6 +326,18 @@ def test_cpio_odc_uses_76_byte_header_and_correct_field_indices():
     malformed[6:12] = b"xxxxxx"
     with pytest.raises(payloads.PayloadError, match="odc numeric"):
         list(payloads.iter_cpio_members(bytes(malformed)))
+
+
+def test_cpio_names_trailers_and_member_types_fail_closed():
+    archive = cpio_newc([("device", b"", stat.S_IFCHR | 0o600)])
+    assert next(payloads.iter_cpio_members(archive)).kind == "other"
+    missing_trailer = cpio_newc([("file", b"x", stat.S_IFREG | 0o600)])[:-124]
+    with pytest.raises(payloads.PayloadError, match="lacks TRAILER"):
+        list(payloads.iter_cpio_members(missing_trailer))
+    unterminated = bytearray(cpio_newc([("file", b"x", stat.S_IFREG | 0o600)]))
+    unterminated[114] = ord("x")
+    with pytest.raises(payloads.PayloadError, match="lacks terminator"):
+        list(payloads.iter_cpio_members(bytes(unterminated)))
 
 
 def test_rpm_header_provenance_and_streamed_gzip_cpio():
@@ -285,6 +382,35 @@ def test_rpm_rejects_unknown_compressor_before_payload_read():
     unknown = rpm_fixture(cpio).replace(b"gzip\0", b"bruh\0")
     with pytest.raises(payloads.PayloadError, match="compressor"):
         payloads.rpm_payload(unknown)
+
+
+def test_rpm_header_alignment_uniqueness_and_lengths_are_validated():
+    lead = bytes(bytearray(payloads.RPM_MAGIC + bytes(92)))
+    duplicate = lead + rpm_header([(1000, "one"), (1000, "two")])
+    with pytest.raises(payloads.PayloadError, match="duplicate RPM"):
+        payloads.rpm_payload(duplicate)
+    misaligned_header = bytearray(rpm_header([(1003, [2])]))
+    struct.pack_into(">I", misaligned_header, 16 + 8, 1)
+    with pytest.raises(payloads.PayloadError, match="misaligned"):
+        payloads.rpm_payload(lead + bytes(misaligned_header))
+    unterminated_header = rpm_header([(1000, "name")])[:-1] + b"x"
+    with pytest.raises(payloads.PayloadError, match="unterminated"):
+        payloads.rpm_payload(lead + unterminated_header)
+    truncated_integer = bytearray(rpm_header([(1003, [2])]))
+    struct.pack_into(">I", truncated_integer, 16 + 12, 2)
+    with pytest.raises(payloads.PayloadError, match="truncated RPM integer"):
+        payloads.rpm_payload(lead + bytes(truncated_integer))
+
+
+def test_rpm_file_digest_arrays_require_one_bounded_path_per_digest():
+    with pytest.raises(payloads.PayloadError, match="inconsistent lengths"):
+        payloads._rpm_file_digests(  # noqa: SLF001 -- Header-array ownership boundary.
+            {1117: ["tool"], 1118: ["/usr/bin/"], 1116: [0], 1035: []}, 8
+        )
+    with pytest.raises(payloads.PayloadError, match="invalid RPM per-file"):
+        payloads._rpm_file_digests(  # noqa: SLF001 -- Header-array ownership boundary.
+            {1117: ["tool"], 1118: ["/usr/bin/"], 1116: [1], 1035: ["a" * 64]}, 8
+        )
 
 
 def test_zstd_unavailable_is_explicit_not_opaque(monkeypatch):
@@ -432,6 +558,28 @@ def test_production_oci_reader_rejects_invalid_manifest_and_missing_layer():
         pass
 
 
+def test_production_oci_metadata_and_outer_tar_bounds_are_explicit(monkeypatch):
+    invalid_json = tar_bytes([("manifest.json", b"not json", "file")])
+    with (
+        pytest.raises(payloads.PayloadError, match="invalid OCI JSON"),
+        payloads.open_oci_filesystems(invalid_json),
+    ):
+        pass
+    monkeypatch.setattr(payloads, "MAX_METADATA_BYTES", 2)
+    oversized_json = tar_bytes([("manifest.json", b"[ ]", "file")])
+    with (
+        pytest.raises(payloads.PayloadError, match="metadata exceeds"),
+        payloads.open_oci_filesystems(oversized_json),
+    ):
+        pass
+    nonregular = tar_bytes([("manifest.json", b"target", "symlink")])
+    with (
+        pytest.raises(payloads.PayloadError, match="nonregular"),
+        payloads.open_oci_filesystems(nonregular),
+    ):
+        pass
+
+
 def test_oci_does_not_call_historical_whiteouted_copy_shipped():
     first = tar_bytes([("lib/libbrotli.so", b"affected", "file")])
     second = tar_bytes([("lib/.wh.libbrotli.so", b"", "file")])
@@ -503,3 +651,78 @@ def test_oci_layout_verifies_digests_and_resolves_nested_index():
         assert len(images) == 1
         assert images[0].manifest == f"sha256:{manifest_digest}"
         assert images[0].members[0].read() == b"visible"
+
+
+def test_oci_layout_version_duplicate_descriptors_and_layers_fail_closed():
+    empty_manifest = json.dumps({"schemaVersion": 2, "layers": []}).encode()
+    digest = payloads.hashlib.sha256(empty_manifest).hexdigest()
+    duplicate_index = json.dumps(
+        {
+            "schemaVersion": 2,
+            "manifests": [
+                {"digest": f"sha256:{digest}", "size": len(empty_manifest)},
+                {"digest": f"sha256:{digest}", "size": len(empty_manifest)},
+            ],
+        }
+    ).encode()
+    archive = tar_bytes(
+        [
+            ("oci-layout", b'{"imageLayoutVersion":"1.0.0"}', "file"),
+            ("index.json", duplicate_index, "file"),
+            (f"blobs/sha256/{digest}", empty_manifest, "file"),
+        ]
+    )
+    with (
+        pytest.raises(payloads.PayloadError, match="duplicate OCI"),
+        payloads.open_oci_filesystems(archive),
+    ):
+        pass
+    bad_version = tar_bytes(
+        [
+            ("oci-layout", b'{"imageLayoutVersion":"2.0.0"}', "file"),
+            ("index.json", b'{"manifests":[]}', "file"),
+        ]
+    )
+    with (
+        pytest.raises(payloads.PayloadError, match="image-layout version"),
+        payloads.open_oci_filesystems(bad_version),
+    ):
+        pass
+    layer_manifest = json.dumps(
+        {
+            "schemaVersion": 2,
+            "layers": [
+                {
+                    "mediaType": "application/unsupported",
+                    "digest": "sha256:" + "0" * 64,
+                    "size": 1,
+                }
+            ],
+        }
+    ).encode()
+    manifest_digest = payloads.hashlib.sha256(layer_manifest).hexdigest()
+    bad_layer = tar_bytes(
+        [
+            ("oci-layout", b'{"imageLayoutVersion":"1.0.0"}', "file"),
+            (
+                "index.json",
+                json.dumps(
+                    {
+                        "manifests": [
+                            {
+                                "digest": f"sha256:{manifest_digest}",
+                                "size": len(layer_manifest),
+                            }
+                        ]
+                    }
+                ).encode(),
+                "file",
+            ),
+            (f"blobs/sha256/{manifest_digest}", layer_manifest, "file"),
+        ]
+    )
+    with (
+        pytest.raises(payloads.PayloadError, match="layer blob missing or digest unsupported"),
+        payloads.open_oci_filesystems(bad_layer),
+    ):
+        pass

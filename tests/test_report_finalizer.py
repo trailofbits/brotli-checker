@@ -1,4 +1,5 @@
 import json
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import brotli_report_finalizer as subject
@@ -158,6 +159,11 @@ def test_identity_collector_hashes_stable_files_data_and_tool_availability(tmp_p
         ("capstone", "5.0.9"),
         ("python-flirt", "unavailable"),
     ]
+    capstone = next(item for item in collected.optional_tools if item.name == "capstone")
+    assert (
+        capstone.sha256
+        == subject.hashlib.sha256(b"capstone\x005.0.9\x00metadata\x00record").hexdigest()
+    )
     assert collected.gaps == ()
     assert collected.input_changed is False
     assert any(item.category == "analysis-config" for item in collected.catalogs)
@@ -322,3 +328,143 @@ def test_identity_collector_rejects_mid_hash_file_mutation(tmp_path, monkeypatch
             scanner_version="1",
             scanner_files=(subject.IdentityPath("scanner", "source", source),),
         )
+
+
+@pytest.mark.parametrize(
+    ("value_factory", "field"),
+    [
+        (lambda: finalize(report()), "comparison"),
+        (lambda: subject.IdentityPath("scanner", "name", subject.Path("path")), "name"),
+        (lambda: subject.IdentityData("feed", "name", b"data"), "name"),
+        (lambda: subject.OptionalToolSpec("tool", "distribution"), "name"),
+        (
+            lambda: subject.FinalizationIdentities(
+                scanner=identities()[0],
+                catalogs=(),
+                feeds=(),
+                optional_tools=(),
+                gaps=(),
+            ),
+            "input_changed",
+        ),
+    ],
+)
+def test_finalization_evidence_values_are_immutable(value_factory, field):
+    with pytest.raises(FrozenInstanceError):
+        setattr(value_factory(), field, "changed")
+
+
+def test_identity_hashing_rejects_directories_and_uses_bounded_final_read(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="regular non-symlink"):
+        subject._stable_path_sha256(tmp_path)  # noqa: SLF001 - file identity boundary
+
+    source = tmp_path / "source"
+    source.write_bytes(b"abc")
+    monkeypatch.setattr(subject, "IDENTITY_CHUNK_BYTES", 2)
+    original_pread = subject.os.pread
+    requested = []
+
+    def recording_pread(descriptor, size, offset):
+        requested.append((size, offset))
+        return original_pread(descriptor, size, offset)
+
+    monkeypatch.setattr(subject.os, "pread", recording_pread)
+    assert (
+        subject._stable_path_sha256(  # noqa: SLF001 - bounded read contract
+            source
+        )
+        == subject.hashlib.sha256(b"abc").hexdigest()
+    )
+    assert requested == [(2, 0), (1, 2)]
+
+
+@pytest.mark.parametrize(
+    ("scanner_name", "scanner_version", "include_file"),
+    [("", "1", True), ("scanner", "", True), ("scanner", "1", False)],
+)
+def test_identity_collection_requires_each_scanner_identity_field(
+    tmp_path, scanner_name, scanner_version, include_file
+):
+    source = tmp_path / "source.py"
+    source.write_text("source")
+    files = (subject.IdentityPath("scanner", "source.py", source),) if include_file else ()
+    with pytest.raises(ValueError, match="requires name, version"):
+        subject.collect_finalization_identities(
+            scanner_name=scanner_name,
+            scanner_version=scanner_version,
+            scanner_files=files,
+        )
+
+
+def test_unlinked_flirt_pattern_is_not_part_of_catalog_identity(tmp_path):
+    scripts = tmp_path / "skills/brotli-checker/scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "scanner.py").write_text("scanner")
+    references = tmp_path / "references.json"
+    fingerprints = tmp_path / "fingerprints.json"
+    unlinked = tmp_path / "unlinked.pat"
+    for path in (references, fingerprints, unlinked):
+        path.write_text(path.name)
+
+    collected = subject.collect_cli_identities(
+        scanner_version="0.3.0",
+        analysis_config={"flirt_requested": False},
+        code_references=references,
+        source_fingerprints=fingerprints,
+        flirt_pat=unlinked,
+        repository_root=tmp_path,
+        optional_tools=(),
+    )
+
+    assert "flirt-patterns" not in {item.name for item in collected.catalogs}
+
+
+@pytest.mark.parametrize("pat_file", [1, "../outside.pat", "patterns.txt"])
+def test_flirt_manifest_rejects_nonadjacent_or_nonpattern_names(tmp_path, pat_file):
+    bundle = tmp_path / "bundle.json"
+    bundle.write_text(json.dumps({"pat_file": pat_file}))
+    with pytest.raises(ValueError, match="Invalid FLIRT manifest pat_file"):
+        subject.resolve_flirt_identity_paths(bundle)
+
+
+def test_flirt_manifest_and_baseline_byte_limits_accept_exact_size(tmp_path, monkeypatch):
+    bundle = tmp_path / "bundle.json"
+    raw = b'{"pat_file":"patterns.pat"}'
+    bundle.write_bytes(raw)
+    monkeypatch.setattr(subject, "MAX_FLIRT_MANIFEST_BYTES", len(raw))
+    assert subject.resolve_flirt_identity_paths(bundle) == (bundle, tmp_path / "patterns.pat")
+
+    baseline = tmp_path / "baseline.json"
+    baseline.write_bytes(b"{}")
+    monkeypatch.setattr(subject, "MAX_BASELINE_BYTES", 2)
+    assert subject._baseline_json(baseline) == {}  # noqa: SLF001 - byte boundary
+    assert subject._baseline_json(b"{}") == {}  # noqa: SLF001 - byte boundary
+    assert subject._baseline_json("{}") == {}  # noqa: SLF001 - character boundary
+
+
+@pytest.mark.parametrize(("category", "name"), [("", "name"), ("catalog", "")])
+def test_evidence_identity_requires_each_label(category, name):
+    with pytest.raises(ValueError, match="requires category and name"):
+        subject.evidence_identity(category, name, b"data")
+
+
+@pytest.mark.parametrize(("name", "version"), [("", "1"), ("tool", "")])
+def test_tool_identity_requires_each_label(name, version):
+    with pytest.raises(ValueError, match="requires name and version"):
+        subject.tool_identity(name, version)
+
+
+@pytest.mark.parametrize("coverage_value", [None, {"gaps": "invalid"}])
+def test_identity_gaps_require_mutable_report_coverage(coverage_value):
+    value = report()
+    value["coverage"] = coverage_value
+    scanner, catalogs, feeds, tools = identities()
+    state = subject.FinalizationIdentities(
+        scanner=scanner,
+        catalogs=catalogs,
+        feeds=feeds,
+        optional_tools=tools,
+        gaps=("changed",),
+    )
+    with pytest.raises(ValueError, match="cannot retain"):
+        subject.finalize_with_identities(value, state)

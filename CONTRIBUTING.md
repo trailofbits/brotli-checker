@@ -31,8 +31,11 @@ releases. Only `tests/known_answers/{CMakeLists.txt,answers.json}` is committed;
 downloaded dependencies and build metadata stay in the ignored `.deps/` folder.
 Their known scan answers cover pristine and modified vulnerable/fixed sources.
 The ordinary offline suite skips these cases until dependencies are populated.
-CI runs one mutation shard per scanner module, then checks disjoint reports
-and complete module coverage at a single aggregate gate. Branch pushes are
+CI runs one mutation shard per scanner module; the largest modules use three
+interaction-safe operator groups. The shard wrapper proves that their combined
+semantic population exactly equals pytest-gremlins' default five-operator
+population, then binds the source and report hashes in an adjacent manifest.
+The aggregate gate requires the complete maintained shard plan. Branch pushes are
 checked through pull requests; main pushes are checked directly, avoiding
 duplicate PR/push mutation runs. The gate requires at least an 80% score,
 results from every scanner module, and no errors or skipped files. Only the
