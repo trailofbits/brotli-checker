@@ -17,6 +17,89 @@ from test_binary_inventory import run_scan
 from test_binary_match import elf, reference
 
 
+def pe_data(payload, *, resource=b""):
+    section_count = 1 + bool(resource)
+    header_bytes = 0x200
+    data_offset = header_bytes
+    resource_offset = data_offset + len(payload)
+    image = bytearray(resource_offset + len(resource))
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, 0x80)
+    image[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<HHIIIHH", image, 0x84, 0x8664, section_count, 0, 0, 0, 0xF0, 0x22)
+    struct.pack_into("<H", image, 0x98, 0x20B)
+    struct.pack_into("<I", image, 0x98 + 108, 16)
+    if resource:
+        struct.pack_into("<II", image, 0x98 + 112 + 2 * 8, 0x2000, len(resource))
+    section = 0x98 + 0xF0
+    image[section : section + 8] = b".rdata\0\0"
+    struct.pack_into("<IIII", image, section + 8, len(payload), 0x1000, len(payload), data_offset)
+    struct.pack_into("<I", image, section + 36, 0x40000040)
+    if resource:
+        section += 40
+        image[section : section + 8] = b".rsrc\0\0\0"
+        struct.pack_into(
+            "<IIII", image, section + 8, len(resource), 0x2000, len(resource), resource_offset
+        )
+        struct.pack_into("<I", image, section + 36, 0x40000040)
+    image[data_offset : data_offset + len(payload)] = payload
+    image[resource_offset:] = resource
+    return bytes(image)
+
+
+def mach_data(payload, *, cpu=0x0100000C, initprot=1):
+    data_offset = 0x100
+    image = bytearray(data_offset + len(payload))
+    command = struct.pack(
+        "<II16sQQQQIIII",
+        0x19,
+        72,
+        b"__DATA" + bytes(10),
+        0x100000,
+        len(payload),
+        data_offset,
+        len(payload),
+        7,
+        initprot,
+        0,
+        0,
+    )
+    struct.pack_into("<8I", image, 0, 0xFEEDFACF, cpu, 0, 6, 1, len(command), 0, 0)
+    image[32 : 32 + len(command)] = command
+    image[data_offset:] = payload
+    return bytes(image)
+
+
+def mach_fat(*slices):
+    image = bytearray(0x100 + sum(map(len, slices)))
+    image[:8] = b"\xca\xfe\xba\xbe" + struct.pack(">I", len(slices))
+    offset = 0x100
+    for index, child in enumerate(slices):
+        struct.pack_into(">IIIII", image, 8 + index * 20, 0x0100000C, 0, offset, len(child), 0)
+        image[offset : offset + len(child)] = child
+        offset += len(child)
+    return bytes(image)
+
+
+def uleb(value):
+    encoded = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        encoded.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(encoded)
+
+
+def wasm_data(payload, *, custom=b""):
+    sections = []
+    if custom:
+        sections.append(b"\0" + uleb(len(custom)) + custom)
+    segment = b"\x01\x01" + uleb(len(payload)) + payload
+    sections.append(b"\x0b" + uleb(len(segment)) + segment)
+    return b"\0asm\x01\0\0\0" + b"".join(sections)
+
+
 @pytest.mark.parametrize(
     ("order", "digest"),
     [
@@ -58,11 +141,51 @@ def test_truncated_altered_and_appended_tables_do_not_match_loaded_data():
     assert not signatures.recognize_decoder_data(elf(b"instructions") + table)["matches"]
 
 
-@pytest.mark.parametrize("magic", signatures.OTHER_BINARY_MAGICS)
-def test_non_elf_evidence_is_explicitly_file_bytes_not_loader_validated(magic):
-    result = signatures.recognize_decoder_data(magic + signatures.SIGNATURES["command_lut_le"])
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        pe_data(signatures.SIGNATURES["command_lut_le"]),
+        mach_data(signatures.SIGNATURES["command_lut_le"]),
+        wasm_data(signatures.SIGNATURES["command_lut_le"]),
+    ],
+)
+def test_non_elf_tables_require_validated_loader_data_ranges(artifact):
+    result = signatures.recognize_decoder_data(artifact)
     assert result["matches"]
-    assert result["scope"] == "file_bytes_not_loader_validated"
+    assert result["scope"] == "loader_data_ranges"
+    assert not result["limited"]
+
+
+def test_pe_resource_and_certificate_lookalikes_are_not_decoder_data():
+    table = signatures.SIGNATURES["command_lut_le"]
+    resource = signatures.recognize_decoder_data(pe_data(b"ordinary data", resource=table))
+    assert not resource["matches"]
+    certificate = pe_data(b"ordinary data") + table
+    assert not signatures.recognize_decoder_data(certificate)["matches"]
+
+
+def test_mach_code_and_wasm_custom_lookalikes_are_not_decoder_data():
+    table = signatures.SIGNATURES["command_lut_le"]
+    assert not signatures.recognize_decoder_data(mach_data(table, initprot=5))["matches"]
+    custom = uleb(4) + b"fake" + table
+    assert not signatures.recognize_decoder_data(wasm_data(b"ordinary", custom=custom))["matches"]
+
+
+def test_mach_universal_reports_each_matching_slice_without_cross_slice_state():
+    table = signatures.SIGNATURES["command_lut_le"]
+    result = signatures.recognize_decoder_data(mach_fat(mach_data(table), mach_data(table)))
+    assert result["format"] == "mach_o_universal"
+    assert [row["slice_index"] for row in result["matches"]] == [0, 1]
+    assert result["matches"][0]["file_offset"] != result["matches"][1]["file_offset"]
+
+
+def test_malformed_known_binary_is_incomplete_without_raw_byte_match():
+    table = signatures.SIGNATURES["command_lut_le"]
+    for magic in signatures.OTHER_BINARY_MAGICS:
+        result = signatures.recognize_decoder_data(magic + table)
+        assert not result["matches"]
+        assert result["limited"]
+        assert result["layout_gaps"]
 
 
 def test_text_and_invalid_elf_do_not_gain_strong_recognition():
@@ -76,20 +199,130 @@ def test_text_and_invalid_elf_do_not_gain_strong_recognition():
 def test_chunk_boundary_and_sparse_access_preserve_offsets(tmp_path, monkeypatch):
     monkeypatch.setattr(signatures, "CHUNK_BYTES", 128)
     table = signatures.SIGNATURES["command_lut_be"]
+    artifact = wasm_data(b"x" * (128 * 100 - 64) + table)
     path = tmp_path / "component.wasm"
-    with path.open("wb") as stream:
-        stream.write(b"\0asm\x01\0\0\0")
-        stream.seek(128 * 100 - 13)
-        stream.write(table)
+    path.write_bytes(artifact)
     with path.open("rb") as stream, file_data(stream) as data:
         result = signatures.recognize_decoder_data(data)
-    assert result["matches"] == [
-        {
-            "id": "command_lut_be",
-            "file_offset": 128 * 100 - 13,
-            "size_bytes": len(table),
+    row = result["matches"][0]
+    assert row["id"] == "command_lut_be"
+    assert artifact[row["file_offset"] : row["file_offset"] + len(table)] == table
+    assert row["format"] == "wasm"
+
+
+def test_chunk_reads_include_exactly_one_anchor_overlap(monkeypatch):
+    monkeypatch.setattr(signatures, "CHUNK_BYTES", 128)
+
+    class MeasuredBytes(bytes):
+        slices: list[tuple[int, int]]
+
+        def __new__(cls, value):
+            instance = super().__new__(cls, value)
+            instance.slices = []
+            return instance
+
+        def __getitem__(self, key):
+            if isinstance(key, slice):
+                self.slices.append((key.start, key.stop))
+            return super().__getitem__(key)
+
+    data = MeasuredBytes(b"x" * 400)
+    assert signatures.scan_tables(data, [(0, len(data))]) == ({}, False)
+    assert max(stop - start for start, stop in data.slices) == 128 + signatures.ANCHOR_BYTES - 1
+
+
+def test_overlap_boundary_anchor_counts_once_and_exact_budget_is_permitted(monkeypatch):
+    monkeypatch.setattr(signatures, "CHUNK_BYTES", 128)
+    anchor = signatures.SIGNATURES["command_lut_le"][: signatures.ANCHOR_BYTES]
+    data = b"x" * 128 + anchor
+    found, limited, used = signatures._scan_tables(data, [(0, len(data))], 1)  # noqa: SLF001
+    assert found == {}
+    assert not limited
+    assert used == 1
+    found, limited, used = signatures._scan_tables(anchor, [(0, len(anchor))], 1)  # noqa: SLF001
+    assert found == {}
+    assert not limited
+    assert used == 1
+
+
+def test_candidate_budget_is_global_across_universal_slices(monkeypatch):
+    anchor = signatures.SIGNATURES["command_lut_le"][: signatures.ANCHOR_BYTES]
+    data = anchor + b"x" + anchor
+
+    def child(offset):
+        return {
+            "kind": "mach_o",
+            "machine": "x86_64",
+            "bits": 64,
+            "byteorder": "little",
+            "ranges": {"data": [{"file_offset": offset, "size": len(anchor)}]},
+            "gaps": [],
+            "slice_offset": offset,
         }
-    ]
+
+    layout = {"kind": "mach_o_universal", "gaps": [], "slices": [child(0), child(len(anchor) + 1)]}
+    monkeypatch.setattr(signatures, "MAX_CANDIDATES", 1)
+    monkeypatch.setattr(signatures, "inspect_layout", lambda _data: layout)
+    matches, limited, _ = signatures._layout_scoped_tables(data)  # noqa: SLF001
+    assert matches == []
+    assert limited
+
+
+def test_pe_loader_address_covers_table_at_exact_data_boundaries():
+    prefix = b"mapped-prefix"
+    table = signatures.SIGNATURES["command_lut_le"]
+    result = signatures.recognize_decoder_data(pe_data(prefix + table))
+    row = result["matches"][0]
+    assert row["file_offset"] == 0x200 + len(prefix)
+    assert row["virtual_addresses"] == [0x1000 + len(prefix)]
+    assert result["reason"] == (
+        "Decoder table signatures identify data, not patch state or executable use."
+    )
+
+
+def test_elf_virtual_address_comes_only_from_the_containing_load_segment():
+    table = signatures.SIGNATURES["command_lut_le"]
+    prefix = b"inside-second-segment"
+    first = b"ordinary"
+    header_size = matcher.ELF_HEADER.size
+    program_size = matcher.PROGRAM_HEADER.size
+    first_offset = header_size + 2 * program_size
+    second_offset = first_offset + len(first)
+    header = matcher.ELF_HEADER.pack(
+        b"\x7fELF\x02\x01\x01" + bytes(9),
+        3,
+        matcher.EM_AARCH64,
+        1,
+        0,
+        header_size,
+        0,
+        0,
+        header_size,
+        program_size,
+        2,
+        0,
+        0,
+        0,
+    )
+    programs = b"".join(
+        [
+            matcher.PROGRAM_HEADER.pack(
+                1, 4, first_offset, 0x1000, 0x1000, len(first), len(first), 1
+            ),
+            matcher.PROGRAM_HEADER.pack(
+                1,
+                4,
+                second_offset,
+                0x8000,
+                0x8000,
+                len(prefix) + len(table),
+                len(prefix) + len(table),
+                1,
+            ),
+        ]
+    )
+    result = signatures.recognize_decoder_data(header + programs + first + prefix + table)
+    assert result["matches"][0]["virtual_addresses"] == [0x8000 + len(prefix)]
 
 
 def test_load_segment_beyond_six_gibibytes_skips_sparse_padding(tmp_path, monkeypatch):
@@ -125,8 +358,8 @@ def test_load_segment_beyond_six_gibibytes_skips_sparse_padding(tmp_path, monkey
 def test_candidate_limit_reports_incomplete_and_retains_completed_evidence(monkeypatch):
     monkeypatch.setattr(signatures, "MAX_CANDIDATES", 4)
     table = signatures.SIGNATURES["command_lut_le"]
-    payload = b"\0asm" + table + (signatures.SIGNATURES["command_lut_be"][:64] + b"x") * 8
-    result = signatures.recognize_decoder_data(payload)
+    payload = table + (signatures.SIGNATURES["command_lut_be"][:64] + b"x") * 8
+    result = signatures.recognize_decoder_data(wasm_data(payload))
     assert result["limited"]
     assert result["matches"][0]["id"] == "command_lut_le"
 
@@ -165,10 +398,10 @@ def test_independent_code_and_signature_limits_both_reach_coverage_gaps(monkeypa
 
 def test_both_clis_preserve_recognition_without_claiming_fixed_version(tmp_path):
     path = tmp_path / "renamed.wasm"
-    path.write_bytes(b"\0asm\x01\0\0\0" + signatures.SIGNATURES["command_lut_le"])
+    path.write_bytes(wasm_data(signatures.SIGNATURES["command_lut_le"]))
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        code = scanner.main([str(path), "--brotli-version", "1.2.1", "--json"])
+        code = scanner.main([str(path), "--brotli-version", "1.2.1", "--no-flirt", "--json"])
     report = json.loads(output.getvalue())
     assert code == 3
     assert report["user_summary"]["status"] == "decoder_detected_patch_unresolved"

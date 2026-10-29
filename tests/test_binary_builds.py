@@ -317,7 +317,9 @@ def packaged_match_evidence(data, reference, state, *, required):
 def run_main_scan(path, catalog_path):
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        code = scanner.main([str(path), "--code-references", str(catalog_path), "--json"])
+        code = scanner.main(
+            [str(path), "--code-references", str(catalog_path), "--no-flirt", "--json"]
+        )
     return code, json.loads(output.getvalue())
 
 

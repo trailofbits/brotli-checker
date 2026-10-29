@@ -28,6 +28,7 @@ from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, cast
 
+from brotli_analysis import AnalysisSession, add_analysis_arguments, scan_with_analysis
 from brotli_binary_data import (
     Buffer,
     DataChangedError,
@@ -48,13 +49,25 @@ from brotli_binary_metadata import decoder_metadata
 from brotli_binary_signatures import recognize_decoder_data
 from brotli_dependencies import MAX_DEPENDENCY_MATCHES, dependency_manifest, dependency_matches
 from brotli_flirt import (
-    DEFAULT_FLIRT_BUNDLE,
     FlirtAssessment,
     FlirtCatalog,
+    FlirtSession,
     FlirtUnavailableError,
     load_flirt_bundle,
     match_flirt,
 )
+from brotli_payloads import (
+    NotOciImageError,
+    PayloadError,
+    PayloadLimits,
+    iter_payload_members,
+    iter_rpm_members,
+    oci_archive_candidate,
+    open_oci_filesystems,
+    payload_kind,
+    rpm_payload,
+)
+from brotli_reporting_cli import CliEvidence, add_reporting_arguments, policy_exit
 from brotli_source_leads import MAX_SOURCE_MATCHES, source_references
 
 if TYPE_CHECKING:
@@ -86,12 +99,18 @@ INDICATOR_CHUNK_BYTES = 4 * 1024 * 1024
 TEXT_PROBE_BYTES = 4096
 COMPRESSED_SUFFIXES = {".gz": "gzip", ".bz2": "bzip2", ".xz": "xz"}
 TAR_SUFFIXES = (".tar", ".tgz", ".txz", ".tbz", ".tbz2")
+PAYLOAD_SUFFIXES = {
+    ".ar": "ar",
+    ".cpio": "cpio",
+    ".deb": "deb",
+    ".docker": "oci",
+    ".oci": "oci",
+    ".rpm": "rpm",
+    ".tzst": "zstd",
+    ".zst": "zstd",
+    ".zstd": "zstd",
+}
 UNSUPPORTED_SUFFIXES = {
-    ".deb",
-    ".rpm",
-    ".zst",
-    ".zstd",
-    ".tzst",
     ".7z",
     ".rar",
     ".br",
@@ -102,8 +121,6 @@ UNSUPPORTED_SUFFIXES = {
     ".cab",
     ".iso",
     ".dmg",
-    ".cpio",
-    ".ar",
     ".snap",
     ".squashfs",
     ".sqfs",
@@ -117,10 +134,10 @@ ARCHIVE_SIGNATURES = (
     (b"\x1f\x8b", "gzip"),
     (b"BZh", "bzip2"),
     (b"\xfd7zXZ\0", "xz"),
-    (b"!<arch>\n", "unsupported"),
+    (b"!<arch>\n", "ar"),
     (b"!<thin>\n", "unsupported"),
-    (b"\xed\xab\xee\xdb", "unsupported"),
-    (b"\x28\xb5\x2f\xfd", "unsupported"),
+    (b"\xed\xab\xee\xdb", "rpm"),
+    (b"\x28\xb5\x2f\xfd", "zstd"),
     (b"7z\xbc\xaf\x27\x1c", "unsupported"),
     (b"Rar!\x1a\x07", "unsupported"),
     (b"\x04\x22\x4d\x18", "unsupported"),
@@ -128,9 +145,9 @@ ARCHIVE_SIGNATURES = (
     (b"\x1f\x9d", "unsupported"),
     (b"MSCF", "unsupported"),
     (b"xar!", "unsupported"),
-    (b"070701", "unsupported"),
-    (b"070702", "unsupported"),
-    (b"070707", "unsupported"),
+    (b"070701", "cpio"),
+    (b"070702", "cpio"),
+    (b"070707", "cpio"),
     (b"hsqs", "unsupported"),
     (b"sqsh", "unsupported"),
 )
@@ -211,7 +228,7 @@ def archive_kind(data: Buffer, label: str) -> str | None:
         if data.startswith(signature):
             return kind
     if data.startswith(SKIPPABLE_FRAMES):
-        return "unsupported"  # Zstandard/LZ4 skippable frames.
+        return "zstd"
     if tar_content(data):
         return "tar"
     with buffer_stream(data) as stream:
@@ -230,6 +247,8 @@ def named_archive_kind(label: str) -> str | None:
         return "zip"
     if suffix in COMPRESSED_SUFFIXES:
         return COMPRESSED_SUFFIXES[suffix]
+    if suffix in PAYLOAD_SUFFIXES:
+        return PAYLOAD_SUFFIXES[suffix]
     if name.endswith(TAR_SUFFIXES):
         return {".tgz": "gzip", ".txz": "xz", ".tbz": "bzip2", ".tbz2": "bzip2"}.get(suffix, "tar")
     return "unsupported" if suffix in UNSUPPORTED_SUFFIXES else None
@@ -387,7 +406,9 @@ def version_finding(path: str, minimum: str, evidence: dict, *, fixed: bool) -> 
 
 
 def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally explicit.
-    data: Buffer, references: list[CodeReference], flirt_catalog: FlirtCatalog | None = None
+    data: Buffer,
+    references: list[CodeReference],
+    flirt_catalog: FlirtCatalog | FlirtSession | None = None,
 ) -> dict:
     is_elf = data.startswith(b"\x7fELF")
     code = (
@@ -406,7 +427,11 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
     }
     if flirt_catalog is not None:
         flirt = (
-            match_flirt(data, flirt_catalog)
+            (
+                flirt_catalog.analyze(data)
+                if isinstance(flirt_catalog, FlirtSession)
+                else match_flirt(data, flirt_catalog)
+            )
             if is_elf
             else {
                 "status": "not_applicable",
@@ -507,7 +532,8 @@ class Inventory:
         max_total_expanded_bytes: int = DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
         max_text_bytes: int = DEFAULT_MAX_TEXT_BYTES,
         code_references: list[CodeReference] | None = None,
-        flirt_catalog: FlirtCatalog | None = None,
+        flirt_catalog: FlirtCatalog | FlirtSession | None = None,
+        analysis: AnalysisSession | None = None,
     ) -> None:
         self.fingerprints = {entry["sha256"]: entry for entry in registry["fingerprints"]}
         self.max_file_bytes = max_file_bytes
@@ -529,6 +555,7 @@ class Inventory:
         self.archives_opened = 0
         self.code_references = code_references
         self.flirt_catalog = flirt_catalog
+        self.analysis = analysis
         self.checked_paths: set[Path] = set()
         self.pending_symlinks: list[Path] = []
         self.covered_symlinks = 0
@@ -639,6 +666,8 @@ class Inventory:
 
     def inspect(self, data: Buffer, label: str, depth: int) -> None:
         digest = sha256_data(data)
+        if self.analysis is not None:
+            self.analysis.record(data, label, digest, depth)
         if data.startswith(b"\x7fELF") and self.code_references is not None:
             self._inspect_elf(data, label, digest)
             kind = archive_kind(data, label)
@@ -700,15 +729,20 @@ class Inventory:
             return ""
         return raw.decode("utf-8", errors="replace")
 
-    def _inspect_noncontainer(self, data: Buffer, label: str, digest: str) -> None:
+    def _recognize_data(self, data: Buffer, label: str) -> dict:
         recognition = recognize_decoder_data(data)
-        if (
-            self.flirt_catalog is not None
-            and recognition["scope"] == "file_bytes_not_loader_validated"
-        ):
+        if self.analysis is not None:
+            self.analysis.enrich(
+                data, label, {"detection_status": recognition["status"], "recognition": recognition}
+            )
+        if self.flirt_catalog is not None and recognition["scope"] == "loader_data_ranges":
             self.gap(label, "FLIRT executable mapping is unsupported for this non-ELF binary.")
         if recognition["limited"]:
             self.gap(label, recognition["reason"])
+        return recognition
+
+    def _inspect_noncontainer(self, data: Buffer, label: str, digest: str) -> None:
+        recognition = self._recognize_data(data, label)
         if recognition["matches"]:
             self.findings.append(
                 finding(
@@ -754,6 +788,9 @@ class Inventory:
         if references is None:
             return
         assessment = assess_binary(data, references, self.flirt_catalog)
+        analysis = (
+            self.analysis.enrich(data, label, assessment) if self.analysis is not None else {}
+        )
         for reason in assessment["gaps"]:
             self.gap(label, reason)
         self.findings.append(
@@ -771,6 +808,7 @@ class Inventory:
                 flirt=assessment["flirt"],
                 detection_status=assessment["detection_status"],
                 linkage=assessment["linkage"],
+                analysis=analysis,
             )
         )
 
@@ -925,6 +963,13 @@ class Inventory:
                 self._inspect_zip(data, label, depth)
             elif kind == "tar":
                 self._inspect_tar(data, label, depth)
+            elif kind in {"ar", "deb", "zstd", "rpm", "cpio", "oci"}:
+                if kind == "oci":
+                    if not self._inspect_oci(data, label, depth):
+                        message = "tar is not a Docker save or OCI image layout"
+                        raise PayloadError(message)
+                else:
+                    self._inspect_payload_members(data, label, depth, kind)
             else:
                 self._inspect_compressed(data, label, depth, kind)
         except (
@@ -937,6 +982,93 @@ class Inventory:
             lzma.LZMAError,
         ) as error:
             self.gap(label, f"Cannot inspect archive: {error}")
+
+    def _payload_limits(self) -> PayloadLimits:
+        member_limits = [self.max_expanded_bytes]
+        total_limits = [max(0, self.max_total_expanded_bytes - self.expanded_bytes_read)]
+        if self.max_file_bytes is not None:
+            member_limits.append(self.max_file_bytes)
+        if self.max_total_bytes is not None:
+            total_limits.append(max(0, self.max_total_bytes - self.bytes_read))
+        total_bytes = min(total_limits)
+        return PayloadLimits(
+            max_members=max(0, self.max_files - self.files_seen),
+            max_member_bytes=min(*member_limits, total_bytes),
+            max_total_bytes=total_bytes,
+        )
+
+    def _inspect_payload_members(self, data: Buffer, label: str, depth: int, kind: str) -> None:
+        limits = self._payload_limits()
+        detected = payload_kind(data, label, limits)
+        if detected is not None:
+            kind = detected
+        if kind == "rpm":
+            payload = rpm_payload(data)
+            if self.analysis is not None:
+                self.analysis.register_package_archive(label, payload.metadata)
+            members = iter_rpm_members(payload, limits)
+        else:
+            members = iter_payload_members(data, kind, limits)
+        self.archives_opened += 1
+        for info in members:
+            member = f"{label}!{info.name}"
+            if self.exhausted():
+                self.gap(label, "Budget exhausted; remaining archive members not inspected.")
+                break
+            if info.kind != "file":
+                self.record_name_fallback(member, info.size)
+                self.gap(member, "Nonregular archive member not followed.")
+                continue
+            with info.open() as member_stream:
+                self.read(
+                    cast("BinaryIO", member_stream),
+                    info.size,
+                    member,
+                    depth + 1,
+                    expanded=True,
+                )
+
+    def _inspect_oci(self, data: Buffer, label: str, depth: int) -> bool:
+        try:
+            images_context = open_oci_filesystems(data, self._payload_limits())
+            with images_context as images:
+                layer_count = 0
+                for image_index, image in enumerate(images):
+                    layer_count += len(
+                        {row["layer"] for row in image.history if isinstance(row.get("layer"), str)}
+                    )
+                    image_label = f"{label}!image[{image_index}]"
+                    if self.analysis is not None:
+                        self.analysis.register_image(
+                            image_label,
+                            label,
+                            depth,
+                            image.manifest,
+                            image.history,
+                        )
+                    for reason in image.gaps:
+                        self.gap(image_label, reason)
+                    for info in image.members:
+                        member = f"{image_label}!{info.name}"
+                        if self.exhausted():
+                            self.gap(
+                                image_label,
+                                "Budget exhausted; remaining image files not inspected.",
+                            )
+                            break
+                        with info.open() as member_stream:
+                            self.read(
+                                cast("BinaryIO", member_stream),
+                                info.size,
+                                member,
+                                depth + 1,
+                                expanded=True,
+                            )
+                self.archives_opened += 1 + layer_count
+        except NotOciImageError:
+            return False
+        else:
+            return True
 
     def _inspect_zip(self, data: Buffer, label: str, depth: int) -> None:
         with buffer_stream(data) as stream, zipfile.ZipFile(stream) as archive:
@@ -1015,6 +1147,8 @@ class Inventory:
     def _inspect_tar(
         self, data: Buffer, label: str, depth: int, *, count_open: bool = True
     ) -> None:
+        if count_open and self._inspect_oci_tar(data, label, depth):
+            return
         with buffer_stream(data) as stream, tarfile.open(fileobj=stream, mode="r|") as archive:
             if count_open:
                 self.archives_opened += 1
@@ -1040,6 +1174,14 @@ class Inventory:
                             expanded=True,
                         )
 
+    def _inspect_oci_tar(self, data: Buffer, label: str, depth: int) -> bool:
+        if not oci_archive_candidate(data, self._payload_limits()):
+            return False
+        if not self._inspect_oci(data, label, depth):
+            message = "OCI marker probe and parser classification disagree"
+            raise PayloadError(message)
+        return True
+
     def scan_file(self, path: Path) -> None:  # noqa: C901 -- Stable-fd lifecycle is one operation.
         label = str(path)
         try:
@@ -1061,6 +1203,9 @@ class Inventory:
                     self.record_name_fallback(label)
                     self.gap(label, "Nonregular file not read.")
                     return
+                analysis_checkpoint = (
+                    self.analysis.checkpoint() if self.analysis is not None else None
+                )
                 checkpoint = (
                     len(self.findings),
                     len(self.gaps),
@@ -1101,6 +1246,8 @@ class Inventory:
                         self.archives_attempted,
                         self.archives_opened,
                     ) = checkpoint
+                    if self.analysis is not None and analysis_checkpoint is not None:
+                        self.analysis.rollback(analysis_checkpoint)
                     del self.findings[findings:]
                     del self.gaps[gaps:]
                     self.files_seen = seen + 1
@@ -1803,8 +1950,15 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=REFERENCES,
         help="compiled ELF decoder references; unmatched code remains unidentified",
     )
-    parser.add_argument(
-        "--flirt", action="store_true", help="enable optional FLIRT function recognition"
+    flirt_options = parser.add_mutually_exclusive_group()
+    flirt_options.add_argument(
+        "--flirt", action="store_true", default=True, help="enable automatic FLIRT (default)"
+    )
+    flirt_options.add_argument(
+        "--no-flirt",
+        dest="flirt",
+        action="store_false",
+        help="explicitly disable FLIRT for a faster scan",
     )
     parser.add_argument(
         "--flirt-references",
@@ -1854,7 +2008,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=2,
         help="maximum nested containers opened; 0 disables archive traversal",
     )
-    return parser.parse_args(argv)
+    add_analysis_arguments(parser)
+    add_reporting_arguments(parser)
+    args = parser.parse_args(argv)
+    if not args.flirt and args.flirt_references is not None:
+        parser.error("--no-flirt cannot be combined with --flirt-references")
+    return args
 
 
 def load_optional_flirt(path: Path | None) -> tuple[FlirtCatalog | None, str | None]:
@@ -1864,6 +2023,22 @@ def load_optional_flirt(path: Path | None) -> tuple[FlirtCatalog | None, str | N
         return load_flirt_bundle(path), None
     except FlirtUnavailableError as error:
         return None, str(error)
+
+
+def configure_flirt(
+    references: Path | None, *, enabled: bool
+) -> tuple[FlirtCatalog | FlirtSession | None, str | None]:
+    if not enabled:
+        return None, None
+    if references is not None:
+        return load_optional_flirt(references)
+    return FlirtSession(), None
+
+
+def flirt_configuration(value: FlirtCatalog | FlirtSession | None) -> dict:
+    if isinstance(value, FlirtSession):
+        return value.describe()
+    return {"status": "enabled" if value is not None else "explicitly_disabled"}
 
 
 def scan_result(statuses: set[str], gap_count: int) -> tuple[str, int]:
@@ -1882,13 +2057,16 @@ def scan_result(statuses: set[str], gap_count: int) -> tuple[str, int]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    roots = args.roots or ([] if args.brotli_version or args.node_version else [Path.cwd()])
+    roots = args.roots or (
+        []
+        if args.brotli_version or args.node_version or args.deployment_root or args.sbom
+        else [Path.cwd()]
+    )
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     try:
+        evidence = CliEvidence(args, REGISTRY)
         code_references = load_references(args.code_references)
-        flirt_catalog, flirt_error = load_optional_flirt(
-            args.flirt_references or (DEFAULT_FLIRT_BUNDLE if args.flirt else None)
-        )
+        flirt_catalog, flirt_error = configure_flirt(args.flirt_references, enabled=args.flirt)
     except (OSError, ValueError) as error:
         print(f"Invalid binary references: {error}", file=sys.stderr)
         return 2
@@ -1906,7 +2084,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     if flirt_error is not None:
         inventory.gap("<FLIRT>", flirt_error)
-    inventory.scan_roots([root.expanduser().absolute() for root in roots])
+    roots = [root.expanduser().absolute() for root in [*roots, *args.deployment_root, *args.sbom]]
+    try:
+        analysis_report = scan_with_analysis(inventory, roots, args)
+        identities = evidence.check_inputs(inventory)
+    except (OSError, ValueError) as error:
+        print(f"Invalid analysis input: {error}", file=sys.stderr)
+        return 2
     for component, versions in (
         ("brotli", args.brotli_version),
         ("node", args.node_version),
@@ -1916,12 +2100,22 @@ def main(argv: list[str] | None = None) -> int:
         {item["patch_status"] for item in inventory.findings}, inventory.gap_count
     )
     report = make_report(inventory, roots, args, registry, result)
+    report.update(analysis_report)
     report["user_summary"] = summarize(report)
-    if args.json:
-        print(json.dumps(report, indent=2, ensure_ascii=True))
+    try:
+        finalized = evidence.finalize(report, identities)
+    except (OSError, ValueError) as error:
+        print(f"Invalid report input: {error}", file=sys.stderr)
+        return 2
+    if args.sarif or args.json:
+        print(
+            json.dumps(
+                finalized.sarif if args.sarif else finalized.report, indent=2, ensure_ascii=True
+            )
+        )
     else:
-        print(render_text(report))
-    return code
+        print(render_text(finalized.report))
+    return policy_exit(code, finalized, args.fail_on)
 
 
 def make_report(
@@ -1947,7 +2141,8 @@ def make_report(
         "related_implementation_snapshot_date": registry.get("related_implementations_verified_on"),
         "advisory_freshness": "not_checked_offline",
         "scope": [str(root.expanduser().absolute()) for root in roots],
-        "flirt_requested": args.flirt or args.flirt_references is not None,
+        "flirt_requested": args.flirt,
+        "flirt_configuration": flirt_configuration(inventory.flirt_catalog),
         "findings": inventory.findings,
         "coverage": {
             "files_seen": inventory.files_seen,
@@ -1983,7 +2178,10 @@ def make_report(
                     "and do not clear other copies."
                 ),
                 "Unrecognized or signature-free container/compression formats can be missed.",
-                "Container layers are inspected without reconstructing the final image filesystem.",
+                (
+                    "OCI final filesystems use whiteout semantics; "
+                    "raw layer archives remain standalone scope."
+                ),
                 (
                     "Static/stripped binaries, encrypted archives, remote build inputs, "
                     "and unprovided artifacts require review."

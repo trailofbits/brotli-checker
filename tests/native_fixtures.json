@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "brotli-1.2.0-windows-x86_64-cp313",
+      "project_json_url": "https://pypi.org/pypi/Brotli/1.2.0/json",
+      "filename": "brotli-1.2.0-cp313-cp313-win_amd64.whl",
+      "size": 369116,
+      "sha256": "b63daa43d82f0cdabf98dee215b375b4058cce72871fd07934f179885aad16e8",
+      "member": "_brotli.cp313-win_amd64.pyd",
+      "member_size": 856576,
+      "member_sha256": "a7f83086a999a01db0ca8cba6d476b4aa74ec2f96292cf4e17446dd30c085c61",
+      "release": "1.2.0",
+      "reviewed_source_state": "vulnerable",
+      "target_patch_status": "unknown",
+      "expected_layouts": [
+        {"machine": "x86_64", "mapped": 6, "executable": 1, "data": 4, "resources": 1, "imports": 57, "exports": 1, "functions": 558, "dependencies": 7}
+      ]
+    },
+    {
+      "id": "brotli-1.2.1-windows-x86_64-cp313",
+      "project_json_url": "https://pypi.org/pypi/Brotli/1.2.1/json",
+      "filename": "brotli-1.2.1-cp313-cp313-win_amd64.whl",
+      "size": 371072,
+      "sha256": "e6c4fa55eab6b5684b33239597876a18a35ce1280b63ab960164032afbb8783f",
+      "member": "_brotli.cp313-win_amd64.pyd",
+      "member_size": 872960,
+      "member_sha256": "497fd40c5b45aaa596f39a2144e7ad02410e376f9477afe07b6f6c775945a96c",
+      "release": "1.2.1",
+      "reviewed_source_state": "fixed",
+      "target_patch_status": "unknown",
+      "expected_layouts": [
+        {"machine": "x86_64", "mapped": 6, "executable": 1, "data": 4, "resources": 1, "imports": 48, "exports": 1, "functions": 593, "dependencies": 7}
+      ]
+    },
+    {
+      "id": "brotli-1.2.0-macos-universal2-cp313",
+      "project_json_url": "https://pypi.org/pypi/Brotli/1.2.0/json",
+      "filename": "brotli-1.2.0-cp313-cp313-macosx_10_13_universal2.whl",
+      "size": 861523,
+      "sha256": "9e5825ba2c9998375530504578fd4d5d1059d09621a02065d1b6bfc41a8e05ab",
+      "member": "_brotli.cpython-313-darwin.so",
+      "member_size": 1920096,
+      "member_sha256": "db3d36ab1f317738b7c939f4267c5a9e5f4411173edab70649184308e71a3bdb",
+      "release": "1.2.0",
+      "reviewed_source_state": "vulnerable",
+      "target_patch_status": "unknown",
+      "expected_layouts": [
+        {"machine": "x86_64", "mapped": 3, "executable": 3, "data": 7, "resources": 0, "imports": 38, "exports": 78, "functions": 244, "dependencies": 1},
+        {"machine": "aarch64", "mapped": 4, "executable": 3, "data": 8, "resources": 0, "imports": 39, "exports": 78, "functions": 245, "dependencies": 1}
+      ]
+    },
+    {
+      "id": "brotli-1.2.1-macos-universal2-cp313",
+      "project_json_url": "https://pypi.org/pypi/Brotli/1.2.1/json",
+      "filename": "brotli-1.2.1-cp313-cp313-macosx_10_13_universal2.whl",
+      "size": 861657,
+      "sha256": "a84e0ae14d1efe782a9f143021c4e01d5ed986a140fe5070505cc5978eaf0592",
+      "member": "_brotli.cpython-313-darwin.so",
+      "member_size": 1920096,
+      "member_sha256": "2d1a8b1c24f35b4880c73ae4db33a60c0a3b531efa6a2ac315a2720add6b5f88",
+      "release": "1.2.1",
+      "reviewed_source_state": "fixed",
+      "target_patch_status": "unknown",
+      "expected_layouts": [
+        {"machine": "x86_64", "mapped": 3, "executable": 3, "data": 7, "resources": 0, "imports": 38, "exports": 78, "functions": 244, "dependencies": 1},
+        {"machine": "aarch64", "mapped": 4, "executable": 3, "data": 8, "resources": 0, "imports": 39, "exports": 78, "functions": 245, "dependencies": 1}
+      ]
+    }
+  ]
+}

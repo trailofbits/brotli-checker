@@ -49,10 +49,11 @@ Both binary scan paths expose `detection_status` independently of `patch_status`
 Table evidence includes stable signature IDs, byte sizes, file offsets, and ELF
 virtual addresses. ELF scanning is restricted to validated file-backed `PT_LOAD`
 segments; appended nonloaded data does not count. Invalid/unsupported ELF layouts
-produce incomplete recognition. For PE/Mach-O/WebAssembly magic candidates,
-matching uses file bytes and explicitly reports
-`file_bytes_not_loader_validated`: those formats' sections and runtime use have
-not been validated. Data can be embedded as a resource rather than used as code.
+produce incomplete recognition. For PE/Mach-O/WebAssembly, `loader_data_ranges` restricts matching to validated
+mapped data or Wasm data initializers. PE resources/certificates and Wasm custom
+sections do not qualify. Universal Mach-O slices are independent. Loader scope
+is still not proof that a table is referenced by executable code; layout gaps
+remain explicit.
 
 Scanning uses bounded overlapping chunks and sparse reads, with no default file
 size cap. Overlapping mappings are scanned as a union once; each accepted table

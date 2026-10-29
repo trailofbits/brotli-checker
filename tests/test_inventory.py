@@ -14,12 +14,22 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import brotli_binary_match as matcher
 import brotli_inventory as inventory
 import pytest
 from brotli_binary_match import CodeAssessment
+from test_payloads import (
+    ar_archive,
+    cpio_newc,
+    docker_save,
+    rpm_fixture,
+)
+from test_payloads import (
+    tar_bytes as payload_tar_bytes,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts/brotli_inventory.py"
 
@@ -131,7 +141,13 @@ class TestInventory:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = inventory.main(
-                [*map(str, args), "--code-references", str(self.cli_code_catalog), "--json"]
+                [
+                    *map(str, args),
+                    "--code-references",
+                    str(self.cli_code_catalog),
+                    "--no-flirt",
+                    "--json",
+                ]
             )
         return code, json.loads(output.getvalue())
 
@@ -217,6 +233,21 @@ class TestInventory:
         result = self.scan()
         assert result.findings[0]["patch_status"] == "vulnerable_source"
         assert list(self.root.iterdir()) == [target]
+
+    def test_oci_probe_limit_does_not_hide_early_ordinary_tar_members(self):
+        target = self.root / "ordinary.tar"
+        target.write_bytes(
+            payload_tar_bytes(
+                [
+                    ("decoder.c", self.sample, "file"),
+                    ("second", b"ordinary", "file"),
+                    ("third", b"ordinary", "file"),
+                ]
+            )
+        )
+        result = self.scan(target, max_files=2)
+        assert result.findings[0]["patch_status"] == "vulnerable_source"
+        assert any("Budget exhausted" in row["reason"] for row in result.gaps)
 
     def test_archive_depth_and_expansion_limits_are_visible(self):
         target = self.root / "package.zip"
@@ -492,12 +523,154 @@ class TestInventory:
         assert result.expanded_bytes_read == 1025
 
     @pytest.mark.parametrize(
+        "payload",
+        [
+            ar_archive(("decoder.c/", b"a complete file used as an exact-match fixture\n")),
+            cpio_newc(
+                [
+                    (
+                        "decoder.c",
+                        b"a complete file used as an exact-match fixture\n",
+                        0o100644,
+                    )
+                ]
+            ),
+            rpm_fixture(
+                cpio_newc(
+                    [
+                        (
+                            "decoder.c",
+                            b"a complete file used as an exact-match fixture\n",
+                            0o100644,
+                        )
+                    ]
+                )
+            ),
+        ],
+        ids=("ar", "cpio", "rpm"),
+    )
+    def test_ar_cpio_and_rpm_payloads_are_traversed_without_extraction(self, payload):
+        target = self.root / "renamed"
+        target.write_bytes(payload)
+        result = self.scan(target)
+        assert result.findings[0]["patch_status"] == "vulnerable_source"
+        assert result.gap_count == 0
+        assert list(self.root.iterdir()) == [target]
+
+    def test_rpm_archive_identity_and_member_digest_reach_analysis_report(self):
+        content = b"ELF package member"
+        payload = rpm_fixture(cpio_newc([("usr/bin/tool", content, 0o100755)]))
+        payload = payload.replace(b"a" * 64, hashlib.sha256(content).hexdigest().encode())
+        target = self.root / "fixture.rpm"
+        target.write_bytes(payload)
+        _, report = self.run_cli(target)
+        assert report["packages"] == [
+            {
+                "namespace": report["artifacts"][0]["id"],
+                "manager": "rpm",
+                "name": "fixture",
+                "version": "2:1.2.3-4",
+                "architecture": "aarch64",
+                "files": [
+                    {
+                        "path": "usr/bin/tool",
+                        "hashes": [
+                            {"algorithm": "SHA-256", "value": hashlib.sha256(content).hexdigest()}
+                        ],
+                    }
+                ],
+                "source": "RPM header/payload",
+            }
+        ]
+        assert report["ownership"][0]["status"] == "unique"
+        assert report["ownership"][0]["matches"][0]["hash_verified"] is True
+
+    def test_deb_data_member_and_oci_final_filesystem_are_traversed(self):
+        nested = tar_bytes("decoder.c", self.sample)
+        deb = ar_archive(
+            ("debian-binary/", b"2.0\n"),
+            ("control.tar.gz/", gzip.compress(tar_bytes("control", b"metadata"))),
+            ("data.tar.gz/", gzip.compress(nested)),
+        )
+        target = self.root / "package.deb"
+        target.write_bytes(deb)
+        result = self.scan(target)
+        assert any(row["patch_status"] == "vulnerable_source" for row in result.findings)
+        assert result.gap_count == 0
+
+        layer = tar_bytes("decoder.c", self.sample)
+        target.write_bytes(docker_save({"layer/layer.tar": layer}))
+        result = self.scan(target)
+        assert any("!image[0]!decoder.c" in row["path"] for row in result.findings)
+        assert result.archives_opened == 2
+        assert result.gap_count == 0
+
+    def test_two_oci_images_keep_package_namespaces_and_history_isolated(self):
+        def status(name, version):
+            return (
+                f"Package: {name}\nStatus: install ok installed\n"
+                f"Version: {version}\nArchitecture: amd64\n\n"
+            ).encode()
+
+        first = tar_bytes("var/lib/dpkg/status", status("brotli-one", "1.0.9-1"))
+        second = tar_bytes("var/lib/dpkg/status", status("brotli-two", "1.2.1-1"))
+        manifest = json.dumps(
+            [
+                {"Config": "one.json", "RepoTags": [], "Layers": ["one.tar"]},
+                {"Config": "two.json", "RepoTags": [], "Layers": ["two.tar"]},
+            ]
+        ).encode()
+        archive = payload_tar_bytes(
+            [
+                ("manifest.json", manifest, "file"),
+                ("one.tar", first, "file"),
+                ("two.tar", second, "file"),
+            ]
+        )
+        target = self.root / "images.tar"
+        target.write_bytes(archive)
+        _, report = self.run_cli(target)
+        assert [item["manifest"] for item in report["images"]] == ["docker:0", "docker:1"]
+        image_ids = {item["id"] for item in report["images"]}
+        assert {item["namespace"] for item in report["packages"]} == image_ids
+        assert {(item["name"], item["version"]) for item in report["packages"]} == {
+            ("brotli-one", "1.0.9-1"),
+            ("brotli-two", "1.2.1-1"),
+        }
+        status_artifacts = [
+            item for item in report["artifacts"] if item["path"].endswith("var/lib/dpkg/status")
+        ]
+        assert {item["namespace"] for item in status_artifacts} == image_ids
+        assert all(item["history"] and item["history_omitted"] == 0 for item in report["images"])
+
+    def test_payload_member_limit_is_reported_before_large_member_read(self):
+        target = self.root / "payload.cpio"
+        target.write_bytes(cpio_newc([("large", b"x" * 4096, 0o100644)]))
+        result = self.scan(target, max_expanded_bytes=1024)
+        assert result.files_read == 1
+        assert result.expanded_bytes_read == 0
+        assert result.gap_count == 1
+        assert "member exceeds" in result.gaps[0]["reason"]
+
+    def test_zstd_payload_uses_optional_streaming_decoder(self, monkeypatch):
+        def optional_module(name):
+            if name == "compression.zstd":
+                return SimpleNamespace(ZstdFile=lambda source, _mode: io.BytesIO(source.read()[4:]))
+            raise ImportError
+
+        import brotli_payloads  # noqa: PLC0415 -- Patch the optional provider boundary.
+
+        monkeypatch.setattr(brotli_payloads.importlib, "import_module", optional_module)
+        target = self.root / "renamed"
+        target.write_bytes(b"\x28\xb5\x2f\xfd" + self.sample)
+        result = self.scan(target)
+        assert result.findings[0]["patch_status"] == "vulnerable_source"
+        assert result.gap_count == 0
+
+    @pytest.mark.parametrize(
         "signature",
         [
-            b"!<arch>\n",
             b"!<thin>\n",
-            b"\xed\xab\xee\xdb",
-            b"\x28\xb5\x2f\xfd",
             b"7z\xbc\xaf\x27\x1c",
             b"Rar!\x1a\x07",
             b"\x04\x22\x4d\x18",
@@ -505,8 +678,6 @@ class TestInventory:
             b"\x1f\x9d",
             b"MSCF",
             b"xar!",
-            b"070701",
-            b"\x50\x2a\x4d\x18",
             b"hsqs",
             b"sqsh",
         ],
@@ -518,6 +689,18 @@ class TestInventory:
         assert code == 3
         assert report["coverage"]["gap_count"] == 1
         assert "Unsupported" in report["coverage"]["gaps"][0]["reason"]
+
+    @pytest.mark.parametrize(
+        "signature",
+        [b"!<arch>\n", b"\xed\xab\xee\xdb", b"\x28\xb5\x2f\xfd", b"070701"],
+    )
+    def test_malformed_supported_payload_prevents_exit_zero(self, signature):
+        target = self.root / "renamed"
+        target.write_bytes(signature + b"\0fixture")
+        code, report = self.run_cli(target, "--brotli-version", "1.1.1")
+        assert code == 3
+        assert report["coverage"]["gap_count"] == 1
+        assert "Cannot inspect archive" in report["coverage"]["gaps"][0]["reason"]
 
     @pytest.mark.parametrize(
         "suffix",
@@ -729,9 +912,10 @@ class TestInventory:
         target = self.root / "libbrotli.dll"
         target.write_bytes(b"MZ-BrotliDecoderDecompress-text")
         result = self.scan(target, max_text_bytes=4)
-        assert result.gap_count == 1
+        assert result.gap_count == 2
+        assert any("Binary layout is incomplete" in row["reason"] for row in result.gaps)
         assert result.findings[0]["kind"] == "decoder_symbol_candidate"
-        assert "binary analysis still completed" in result.gaps[0]["reason"]
+        assert any("binary analysis still completed" in row["reason"] for row in result.gaps)
 
     def test_skill_copy_runs_outside_the_repository(self):
         installed = self.root / "installed/brotli-checker"

@@ -9,26 +9,33 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from brotli_analysis import add_analysis_arguments, scan_with_analysis
 from brotli_binary_data import Buffer, sha256_data
 from brotli_binary_match import (
     REFERENCES,
     CodeReference,
     load_references,
 )
-from brotli_flirt import DEFAULT_FLIRT_BUNDLE, FlirtCatalog
 from brotli_inventory import (
     DEFAULT_MAX_EXPANDED_BYTES,
     DEFAULT_MAX_FILE_BYTES,
     DEFAULT_MAX_TOTAL_BYTES,
     DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
+    REGISTRY,
     Inventory,
     archive_kind,
     assess_binary,
+    configure_flirt,
+    flirt_configuration,
     is_binary_name_candidate,
-    load_optional_flirt,
     positive,
 )
+from brotli_reporting_cli import CliEvidence, add_reporting_arguments, policy_exit
+
+if TYPE_CHECKING:
+    from brotli_flirt import FlirtCatalog, FlirtSession
 
 MAGICS = {
     b"\x7fELF": "ELF",
@@ -58,7 +65,7 @@ class BinaryInventory(Inventory):
         archive_depth: int,
         max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
         max_total_expanded_bytes: int = DEFAULT_MAX_TOTAL_EXPANDED_BYTES,
-        flirt_catalog: FlirtCatalog | None = None,
+        flirt_catalog: FlirtCatalog | FlirtSession | None = None,
     ) -> None:
         super().__init__(
             {"fingerprints": []},
@@ -126,9 +133,13 @@ class BinaryInventory(Inventory):
 
     def inspect(self, data: Buffer, label: str, depth: int) -> None:
         digest = sha256_data(data)
+        if self.analysis is not None:
+            self.analysis.record(data, label, digest, depth)
         file_format = next((name for magic, name in MAGICS.items() if data.startswith(magic)), None)
         catalog_label = self.catalog.get(digest)
         assessment = assess_binary(data, self.references, self.flirt_catalog)
+        if self.analysis is not None:
+            self.analysis.enrich(data, label, assessment)
         for reason in assessment["gaps"]:
             self.gap(label, reason)
         named = is_binary_name_candidate(label)
@@ -190,8 +201,15 @@ def main(argv: list[str] | None = None) -> int:
         default=REFERENCES,
         help="Compiled decoder reference catalog (defaults to packaged references)",
     )
-    parser.add_argument(
-        "--flirt", action="store_true", help="enable optional FLIRT function recognition"
+    flirt_options = parser.add_mutually_exclusive_group()
+    flirt_options.add_argument(
+        "--flirt", action="store_true", default=True, help="enable automatic FLIRT (default)"
+    )
+    flirt_options.add_argument(
+        "--no-flirt",
+        dest="flirt",
+        action="store_false",
+        help="explicitly disable FLIRT for a faster scan",
     )
     parser.add_argument(
         "--flirt-references",
@@ -235,13 +253,16 @@ def main(argv: list[str] | None = None) -> int:
         default=2,
         help="maximum nested archive levels, from 0 to 5 (default: 2)",
     )
+    add_analysis_arguments(parser)
+    add_reporting_arguments(parser)
     args = parser.parse_args(argv)
+    if not args.flirt and args.flirt_references is not None:
+        parser.error("--no-flirt cannot be combined with --flirt-references")
     try:
+        evidence = CliEvidence(args, REGISTRY)
         catalog = load_catalog(args.catalog)
         references = load_references(args.code_references)
-        flirt_catalog, flirt_error = load_optional_flirt(
-            args.flirt_references or (DEFAULT_FLIRT_BUNDLE if args.flirt else None)
-        )
+        flirt_catalog, flirt_error = configure_flirt(args.flirt_references, enabled=args.flirt)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     inventory = BinaryInventory(
@@ -257,12 +278,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     if flirt_error is not None:
         inventory.gap("<FLIRT>", flirt_error)
-    roots = [root.expanduser().absolute() for root in args.roots]
-    inventory.scan_roots(roots)
+    roots = [
+        root.expanduser().absolute() for root in [*args.roots, *args.deployment_root, *args.sbom]
+    ]
+    try:
+        analysis_report = scan_with_analysis(inventory, roots, args)
+        identities = evidence.check_inputs(inventory)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     report = {
         "schema_version": 2,
         "scope": [str(root) for root in roots],
-        "flirt_requested": args.flirt or args.flirt_references is not None,
+        "flirt_requested": args.flirt,
+        "flirt_configuration": flirt_configuration(inventory.flirt_catalog),
         "findings": inventory.findings,
         "coverage": {
             "files_read": inventory.files_read,
@@ -278,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
             "gaps": inventory.gaps,
             "excluded": [".git"],
             "symlinks_followed": False,
+            "symlink_targets_checked_directly": inventory.covered_symlinks,
             "limits": {
                 key: getattr(args, key)
                 for key in (
@@ -303,8 +332,16 @@ def main(argv: list[str] | None = None) -> int:
             "No files are executed, loaded, extracted, moved, or quarantined.",
         ],
     }
-    print(json.dumps(report, indent=2, ensure_ascii=True))
-    return 3 if inventory.gap_count else (1 if inventory.findings else 0)
+    report.update(analysis_report)
+    try:
+        finalized = evidence.finalize(report, identities)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    print(
+        json.dumps(finalized.sarif if args.sarif else finalized.report, indent=2, ensure_ascii=True)
+    )
+    normal = 3 if inventory.gap_count else (1 if inventory.findings else 0)
+    return policy_exit(normal, finalized, args.fail_on)
 
 
 # gremlin: pardon[out_of_scope] CLI bootstrap guard; imports must not launch argparse.

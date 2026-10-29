@@ -12,6 +12,7 @@ from bisect import bisect_right
 from typing import TYPE_CHECKING
 
 from brotli_binary_data import normalize_ranges
+from brotli_binary_layout import inspect_layout
 from brotli_binary_match import elf_header, file_backed_ranges, program_headers
 
 if TYPE_CHECKING:
@@ -80,7 +81,9 @@ ANCHORS = re.compile(
 )
 
 
-def scan_tables(data: Buffer, ranges: list[tuple[int, int]]) -> tuple[dict, bool]:
+def _scan_tables(
+    data: Buffer, ranges: list[tuple[int, int]], max_candidates: int
+) -> tuple[dict, bool, int]:
     found = {}
     candidates = 0
     union, starts, coverage_ends = normalize_ranges(ranges)
@@ -94,8 +97,8 @@ def scan_tables(data: Buffer, ranges: list[tuple[int, int]]) -> tuple[dict, bool
                 if name in found:
                     continue
                 candidates += 1
-                if candidates > MAX_CANDIDATES:
-                    return found, True
+                if candidates > max_candidates:
+                    return found, True, candidates
                 signature = SIGNATURES[name]
                 offset = position + match.start()
                 owner = bisect_right(starts, offset) - 1
@@ -105,7 +108,82 @@ def scan_tables(data: Buffer, ranges: list[tuple[int, int]]) -> tuple[dict, bool
                     and data[offset : offset + len(signature)] == signature
                 ):
                     found[name] = {"id": name, "file_offset": offset, "size_bytes": len(signature)}
-    return found, False
+    return found, False, candidates
+
+
+def scan_tables(data: Buffer, ranges: list[tuple[int, int]]) -> tuple[dict, bool]:
+    found, limited, _ = _scan_tables(data, ranges, MAX_CANDIDATES)
+    return found, limited
+
+
+def _accepted_tables(found: dict[str, dict]) -> list[dict]:
+    accepted = [value for name, value in found.items() if name.startswith("command_lut_")]
+    if CODE_LENGTH_TABLES.keys() <= found.keys():
+        accepted.extend(found[name] for name in CODE_LENGTH_TABLES)
+    return accepted
+
+
+def _layout_scoped_tables(data: Buffer) -> tuple[list[dict], bool, dict]:
+    layout = inspect_layout(data)
+    layouts = layout["slices"] or [layout]
+    matches = []
+    candidates = 0
+    limited = False
+    layout_gaps = list(layout["gaps"])
+    for slice_index, child in enumerate(layouts):
+        if layout["slices"]:
+            layout_gaps.extend(child["gaps"])
+        range_rows = child["ranges"]["data"]
+        ranges = [(row["file_offset"], row["size"]) for row in range_rows]
+        found, slice_limited, used = _scan_tables(data, ranges, max(0, MAX_CANDIDATES - candidates))
+        candidates += used
+        limited |= slice_limited
+        for match in _accepted_tables(found):
+            match.update(
+                format=child["kind"],
+                machine=child["machine"],
+                bits=child["bits"],
+                byteorder=child["byteorder"],
+            )
+            if layout["slices"]:
+                match["slice_index"] = slice_index
+                match["slice_offset"] = child["slice_offset"]
+            virtual_addresses = {
+                row[address] + match["file_offset"] - row["file_offset"]
+                for row in range_rows
+                for address in ("rva", "vmaddr")
+                if address in row
+                and row["file_offset"] <= match["file_offset"]
+                and match["file_offset"] + match["size_bytes"] <= row["file_offset"] + row["size"]
+            }
+            if virtual_addresses:
+                match["virtual_addresses"] = sorted(virtual_addresses)
+            matches.append(match)
+        if slice_limited:
+            break
+    return matches, limited, {**layout, "gaps": layout_gaps}
+
+
+def _recognized_layout_result(data: Buffer, result: dict) -> dict:
+    matches, candidate_limited, layout = _layout_scoped_tables(data)
+    layout_limited = bool(layout["gaps"])
+    reasons = []
+    if candidate_limited:
+        reasons.append("Decoder signature candidate limit reached; recognition is incomplete.")
+    if layout_limited:
+        reasons.append("Binary layout is incomplete: " + "; ".join(layout["gaps"]))
+    if not reasons:
+        reasons.append("Decoder table signatures identify data, not patch state or executable use.")
+    return {
+        **result,
+        "status": "decoder_tables_detected" if matches else "not_detected",
+        "scope": "loader_data_ranges",
+        "format": layout["kind"],
+        "matches": matches,
+        "limited": candidate_limited or layout_limited,
+        "layout_gaps": layout["gaps"],
+        "reason": " ".join(reasons),
+    }
 
 
 def recognize_decoder_data(data: Buffer) -> dict:
@@ -121,14 +199,11 @@ def recognize_decoder_data(data: Buffer) -> dict:
             }
         result["scope"] = "elf_load_segments"
     elif data.startswith(OTHER_BINARY_MAGICS):
-        ranges = [(0, len(data))]
-        result["scope"] = "file_bytes_not_loader_validated"
+        return _recognized_layout_result(data, result)
     else:
         return result
     found, limited = scan_tables(data, ranges)
-    accepted = [value for name, value in found.items() if name.startswith("command_lut_")]
-    if CODE_LENGTH_TABLES.keys() <= found.keys():
-        accepted.extend(found[name] for name in CODE_LENGTH_TABLES)
+    accepted = _accepted_tables(found)
     if result["scope"] == "elf_load_segments" and accepted:
         segments = list(program_headers(data, elf_header(data)))
         for row in accepted:

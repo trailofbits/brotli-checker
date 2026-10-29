@@ -35,19 +35,22 @@ the conversation already provides local/server access, use it. Ask only for
 missing access or a target that cannot be inferred. Do not send malformed
 streams or exploit probes.
 
-From this skill's directory, run the offline inventory helper (Python 3.12–3.15).
+From this skill's directory, use Python 3.14 with the pinned analysis backends.
+The core can run on Python 3.12-3.15 without them, but unavailable analysis is a
+coverage gap, not an equivalent scan.
 Use JSON internally for the evidence; the default text output is for people:
 
 ```sh
-python3 scripts/brotli_inventory.py /absolute/target --json
+uv run --python 3.14 --with python-flirt==0.10.2 --with capstone==5.0.9 \
+  --with pyelftools==0.33 --with zstandard==0.25.0 python scripts/brotli_inventory.py /absolute/target --json
 ```
 
-It reads files and bounded ZIP/JAR/WAR/wheel, TAR, gzip, bzip2, and XZ containers
-without extracting them or executing target code. Known signatures identify
-renamed archives and extensionless layers. Recognized unsupported formats such
-as Debian, RPM, and Zstandard produce coverage gaps; provide unpacked files.
-Signature-free or unrecognized encodings can be missed. Container traversal
-does not reconstruct a final image filesystem. It checks eligible file bytes
+It reads files and bounded ZIP/JAR/WAR/wheel, TAR, gzip, bzip2, XZ, ar/DEB,
+RPM/cpio, and Zstandard payloads without extracting them to target paths or
+executing target code. Known signatures identify renamed archives. OCI/Docker
+save images use final-filesystem whiteout semantics; historical layer records
+are not evidence of shipment. Unsupported encodings and budget exhaustion are
+coverage gaps. It checks eligible file bytes
 against source fingerprints, identifies modified C decoder patterns, and records
 dependency, native/Wasm, and JavaScript/TypeScript fetch/Undici candidates.
 Fetch references include source locations; they are heuristic leads, not
@@ -144,19 +147,29 @@ evidence than a string, but occurs in both affected and fixed builds. Report
 addresses, and mapping scope; locate code cross-references to these **data** tables,
 then inspect bounded executable ranges and error propagation. Do not disassemble
 table bytes as if they were code or promote a table match to an affected/fixed
-verdict. PE/Mach-O/WASM table evidence is not loader validated. Dictionary-only
+verdict. PE/Mach-O/Wasm table evidence is scoped to validated mapped data or data
+initializers; universal Mach-O slices remain separate. These formats do not yet
+have a paired patch-code reference corpus. Dictionary-only
 presence does not establish a decoder, and unmatched signatures do not prove absence.
 
-For unmatched ELF code, use the optional [FLIRT function-recognition workflow](references/flirt.md)
+For unmatched ELF code, use the automatic [FLIRT function-recognition workflow](references/flirt.md)
 to obtain individual function names and bounded code windows from trusted
-patterns. Enable it explicitly with `--flirt`; use Python 3.12-3.14 and the pinned
-backend as documented. Inspect `flirt.matches`, `ambiguous_matches`, gaps, and
+patterns. It runs by default; `--no-flirt` is an explicit speed/coverage tradeoff.
+Use Python 3.12-3.14 and the pinned backend as documented. Inspect `flirt.matches`, `ambiguous_matches`, gaps, and
 `ambiguity_complete`. Do not equate `source_state_provenance` with target patch
 state or discard table/symbol/code evidence when FLIRT disagrees or misses.
 Use recognized windows for bounded disassembly, then verify actual error
 propagation and caller/callee targets. Unsupported reference constraints are
 rejected rather than assumed satisfied. The scanner does not download patterns
 or execute the target.
+
+Read [structured analysis](references/analysis.md) for provider and function graphs,
+verified debug companions, hash-bound SBOMs, same-root package ownership, vendor
+snapshots, SARIF, and comparable report diffs. Function/data-reference edges are
+triage evidence, not a semantic fix proof. Use `--deployment-root` for a supplied
+image filesystem and `--debug-file` only for explicitly supplied companions.
+Embedded debug paths are never followed. Package/vendor assertions and provider
+relations never transfer fixed status to another artifact or embedded copy.
 
 For an unresolved local ELF with decoder table, name, symbol, version, or code evidence,
 collect bounded disassembly for model review instead of stopping at a generic

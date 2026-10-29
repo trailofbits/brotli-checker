@@ -29,20 +29,20 @@ jobs:
           version: '0.13.5'
           python-version: ${{ matrix.python-version }}
       - name: Install development tools
-        run: uv sync --locked --extra flirt
+        run: uv sync --locked --extra flirt --extra analysis
       - name: Check formatting, lint, and types
         if: matrix.python-version == '3.12'
         run: |
           uv run --locked ruff format --check .
           uv run --locked ruff check .
-          uv run --locked ty check skills/brotli-checker/scripts scripts tests
+          uv run --locked --group mutation ty check skills/brotli-checker/scripts scripts tests
       - name: Run offline tests
-        run: uv run --locked --extra flirt pytest
+        run: uv run --locked --extra flirt --extra analysis pytest
       - name: Validate packaged FLIRT corpus
         if: matrix.python-version == '3.12'
         env:
           BROTLI_FLIRT_REFERENCE_TESTS: '1'
-        run: uv run --locked --extra flirt pytest tests/test_flirt_packaged.py --no-cov
+        run: uv run --locked --extra flirt --extra analysis pytest tests/test_flirt_packaged.py --no-cov
 
   macos:
     name: Python 3.12 (macOS)
@@ -57,7 +57,7 @@ jobs:
           version: '0.13.5'
           python-version: '3.12'
       - name: Run portable offline tests
-        run: uv run --locked --extra flirt pytest
+        run: uv run --locked --extra flirt --extra analysis pytest
 
   trailmark:
     name: Trailmark source discovery
@@ -92,24 +92,81 @@ jobs:
         run: make verify-node-fetch
 
   mutation:
-    name: Mutations (${{ matrix.module }})
+    name: Mutations (${{ matrix.module }}/${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        module:
-          - brotli_binary_data
-          - brotli_binary_inventory
-          - brotli_binary_match
-          - brotli_binary_metadata
-          - brotli_binary_signatures
-          - brotli_binary_triage
-          - brotli_dependencies
-          - brotli_flirt
-          - brotli_inventory
-          - brotli_source_discovery
-          - brotli_source_leads
+        include:
+          - module: brotli_analysis
+            shard: all
+          - module: brotli_binary_data
+            shard: all
+          - module: brotli_binary_graph
+            shard: comparison
+          - module: brotli_binary_graph
+            shard: arithmetic-boundary
+          - module: brotli_binary_graph
+            shard: boolean-return
+          - module: brotli_binary_inventory
+            shard: all
+          - module: brotli_binary_layout
+            shard: comparison
+          - module: brotli_binary_layout
+            shard: arithmetic-boundary
+          - module: brotli_binary_layout
+            shard: boolean-return
+          - module: brotli_binary_match
+            shard: all
+          - module: brotli_binary_metadata
+            shard: all
+          - module: brotli_binary_signatures
+            shard: all
+          - module: brotli_binary_triage
+            shard: all
+          - module: brotli_debug_companions
+            shard: comparison
+          - module: brotli_debug_companions
+            shard: arithmetic-boundary
+          - module: brotli_debug_companions
+            shard: boolean-return
+          - module: brotli_dependencies
+            shard: all
+          - module: brotli_evidence_report
+            shard: all
+          - module: brotli_flirt
+            shard: all
+          - module: brotli_inventory
+            shard: comparison
+          - module: brotli_inventory
+            shard: arithmetic-boundary
+          - module: brotli_inventory
+            shard: boolean-return
+          - module: brotli_package_provenance
+            shard: comparison
+          - module: brotli_package_provenance
+            shard: arithmetic-boundary
+          - module: brotli_package_provenance
+            shard: boolean-return
+          - module: brotli_payloads
+            shard: comparison
+          - module: brotli_payloads
+            shard: arithmetic-boundary
+          - module: brotli_payloads
+            shard: boolean-return
+          - module: brotli_provenance
+            shard: all
+          - module: brotli_providers
+            shard: all
+          - module: brotli_report_finalizer
+            shard: all
+          - module: brotli_reporting_cli
+            shard: all
+          - module: brotli_source_discovery
+            shard: all
+          - module: brotli_source_leads
+            shard: all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,14 +178,15 @@ jobs:
       - name: Run module mutation tests
         env:
           MUTATION_MODULE: ${{ matrix.module }}
+          MUTATION_SHARD: ${{ matrix.shard }}
         run: |
           make known-answers
-          uv run --locked --extra flirt --group mutation pytest --gremlins --no-cov --gremlin-executor=subprocess --gremlin-targets="skills/brotli-checker/scripts/${MUTATION_MODULE}.py"
+          uv run --locked --extra flirt --extra analysis --group mutation python scripts/run_mutation_shard.py "$MUTATION_MODULE" "$MUTATION_SHARD"
       - name: Retain mutation evidence
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: scanner-mutation-${{ matrix.module }}
+          name: scanner-mutation-${{ matrix.module }}-${{ matrix.shard }}
           path: coverage/gremlins/
           if-no-files-found: error
           retention-days: 14
