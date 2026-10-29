@@ -6,7 +6,7 @@ dev:
 lint:
 	uv run --locked ruff format --check .
 	uv run --locked ruff check .
-	uv run --locked ty check skills/brotli-checker/scripts scripts tests
+	uv run --locked --group mutation ty check skills/brotli-checker/scripts scripts tests
 
 format:
 	uv run --locked ruff check --fix .

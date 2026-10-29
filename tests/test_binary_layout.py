@@ -334,6 +334,9 @@ def test_pe_ordinal_import_forwarded_export_and_unterminated_rsds_are_distinguis
     payload_size = struct.unpack_from("<I", unterminated, 0xA00 + 16)[0]
     unterminated[0xA40 + payload_size - 1] = ord("x")
     assert any("RSDS path" in gap for gap in layout.inspect_layout(bytes(unterminated))["gaps"])
+    missing_path = bytearray(pe_fixture())
+    struct.pack_into("<I", missing_path, 0xA00 + 16, 24)
+    assert any("RSDS path" in gap for gap in layout.inspect_layout(bytes(missing_path))["gaps"])
 
 
 def test_pe_directory_termination_and_executable_flag_gaps_are_explicit():
@@ -763,6 +766,101 @@ def test_unknown_input_has_stable_empty_contract():
     assert result["kind"] == "unknown"
     assert result["gaps"] == []
     assert result["slices"] == []
+
+
+def test_core_layout_ranges_strings_and_gap_retention_are_exact(monkeypatch):
+    data = b"abc\0"
+    layout._validate_range(data, 0, len(data))  # noqa: SLF001
+    layout._validate_range(data, len(data), 0)  # noqa: SLF001
+    assert layout._checked(data, 0, len(data)) == data  # noqa: SLF001
+    assert layout._cstring(data, 0, len(data)) == "abc"  # noqa: SLF001
+    assert layout._cstring(data, 3, len(data)) == ""  # noqa: SLF001
+    for offset, size in ((-1, 0), (0, -1), (len(data) + 1, 0), (len(data), 1)):
+        with pytest.raises(ValueError, match="range outside"):
+            layout._validate_range(data, offset, size)  # noqa: SLF001
+    with pytest.raises(ValueError, match="offset outside"):
+        layout._cstring(data, len(data), len(data))  # noqa: SLF001
+
+    exact = b"x" * layout.MAX_NAME_BYTES + b"\0"
+    assert layout._cstring(exact, 0, len(exact)) == "x" * layout.MAX_NAME_BYTES  # noqa: SLF001
+    with pytest.raises(ValueError, match="overlong"):
+        layout._cstring(b"x" * (layout.MAX_NAME_BYTES + 1) + b"\0", 0, layout.MAX_NAME_BYTES + 2)  # noqa: SLF001
+
+    monkeypatch.setattr(layout, "MAX_GAPS", 2)
+    result = layout._layout()  # noqa: SLF001
+    for reason in ("first", "second", "third", "fourth"):
+        layout._gap(result, reason)  # noqa: SLF001
+    assert result["gaps"] == ["first", "Layout gap reporting limit reached"]
+
+
+def test_layout_value_objects_and_helpers_preserve_half_open_boundaries(monkeypatch):
+    value = layout._layout("fixture")  # noqa: SLF001 -- Direct schema contract.
+    assert value["kind"] == "fixture"
+    assert set(value["ranges"]) == {
+        "mapped",
+        "executable",
+        "data",
+        "resources",
+        "code",
+        "relocations",
+    }
+    assert layout._range(3, 4, role="table") == {  # noqa: SLF001
+        "file_offset": 3,
+        "size": 4,
+        "role": "table",
+    }
+    assert layout._checked(b"abc", 3, 0) == b""  # noqa: SLF001
+    for offset, size in ((-1, 0), (0, -1), (4, 0), (3, 1)):
+        with pytest.raises(ValueError, match="outside"):
+            layout._validate_range(b"abc", offset, size)  # noqa: SLF001
+    monkeypatch.setattr(layout, "MAX_NAME_BYTES", 3)
+    assert layout._cstring(b"abc\0", 0, 4) == "abc"  # noqa: SLF001
+    with pytest.raises(ValueError, match="overlong"):
+        layout._cstring(b"abcd\0", 0, 5)  # noqa: SLF001
+
+
+def test_pe_directory_requires_both_rva_and_size_and_supports_exact_last_entry():
+    directories = [(0x1000, 0), (0, 4), (0x2000, 8)]
+    assert layout._pe_directory(directories, 0) == (0, 0)  # noqa: SLF001
+    assert layout._pe_directory(directories, 1) == (0, 0)  # noqa: SLF001
+    assert layout._pe_directory(directories, 2) == (0x2000, 8)  # noqa: SLF001
+    assert layout._pe_directory(directories, 3) == (0, 0)  # noqa: SLF001
+
+
+def test_pe_rva_rejects_virtual_tail_and_accepts_exact_raw_end():
+    sections = [
+        {
+            "virtual_address": 0x1000,
+            "virtual_size": 8,
+            "file_offset": 2,
+            "raw_size": 4,
+        }
+    ]
+    assert layout._pe_rva(sections, 0x1003, 1) == 5  # noqa: SLF001
+    assert layout._pe_rva(sections, 0x1004, 0) == 6  # noqa: SLF001
+    with pytest.raises(ValueError, match="not backed"):
+        layout._pe_rva(sections, 0x1004, 1)  # noqa: SLF001
+
+
+def test_pe_rva_and_directory_helpers_preserve_file_backing_boundaries():
+    sections = [
+        {
+            "virtual_address": 0x1000,
+            "virtual_size": 8,
+            "file_offset": 4,
+            "raw_size": 4,
+        }
+    ]
+    assert layout._pe_rva(sections, 0x1000, 4) == 4  # noqa: SLF001
+    assert layout._pe_rva(sections, 0x1004, 0) == 8  # noqa: SLF001
+    for rva, size in ((0xFFF, 1), (0x1004, 1), (0x1008, 1)):
+        with pytest.raises(ValueError, match="not backed"):
+            layout._pe_rva(sections, rva, size)  # noqa: SLF001
+    directories = [(0x1000, 4), (0, 4), (0x1000, 0)]
+    assert layout._pe_directory(directories, 0) == (0x1000, 4)  # noqa: SLF001
+    assert layout._pe_directory(directories, 1) == (0, 0)  # noqa: SLF001
+    assert layout._pe_directory(directories, 2) == (0, 0)  # noqa: SLF001
+    assert layout._pe_directory(directories, 3) == (0, 0)  # noqa: SLF001
 
 
 def test_layout_parsers_use_sparse_filedata_contract(tmp_path):

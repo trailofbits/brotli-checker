@@ -4,6 +4,7 @@ import json
 import stat
 import struct
 import tarfile
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import brotli_payloads as payloads
@@ -148,6 +149,12 @@ def test_payload_limits_subranges_and_names_enforce_exact_boundaries():
         payloads.PayloadLimits(max_members=-1)
     with pytest.raises(payloads.PayloadError, match="outside input"):
         payloads.SubrangeStream(b"abc", 2, 2)
+    probe = payloads.SubrangeStream(b"012345", 1, 3)
+    assert probe.seek(1) == 1
+    target = bytearray(b"xxxxx")
+    assert probe.readinto(target) == 2
+    assert len(target) == 5
+    assert target == b"23xxx"
     stream = payloads.SubrangeStream(b"012345", 1, 3)
     assert stream.readable()
     assert stream.seekable()
@@ -171,6 +178,96 @@ def test_payload_limits_subranges_and_names_enforce_exact_boundaries():
         payloads._checked(b"abc", 2, 2)  # noqa: SLF001 -- Direct range boundary.
 
 
+def test_payload_evidence_objects_are_immutable_and_stream_views_do_not_copy():
+    limits = payloads.PayloadLimits(1, 2, 3)
+    member = payloads.PayloadMember("file", 2, b"xabc", 1, metadata={"origin": "fixture"})
+    image = payloads.OciFilesystem((member,), (), (), "fixture")
+    rpm = payloads.RpmPayload({"name": "fixture"}, "none", member)
+    for value, field in (
+        (limits, "max_members"),
+        (member, "size"),
+        (image, "manifest"),
+        (rpm, "compressor"),
+    ):
+        with pytest.raises(FrozenInstanceError):
+            setattr(value, field, None)
+    with member.open() as stream:
+        assert isinstance(stream, payloads.SubrangeStream)
+        assert stream.read() == b"ab"
+    assert member.read() == b"ab"
+    assert member.metadata == {"origin": "fixture"}
+
+
+@pytest.mark.parametrize("field", ["max_members", "max_member_bytes", "max_total_bytes"])
+def test_each_payload_limit_rejects_negative_values(field):
+    values = {"max_members": 1, "max_member_bytes": 1, "max_total_bytes": 1}
+    values[field] = -1
+    with pytest.raises(ValueError, match="nonnegative"):
+        payloads.PayloadLimits(**values)
+
+
+@pytest.mark.parametrize("value", [True, 1.0, "1"], ids=["boolean", "float", "string"])
+def test_payload_limits_require_exact_integers(value):
+    with pytest.raises(ValueError, match="nonnegative"):
+        payloads.PayloadLimits(max_members=value)
+
+
+def test_subrange_seek_clamps_past_end_and_readinto_preserves_unused_bytes():
+    stream = payloads.SubrangeStream(b"abcdef", 1, 3)
+    assert stream.seek(100) == 3
+    target = bytearray(b"unchanged")
+    assert stream.readinto(target) == 0
+    assert target == b"unchanged"
+    assert stream.seek(0) == 0
+    target = bytearray(b".....")
+    assert stream.readinto(target) == 3
+    assert target == b"bcd.."
+    assert stream.tell() == 3
+
+
+@pytest.mark.parametrize(
+    ("offset", "size"),
+    [(0, 0), (0, 3), (3, 0)],
+    ids=("empty-start", "whole-input", "empty-end"),
+)
+def test_subrange_and_checked_ranges_accept_every_exact_endpoint(offset, size):
+    stream = payloads.SubrangeStream(b"abc", offset, size)
+    assert stream.read() == b"abc"[offset : offset + size]
+    assert payloads._checked(b"abc", offset, size) == b"abc"[offset : offset + size]  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("offset", "size"),
+    [(-1, 0), (0, -1), (4, 0), (3, 1), (1, 3)],
+    ids=("negative-offset", "negative-size", "offset-past-end", "start-at-end", "cross-end"),
+)
+def test_subrange_and_checked_ranges_reject_each_outside_dimension(offset, size):
+    with pytest.raises(payloads.PayloadError, match="outside input"):
+        payloads.SubrangeStream(b"abc", offset, size)
+    with pytest.raises(payloads.PayloadError, match="outside input"):
+        payloads._checked(b"abc", offset, size)  # noqa: SLF001
+
+
+def test_payload_names_accept_exact_limit_and_normalize_only_safe_segments():
+    assert payloads._safe_name("x" * payloads.MAX_NAME_BYTES) == "x" * payloads.MAX_NAME_BYTES  # noqa: SLF001
+    assert payloads._safe_name("./dir\\file") == "dir/file"  # noqa: SLF001
+    assert payloads._safe_name("control\x80") == "control\x80"  # noqa: SLF001
+    for value in ("control\x1f", "control\x7f"):
+        with pytest.raises(payloads.PayloadError, match="control"):
+            payloads._safe_name(value)  # noqa: SLF001
+
+
+def test_expanded_stream_limit_accepts_exact_bytes_and_rejects_first_extra_byte():
+    exact = payloads._ExpandedLimitStream(io.BytesIO(b"abc"), 3)  # noqa: SLF001
+    target = bytearray(3)
+    assert exact.readinto(target) == 3
+    assert target == b"abc"
+    assert exact.readinto(target) == 0
+    overflow = payloads._ExpandedLimitStream(io.BytesIO(b"abcd"), 3)  # noqa: SLF001
+    with pytest.raises(payloads.PayloadError, match="expanded-byte limit"):
+        overflow.readinto(bytearray(4))
+
+
 def test_bounded_member_total_is_independent_of_per_member_limit():
     members = iter(
         [
@@ -183,6 +280,20 @@ def test_bounded_member_total_is_independent_of_per_member_limit():
             payloads._bounded_members(  # noqa: SLF001 -- Direct aggregate-limit contract.
                 members,
                 payloads.PayloadLimits(max_members=2, max_member_bytes=3, max_total_bytes=5),
+            )
+        )
+
+
+def test_bounded_member_limits_accept_exact_population_and_reject_each_overflow():
+    exact = [payloads.PayloadMember("a", 2, b"aa"), payloads.PayloadMember("b", 3, b"bbb")]
+    limits = payloads.PayloadLimits(max_members=2, max_member_bytes=3, max_total_bytes=5)
+    assert list(payloads._bounded_members(iter(exact), limits)) == exact  # noqa: SLF001
+    with pytest.raises(payloads.PayloadError, match="member count"):
+        list(payloads._bounded_members(iter([*exact, exact[0]]), limits))  # noqa: SLF001
+    with pytest.raises(payloads.PayloadError, match="member exceeds"):
+        list(
+            payloads._bounded_members(  # noqa: SLF001
+                iter([payloads.PayloadMember("large", 4, b"xxxx")]), limits
             )
         )
 
@@ -217,6 +328,17 @@ def test_oci_probe_limits_and_malformed_tar_are_fail_closed():
     assert not payloads.oci_archive_candidate(many, payloads.PayloadLimits(max_members=1))
     with pytest.raises(payloads.PayloadError, match="cannot inspect tar"):
         payloads.oci_archive_candidate(b"not a tar archive")
+
+
+def test_oci_probe_requires_complete_root_marker_pair_and_honors_first_member_limit():
+    index_only = tar_bytes([("index.json", b'{"manifests":[]}', "file")])
+    layout_only = tar_bytes([("oci-layout", b'{"imageLayoutVersion":"1.0.0"}', "file")])
+    assert payloads.oci_archive_candidate(index_only) is False
+    assert payloads.oci_archive_candidate(layout_only) is False
+    marker_first = tar_bytes([("manifest.json", b"[]", "file"), ("later", b"x", "file")])
+    assert payloads.oci_archive_candidate(
+        marker_first, payloads.PayloadLimits(max_members=1)
+    ) is True
 
 
 def test_ar_and_deb_members_are_slice_streams_without_extraction():
@@ -338,6 +460,23 @@ def test_cpio_names_trailers_and_member_types_fail_closed():
     unterminated[114] = ord("x")
     with pytest.raises(payloads.PayloadError, match="lacks terminator"):
         list(payloads.iter_cpio_members(bytes(unterminated)))
+    longest = "x" * payloads.MAX_NAME_BYTES
+    assert (
+        next(payloads.iter_cpio_members(cpio_newc([(longest, b"", stat.S_IFREG | 0o600)]))).name
+        == longest
+    )
+    with pytest.raises(payloads.PayloadError, match="name size"):
+        list(
+            payloads.iter_cpio_members(
+                cpio_newc([("x" * (payloads.MAX_NAME_BYTES + 1), b"", stat.S_IFREG | 0o600)])
+            )
+        )
+
+
+def test_bounded_expanded_reader_accepts_exact_limit_and_rejects_first_extra_byte():
+    assert payloads._read_all_bounded(io.BytesIO(b"abc"), 3) == b"abc"  # noqa: SLF001
+    with pytest.raises(payloads.PayloadError, match="exceeds 2-byte limit"):
+        payloads._read_all_bounded(io.BytesIO(b"abc"), 2)  # noqa: SLF001
 
 
 def test_rpm_header_provenance_and_streamed_gzip_cpio():
@@ -400,6 +539,31 @@ def test_rpm_header_alignment_uniqueness_and_lengths_are_validated():
     struct.pack_into(">I", truncated_integer, 16 + 12, 2)
     with pytest.raises(payloads.PayloadError, match="truncated RPM integer"):
         payloads.rpm_payload(lead + bytes(truncated_integer))
+
+
+def test_rpm_header_binary_values_and_exact_string_limit_are_preserved(monkeypatch):
+    binary = (
+        b"\x8e\xad\xe8\x01"
+        + bytes(4)
+        + struct.pack(">II", 1, 2)
+        + struct.pack(">IIII", 5099, 7, 0, 2)
+        + b"\x00\xff"
+    )
+    values, end = payloads._rpm_header(binary, 0)  # noqa: SLF001 -- Exact RPM tag decoding.
+    assert values[5099] == b"\x00\xff"
+    assert end == len(binary)
+    monkeypatch.setattr(payloads, "MAX_NAME_BYTES", 4)
+    exact = rpm_header([(1000, "abcd")])
+    assert payloads._rpm_header(exact, 0)[0][1000] == "abcd"  # noqa: SLF001
+    with pytest.raises(payloads.PayloadError, match="unterminated"):
+        payloads._rpm_header(rpm_header([(1000, "abcde")]), 0)  # noqa: SLF001
+
+
+def test_missing_rpm_digest_populations_are_not_fabricated():
+    assert payloads._rpm_file_digests({}, 8) == []  # noqa: SLF001
+    assert payloads._rpm_file_digests(  # noqa: SLF001
+        {1117: ["tool"], 1118: ["/usr/bin/"], 1116: [0], 1035: [""]}, 8
+    ) == []
 
 
 def test_rpm_file_digest_arrays_require_one_bounded_path_per_digest():

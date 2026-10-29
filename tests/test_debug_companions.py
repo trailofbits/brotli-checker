@@ -801,3 +801,340 @@ def test_assessment_is_json_compatible():
         (debug.SuppliedCompanion("a.dsym", macho_uuid(bytes(16))),),
     )
     assert result.as_dict()["matches"][0]["patch_status"] == "unknown"
+
+
+@pytest.mark.parametrize("value", [0, -1], ids=["zero", "negative"])
+def test_debug_limits_must_be_strictly_positive(value):
+    with pytest.raises(ValueError, match="limits must be positive"):
+        debug.debug_identity(b"fixture", debug.DebugLimits(max_commands=value))
+
+
+def test_elf_note_padding_kind_and_name_are_parsed_without_overread():
+    name = b"GNU\0"
+    raw = struct.pack("<III", len(name), 2, debug.NT_GNU_BUILD_ID) + name + b"\x01\x02\0\0"
+    assert debug._gnu_build_ids(raw + bytes(3), "little") == {"0102"}  # noqa: SLF001
+    with pytest.raises(ValueError, match="Truncated ELF note header"):
+        debug._gnu_build_ids(raw + b"\0\0\x01", "little")  # noqa: SLF001
+    wrong_kind = bytearray(raw)
+    wrong_kind[8:12] = (debug.NT_GNU_BUILD_ID + 1).to_bytes(4, "little")
+    wrong_name = raw[:12] + b"BAD\0" + raw[16:]
+    assert debug._gnu_build_ids(bytes(wrong_kind), "little") == set()  # noqa: SLF001
+    assert debug._gnu_build_ids(wrong_name, "little") == set()  # noqa: SLF001
+
+
+def test_elf_bounded_string_and_debuglink_filename_limits_are_half_open():
+    bounded = debug._bounded_string  # noqa: SLF001 -- String-table boundary contract.
+    assert bounded(b"\0name\0", 0, 6, 1) == "name"
+    assert bounded(b"\0name\0", 0, 5, 1) is None
+    assert bounded(b"\0name\0", 0, 6, 6) is None
+    assert bounded(b"\0\xff\0", 0, 3, 1) is None
+
+    def payload(name):
+        raw = name + b"\0"
+        return raw + bytes((-len(raw)) % 4) + bytes(4)
+
+    accepted = b"a" * (debug.MAX_NAME_BYTES - 1)
+    assert debug._parse_debuglink(payload(accepted), "little")[0] == accepted.decode()  # noqa: SLF001
+    with pytest.raises(ValueError, match="filename"):
+        debug._parse_debuglink(payload(b"a" * debug.MAX_NAME_BYTES), "little")  # noqa: SLF001
+
+
+def test_macho_exact_command_limits_are_complete_not_limited():
+    data = macho_uuid(bytes(range(16)))
+    exact = debug.debug_identity(
+        data,
+        debug.DebugLimits(max_commands=1, max_identity_bytes=24),
+    )
+    command_limited = debug.debug_identity(data, debug.DebugLimits(max_commands=0 + 1))
+    byte_limited = debug.debug_identity(data, debug.DebugLimits(max_identity_bytes=23))
+    assert exact.identity is not None
+    assert exact.limited is False
+    assert command_limited.identity is not None
+    assert byte_limited.identity is None
+    assert byte_limited.limited is True
+    assert byte_limited.gaps[0].code == "macho_command_limit"
+
+
+def test_pe_rva_and_rsds_record_boundaries_are_half_open():
+    map_rva = debug._pe_rva_to_offset  # noqa: SLF001 -- PE ownership boundary contract.
+    sections = [(0x1000, 0x100, 0x200, 0x100)]
+    assert map_rva(0x1000, 1, sections) == 0x200
+    assert map_rva(0x10FC, 4, sections) == 0x2FC
+    assert map_rva(0x10FD, 4, sections) is None
+    assert map_rva(0x0FFF, 1, sections) is None
+
+    guid = bytes(range(16))
+    one_character = b"RSDS" + guid + (7).to_bytes(4, "little") + b"a\0"
+    assert debug._parse_rsds(one_character) == (guid.hex(), 7, "a")  # noqa: SLF001
+    assert debug._parse_rsds(one_character[:-1]) is None  # noqa: SLF001
+    assert debug._parse_rsds(b"NB10" + one_character[4:]) is None  # noqa: SLF001
+    assert debug._parse_rsds(b"RSDS" + guid + (7).to_bytes(4, "little") + b"\xff\0") is None  # noqa: SLF001
+
+
+def test_pdb_block_population_accepts_last_valid_block_only():
+    block_size = 512
+    data = bytes(block_size * 3) + b"Z" + bytes(block_size - 1)
+    assert debug._pdb_blocks(data, [3], block_size, 1, 4) == b"Z"  # noqa: SLF001
+    with pytest.raises(ValueError, match="outside the file"):
+        debug._pdb_blocks(data, [4], block_size, 1, 4)  # noqa: SLF001
+
+
+def test_elf_symbol_budget_accepts_exact_population_and_limits_overflow():
+    companion = elf_with_symbols(
+        b"\xc3\xc3",
+        matcher.EM_X86_64,
+        [
+            {"name": "one", "address": CODE_ADDRESS, "size": 1},
+            {"name": "two", "address": CODE_ADDRESS + 1, "size": 1},
+        ],
+    )
+    exact_hints, exact_gaps, exact_limited = debug._elf_function_hints(  # noqa: SLF001
+        companion, debug.DebugLimits(max_symbols=3)
+    )
+    limited_hints, limited_gaps, limited = debug._elf_function_hints(  # noqa: SLF001
+        companion, debug.DebugLimits(max_symbols=2)
+    )
+    assert [hint.name for hint in exact_hints] == ["one", "two"]
+    assert exact_gaps == ()
+    assert exact_limited is False
+    assert limited_hints == ()
+    assert limited_gaps == ()
+    assert limited is True
+
+
+def test_layout_function_hints_require_valid_kind_ranges_and_exact_limit(monkeypatch):
+    layout = {
+        "kind": "pe",
+        "gaps": [],
+        "exports": [{"file_offset": 10, "name": "named"}],
+        "functions": [
+            {"file_offset": 10, "size": 4},
+            {"file_offset": 20, "size": 2, "rva": 0x2020},
+            {"file_offset": 14, "size": 1},
+            {"file_offset": 30, "size": 0},
+            "invalid",
+        ],
+        "ranges": {"mapped": [{"file_offset": 10, "vmaddr": 0x1000, "size": 4}]},
+    }
+    monkeypatch.setattr(debug, "inspect_layout", lambda _data: layout)
+    hints, limited = debug._layout_function_hints(  # noqa: SLF001
+        b"fixture", "pe", debug.DebugLimits(max_function_hints=3)
+    )
+    assert [(hint.name, hint.virtual_address, hint.size) for hint in hints] == [
+        ("named", 0x1000, 4),
+        (None, 0x2020, 2),
+        (None, None, 1),
+    ]
+    assert limited is False
+    limited_hints, limited = debug._layout_function_hints(  # noqa: SLF001
+        b"fixture", "pe", debug.DebugLimits(max_function_hints=2)
+    )
+    assert len(limited_hints) == 2
+    assert limited is True
+    layout["gaps"] = ["incomplete"]
+    assert debug._layout_function_hints(b"fixture", "pe", debug.DEFAULT_DEBUG_LIMITS) == (  # noqa: SLF001
+        (),
+        False,
+    )
+
+
+def test_dwarf_line_filtering_ignores_terminal_and_incomplete_states(monkeypatch):
+    monkeypatch.setattr(debug, "_dwarf_size_allowed", lambda *_args: True)
+    hint = debug.FunctionHint("decode", 0x1000, 4)
+    states = [
+        None,
+        SimpleNamespace(address=0x1000, file=1, line=1, end_sequence=True),
+        SimpleNamespace(address=0x1000, file=1, line=None, end_sequence=False),
+        SimpleNamespace(address=0x1000, file=1, line=17, end_sequence=False),
+    ]
+    enriched, gaps, limited = debug._dwarf_line_hints(  # noqa: SLF001
+        b"fixture",
+        (hint,),
+        debug.DEFAULT_DEBUG_LIMITS,
+        fake_pyelftools(version=4, states=states, files=[b"src/decode.c"]),
+    )
+    assert (enriched[0].source_file, enriched[0].source_line) == ("decode.c", 17)
+    assert gaps == ()
+    assert limited is False
+
+
+def test_matching_methods_keep_each_identity_failure_distinct():
+    data = b"companion"
+    checksum = zlib.crc32(data) & 0xFFFFFFFF
+
+    def mismatch(artifact, companion, label, content):
+        methods, reason = debug._matching_methods(  # noqa: SLF001
+            artifact, companion, label, content
+        )
+        assert methods == []
+        assert reason is not None
+        return reason
+
+    elf_link = debug.DebugIdentity("elf", debuglink_name="app.debug", debuglink_crc32=checksum)
+    assert debug._matching_methods(elf_link, None, "app.debug", data) == (  # noqa: SLF001
+        ["gnu_debuglink_crc32"],
+        None,
+    )
+    assert "filename" in mismatch(elf_link, None, "wrong.debug", data)
+    assert "CRC" in mismatch(elf_link, None, "app.debug", b"different")
+
+    elf_build = debug.DebugIdentity("elf", build_id="aa")
+    assert debug._matching_methods(  # noqa: SLF001
+        elf_build, debug.DebugIdentity("elf", build_id="aa"), "ignored", data
+    ) == (["gnu_build_id"], None)
+    assert "differ" in mismatch(
+        elf_build, debug.DebugIdentity("elf", build_id="bb"), "ignored", data
+    )
+    assert "No comparable" in mismatch(elf_build, None, "ignored", data)
+
+    macho = debug.DebugIdentity("macho", macho_uuid="aa")
+    assert debug._matching_methods(  # noqa: SLF001
+        macho, debug.DebugIdentity("macho", macho_uuid="aa"), "ignored", data
+    ) == (["macho_uuid"], None)
+    assert "UUID" in mismatch(macho, None, "ignored", data)
+
+    pe = debug.DebugIdentity("pe", pdb_guid="aa", pdb_age=7, pdb_name="app.pdb")
+    pdb_identity = debug.DebugIdentity("pdb", pdb_guid="aa", pdb_age=7)
+    assert debug._matching_methods(pe, pdb_identity, "dir/app.pdb", data) == (  # noqa: SLF001
+        ["pdb_guid_age"],
+        None,
+    )
+    assert "supported PDB" in mismatch(pe, None, "app.pdb", data)
+    assert "GUID/age" in mismatch(
+        pe, debug.DebugIdentity("pdb", pdb_guid="aa", pdb_age=8), "app.pdb", data
+    )
+    assert "basename" in mismatch(pe, pdb_identity, "wrong.pdb", data)
+
+
+def test_dwarf_backend_absence_malformed_data_and_unresolved_rows_are_distinct(monkeypatch):
+    monkeypatch.setattr(debug, "_dwarf_size_allowed", lambda *_args: True)
+    hint = debug.FunctionHint("decode", 0x1000, 4)
+
+    class NoDwarfFile:
+        def __init__(self, _stream):
+            pass
+
+        def has_dwarf_info(self):
+            return False
+
+    no_dwarf = SimpleNamespace(
+        __name__="fake",
+        __version__=debug.PINNED_PYELFTOOLS_VERSION,
+        ELFFile=NoDwarfFile,
+    )
+    unchanged, gaps, limited = debug._dwarf_line_hints(  # noqa: SLF001
+        b"fixture", (hint,), debug.DEFAULT_DEBUG_LIMITS, no_dwarf
+    )
+    assert unchanged == (hint,)
+    assert gaps[0].code == "dwarf_lines_unavailable"
+    assert limited is False
+
+    def fail(_stream):
+        message = "broken DWARF"
+        raise ValueError(message)
+
+    malformed = SimpleNamespace(
+        __name__="fake",
+        __version__=debug.PINNED_PYELFTOOLS_VERSION,
+        ELFFile=fail,
+    )
+    unchanged, gaps, limited = debug._dwarf_line_hints(  # noqa: SLF001
+        b"fixture", (hint,), debug.DEFAULT_DEBUG_LIMITS, malformed
+    )
+    assert unchanged == (hint,)
+    assert gaps[0].code == "malformed_dwarf_lines"
+    assert limited is False
+
+    invalid_file = SimpleNamespace(
+        address=0x1000,
+        file=2,
+        line=7,
+        end_sequence=False,
+    )
+    unchanged, gaps, limited = debug._dwarf_line_hints(  # noqa: SLF001
+        b"fixture",
+        (hint,),
+        debug.DEFAULT_DEBUG_LIMITS,
+        fake_pyelftools(version=5, states=[invalid_file], files=[b"decode.c"]),
+    )
+    assert unchanged == (hint,)
+    assert gaps[0].code == "dwarf_lines_unresolved"
+    assert limited is False
+
+
+def test_rsds_name_and_pdb_stream_count_exact_boundaries():
+    guid = bytes(range(16))
+    maximum = b"RSDS" + guid + (7).to_bytes(4, "little")
+    maximum += b"a" * (debug.MAX_NAME_BYTES - 1) + b"\0"
+    assert debug._parse_rsds(maximum) is not None  # noqa: SLF001
+    assert debug._parse_rsds(maximum[:-1] + b"a\0") is None  # noqa: SLF001
+
+    data = pdb(guid, 7)
+    exact = debug.debug_identity(data, debug.DebugLimits(max_commands=2))
+    overflow = debug.debug_identity(data, debug.DebugLimits(max_commands=1))
+    assert exact.identity is not None
+    assert overflow.identity is None
+    assert overflow.gaps[0].code == "malformed_pdb_identity"
+
+    too_small = bytearray(data)
+    too_small[32:36] = (511).to_bytes(4, "little")
+    assert debug.debug_identity(bytes(too_small)).gaps[0].code == "malformed_pdb_identity"
+
+
+def test_elf_identity_section_limit_and_missing_identity_states_are_exact():
+    build_id = debug.debug_identity(elf_note(b"identity"))
+    assert build_id.identity is not None
+    assert build_id.gaps == ()
+    assert build_id.limited is False
+
+    sectioned = elf_section_note(b"identity")
+    exact = debug.debug_identity(sectioned, debug.DebugLimits(max_commands=3))
+    limited = debug.debug_identity(sectioned, debug.DebugLimits(max_commands=2))
+    assert exact.identity is not None
+    assert exact.limited is False
+    assert limited.identity is None
+    assert limited.gaps[0].code == "section_limit"
+    assert limited.limited is True
+
+    no_identity = bytearray(sectioned)
+    header = list(matcher.ELF_HEADER.unpack_from(no_identity))
+    header[12] = 0
+    header[13] = 0
+    matcher.ELF_HEADER.pack_into(no_identity, 0, *header)
+    missing = debug.debug_identity(bytes(no_identity))
+    assert missing.identity == debug.DebugIdentity("elf")
+    assert missing.gaps[0].code == "missing_debug_identity"
+    assert missing.limited is False
+
+
+def test_dwarf_section_byte_limit_accepts_exact_positive_population():
+    data = bytearray(elf_section_note(b"identity"))
+    old_name = b".note.gnu.build-id"
+    name_offset = data.find(old_name)
+    assert name_offset >= 0
+    replacement = b".debug_info\0" + bytes(len(old_name) - len(b".debug_info") - 1)
+    data[name_offset : name_offset + len(old_name)] = replacement
+    header = matcher.elf_header(bytes(data))
+    sections = matcher.section_headers(bytes(data), header)
+    debug_bytes = sections[1][5]
+    assert debug._dwarf_size_allowed(  # noqa: SLF001
+        bytes(data), debug.DebugLimits(max_identity_bytes=debug_bytes)
+    )
+    assert not debug._dwarf_size_allowed(  # noqa: SLF001
+        bytes(data), debug.DebugLimits(max_identity_bytes=debug_bytes - 1)
+    )
+    assert not debug._dwarf_size_allowed(elf_note(b"identity"), debug.DEFAULT_DEBUG_LIMITS)  # noqa: SLF001
+
+
+def test_unsupported_artifact_assessment_preserves_identity_gap_and_limit_state():
+    result = debug.verify_debug_companions(b"unsupported", ())
+    assert result.artifact_identity is None
+    assert result.matches == ()
+    assert result.status == "unsupported"
+    assert result.limited is False
+    assert result.gaps == (
+        debug.DebugGap(
+            "unsupported_debug_format",
+            "Unsupported supplied debug companion format",
+        ),
+    )

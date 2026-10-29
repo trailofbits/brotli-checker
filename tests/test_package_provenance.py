@@ -332,3 +332,189 @@ def test_apk_numbers_are_ascii_digits(version):
     # apk-package(5) defines number components as digits 0-9.
     with pytest.raises(ValueError, match="apk version"):
         subject.apk_version_compare(version, "1.0")
+
+
+@pytest.mark.parametrize(
+    ("older", "newer"),
+    [
+        ("1.9-1", "1.10-1"),
+        ("1.0a-1", "1.0+-1"),
+        ("1.0a-1", "1.0b-1"),
+        ("1.0-9", "1.0-10"),
+    ],
+    ids=("numeric-width", "letter-before-punctuation", "letter-order", "revision-width"),
+)
+def test_debian_version_ordering_uses_native_segment_rules(older, newer):
+    assert subject.debian_version_compare(older, newer) == -1
+    assert subject.debian_version_compare(newer, older) == 1
+
+
+@pytest.mark.parametrize(
+    ("older", "newer"),
+    [
+        ("1.9-1", "1.10-1"),
+        ("1a-1", "1b-1"),
+        ("1a-1", "1.1-1"),
+        ("1.0-9", "1.0-10"),
+    ],
+    ids=("numeric-width", "letter-order", "numeric-after-alpha", "release-width"),
+)
+def test_rpm_version_ordering_uses_native_segment_rules(older, newer):
+    assert subject.rpm_version_compare(older, newer) == -1
+    assert subject.rpm_version_compare(newer, older) == 1
+
+
+@pytest.mark.parametrize(
+    ("older", "newer"),
+    [
+        ("1.9", "1.10"),
+        ("1.0a", "1.0b"),
+        ("1.0~0a", "1.0~0b"),
+        ("1.0-r9", "1.0-r10"),
+    ],
+    ids=("numeric-width", "letter-order", "commit-order", "revision-width"),
+)
+def test_apk_version_ordering_uses_native_token_rules(older, newer):
+    assert subject.apk_version_compare(older, newer) == -1
+    assert subject.apk_version_compare(newer, older) == 1
+
+
+def test_package_metadata_byte_limit_is_inclusive(monkeypatch):
+    status = (
+        b"Package: brotli\nStatus: install ok installed\nArchitecture: amd64\nVersion: 1.2.1-1\n"
+    )
+    monkeypatch.setattr(subject, "MAX_METADATA_BYTES", len(status))
+    assert subject.parse_dpkg_database(status, ()).packages[0].name == "brotli"
+
+    with pytest.raises(ValueError, match="metadata limit"):
+        subject.parse_dpkg_database(status + b"\n", ())
+
+
+def test_dpkg_package_and_file_limits_retain_only_complete_prefix(monkeypatch):
+    status = b"""Package: one
+Status: install ok installed
+Architecture: amd64
+Version: 1.0-1
+
+Package: two
+Status: install ok installed
+Architecture: amd64
+Version: 1.0-1
+"""
+    info = (
+        subject.MetadataRecord(
+            "/var/lib/dpkg/info/one.list",
+            b"/usr/lib/one-a.so\n/usr/lib/one-b.so\n",
+        ),
+    )
+    monkeypatch.setattr(subject, "MAX_PACKAGES", 1)
+    monkeypatch.setattr(subject, "MAX_FILES", 1)
+
+    database = subject.parse_dpkg_database(status, info)
+
+    assert [package.name for package in database.packages] == ["one"]
+    assert [item.path for item in database.packages[0].files] == ["usr/lib/one-a.so"]
+    assert database.limited is True
+    assert "Package limit reached" in database.gaps
+    assert "Package file limit reached" in database.gaps
+
+
+def test_rpm_member_limit_and_sha256_length_are_checked_before_binding(monkeypatch):
+    metadata = {
+        "name": "brotli",
+        "version": "1.2.1",
+        "release": "1",
+        "arch": "x86_64",
+        "file_digests": [],
+    }
+    monkeypatch.setattr(subject, "MAX_FILES", 2)
+    package = subject.package_from_rpm_metadata(
+        metadata,
+        member_paths=("usr/lib/a.so", "usr/lib/b.so"),
+        member_sha256={"usr/lib/b.so": "a" * 64},
+    )
+    assert [item.path for item in package.files] == ["usr/lib/a.so", "usr/lib/b.so"]
+    assert package.files[1].hashes == (subject.PackageHash("SHA-256", "a" * 64),)
+
+    with pytest.raises(ValueError, match="path limit"):
+        subject.package_from_rpm_metadata(
+            metadata,
+            member_paths=("usr/lib/a.so", "usr/lib/b.so", "usr/lib/c.so"),
+        )
+    with pytest.raises(ValueError, match="member SHA-256"):
+        subject.package_from_rpm_metadata(
+            metadata,
+            member_paths=("usr/lib/a.so",),
+            member_sha256={"usr/lib/a.so": "a" * 63},
+        )
+
+
+def test_hash_evidence_precedence_keeps_mismatch_and_ambiguity_distinct():
+    path = "usr/lib/libbrotli.so"
+    actual = hashlib.sha256(b"decoder").hexdigest()
+    matching = subject.PackageFile(path, (subject.PackageHash("SHA-256", actual),))
+    mismatching = subject.PackageFile(path, (subject.PackageHash("SHA-256", "f" * 64),))
+    database = subject.PackageDatabase(
+        (
+            subject.PackageRecord("rpm", "matching", "1-1", "x86_64", (matching,), "x"),
+            subject.PackageRecord("rpm", "modified", "1-1", "x86_64", (mismatching,), "x"),
+        ),
+        (),
+        limited=False,
+    )
+
+    assessment = subject.resolve_ownership_hashes(path, {"SHA-256": actual}, database)
+
+    assert assessment.status == "modified"
+    assert [item.hash_verified for item in assessment.matches] == [True, False]
+    assert [item.evidence_strength for item in assessment.matches] == [
+        "artifact_hash_bound",
+        "package_id",
+    ]
+    assert any("hash mismatch" in gap for gap in assessment.gaps)
+
+    both_match = subject.PackageDatabase(
+        tuple(
+            subject.PackageRecord("rpm", name, "1-1", "x86_64", (matching,), "x")
+            for name in ("one", "two")
+        ),
+        (),
+        limited=False,
+    )
+    assert (
+        subject.resolve_ownership_hashes(path, {"SHA-256": actual}, both_match).status
+        == "ambiguous"
+    )
+
+
+def test_conflicting_declared_hashes_never_bind_artifact_identity():
+    path = "usr/lib/libbrotli.so"
+    package_file = subject.PackageFile(
+        path,
+        (
+            subject.PackageHash("SHA-256", "a" * 64),
+            subject.PackageHash("SHA-256", "b" * 64),
+        ),
+    )
+    database = subject.PackageDatabase(
+        (subject.PackageRecord("rpm", "brotli", "1-1", "x86_64", (package_file,), "x"),),
+        (),
+        limited=False,
+    )
+
+    assessment = subject.resolve_ownership_hashes(path, {"SHA-256": "a" * 64}, database)
+
+    assert assessment.status == "unique"
+    assert assessment.matches[0].hash_verified is None
+    assert assessment.matches[0].evidence_strength == "package_id"
+    assert any("Conflicting package file hashes" in gap for gap in assessment.gaps)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["../host", "usr/lib/../host", "usr/lib/\x7fhost"],
+    ids=("parent", "nested-parent", "delete-control"),
+)
+def test_package_owned_paths_cannot_escape_or_contain_controls(path):
+    with pytest.raises(ValueError, match="Invalid package-owned path"):
+        subject.resolve_ownership_hashes(path, {}, subject.PackageDatabase((), (), limited=False))

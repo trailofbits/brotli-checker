@@ -214,9 +214,10 @@ def test_eh_frame_header_establishes_bounded_function_starts():
 
 
 def test_malformed_eh_frame_header_is_an_explicit_gap():
-    result = graph.build_elf_graph(eh_frame_fixture(bytes((2, 0x03, 0x03, 0x03))))
-    assert result.functions == ()
-    assert any(gap.code == "unsupported_unwind" for gap in result.gaps)
+    for raw in (bytes((2, 0x03, 0x03, 0x03)), bytes((1, 0x03, 0x03))):
+        result = graph.build_elf_graph(eh_frame_fixture(raw))
+        assert result.functions == ()
+        assert any(gap.code == "unsupported_unwind" for gap in result.gaps)
 
 
 def test_eh_frame_encodings_cover_width_sign_and_relative_bases():
@@ -229,6 +230,8 @@ def test_eh_frame_encodings_cover_width_sign_and_relative_bases():
     assert encoded(struct.pack("<I", 9), 0, 0x00, 0x1000, 0x2000, 32) == (9, 4)
     assert encoded(struct.pack("<Q", 9), 0, 0x00, 0x1000, 0x2000, 64) == (9, 8)
     assert encoded(b"\x12\x34", 0, 0x02, 0x1000, 0x2000, 64, "big") == (0x1234, 2)
+    assert encoded(b"\xfc\xff\xff\xff", 0, 0x0B, 0, 0, 64) == (-4, 4)
+    assert encoded(b"\xf8\xff\xff\xff\xff\xff\xff\xff", 0, 0x0C, 0, 0, 64) == (-8, 8)
     for data, encoding, reason in (
         (b"", 0x03, "Truncated"),
         (bytes(8), graph.DW_EH_PE_OMIT, "omitted/indirect"),
@@ -238,6 +241,23 @@ def test_eh_frame_encodings_cover_width_sign_and_relative_bases():
     ):
         with pytest.raises(ValueError, match=reason):
             encoded(data, 0, encoding, 0x1000, 0x2000, 64)
+
+
+def test_eh_frame_function_count_accepts_exact_limit_and_rejects_overflow():
+    one = bytes((1, 0x03, 0x03, 0x03)) + struct.pack("<IIIII", 0, 1, BASE, 0, 0)
+    two = (
+        bytes((1, 0x03, 0x03, 0x03))
+        + struct.pack("<II", 0, 2)
+        + struct.pack("<IIII", BASE, 0, BASE + 8, 0)
+    )
+    exact = graph.build_elf_graph(eh_frame_fixture(one), limits=graph.GraphLimits(max_functions=1))
+    overflow = graph.build_elf_graph(
+        eh_frame_fixture(two), limits=graph.GraphLimits(max_functions=1)
+    )
+    assert len(exact.functions) == 1
+    assert all(gap.code != "unsupported_unwind" for gap in exact.gaps)
+    assert overflow.functions == ()
+    assert any(gap.code == "unsupported_unwind" for gap in overflow.gaps)
 
 
 def test_two_aarch64_copies_share_one_artifact_without_merging_functions():
@@ -468,6 +488,58 @@ class WrongCapstone(FakeCapstone):
     __version__ = "4.0.2"
 
 
+class BrokenCapstone(FakeCapstone):
+    def Cs(self, _architecture, _mode):  # noqa: N802
+        message = "unsupported decoder"
+        raise ValueError(message)
+
+
+class ThrowingCapstoneDecoder:
+    detail = False
+
+    def disasm(self, _code, _address):
+        message = "decode failed"
+        raise ValueError(message)
+
+
+class ThrowingCapstone(FakeCapstone):
+    def Cs(self, _architecture, _mode):  # noqa: N802
+        return ThrowingCapstoneDecoder()
+
+
+class StructuredCapstoneDecoder:
+    detail = False
+
+    def disasm(self, _code, _address):
+        def memory(base, displacement):
+            return SimpleNamespace(base=base, disp=displacement)
+
+        def operand(kind, value):
+            return SimpleNamespace(type=kind, mem=value)
+
+        return [
+            SimpleNamespace(
+                address=BASE,
+                bytes=bytes.fromhex("488d0519000000"),
+                mnemonic="lea",
+                op_str="[rip + 0x19]",
+                operands=(
+                    operand(1, memory(10, 25)),
+                    operand(1, memory(0, BASE + 32)),
+                    operand(1, memory(0, 0)),
+                    operand(2, memory(0, BASE + 32)),
+                ),
+            )
+        ]
+
+
+class StructuredCapstone(FakeCapstone):
+    x86_const = SimpleNamespace(X86_OP_MEM=1, X86_REG_RIP=10)
+
+    def Cs(self, _architecture, _mode):  # noqa: N802
+        return StructuredCapstoneDecoder()
+
+
 def test_pinned_capstone_is_usable_without_manual_instruction_formatting():
     supplied = (
         graph.GraphSeed("decoder", "flirt_function", PAYLOAD_OFFSET, 14, is_function=True),
@@ -479,6 +551,37 @@ def test_pinned_capstone_is_usable_without_manual_instruction_formatting():
         capstone_module=FakeCapstone(),
     )
     assert [edge.kind for edge in result.edges] == ["pc_relative_reference"]
+
+
+@pytest.mark.parametrize(
+    ("backend", "gap_code", "limited"),
+    [
+        (BrokenCapstone(), "capstone_api_unsupported", False),
+        (ThrowingCapstone(), "capstone_decode_error", True),
+    ],
+    ids=["initialization", "decode"],
+)
+def test_capstone_failures_are_explicit_and_never_create_edges(backend, gap_code, limited):
+    result = graph.build_elf_graph(
+        elf(x86_fixture(), matcher.EM_X86_64),
+        seeds(),
+        capstone_module=backend,
+    )
+    assert result.edges == ()
+    assert any(gap.code == gap_code for gap in result.gaps)
+    assert result.limited is limited
+
+
+def test_capstone_memory_operands_distinguish_rip_absolute_and_nonmemory_values():
+    result = graph.build_elf_graph(
+        elf(x86_fixture(), matcher.EM_X86_64),
+        seeds(),
+        capstone_module=StructuredCapstone(),
+    )
+    assert {(edge.kind, edge.target) for edge in result.edges} == {
+        ("pc_relative_reference", "table"),
+        ("absolute_reference", "table"),
+    }
 
 
 def test_real_pinned_capstone_decodes_x86_fixture_when_installed():
@@ -617,6 +720,16 @@ def test_objdump_line_and_instruction_limits_accept_exact_population():
     assert overflow.gaps[0].code == "instruction_limit"
 
 
+def test_objdump_parser_ignores_rows_without_bound_instruction_bytes():
+    packet = graph.parse_objdump_instructions(
+        "  401000: nop\n  401001: 90\n  401002: zz  invalid\n  401003: 90  nop"
+    )
+    assert [(row.address, row.raw, row.mnemonic) for row in packet.instructions] == [
+        (0x401003, b"\x90", "nop")
+    ]
+    assert packet.limited is False
+
+
 def test_gap_retention_deduplicates_and_marks_exact_overflow():
     gaps = graph._GapCollector(1)  # noqa: SLF001 -- Bounded graph-output contract.
     gaps.add("one", "first", 1)
@@ -677,6 +790,105 @@ def test_invalid_load_extent_is_omitted_with_an_explicit_gap():
     assert any(gap.code == "malformed_load_segment" for gap in result.gaps)
 
 
+def test_nonload_program_header_never_maps_seed_bytes():
+    data = bytearray(elf(bytes(16)))
+    row = list(matcher.PROGRAM_HEADER.unpack_from(data, matcher.ELF_HEADER.size))
+    row[0] = graph.PT_GNU_EH_FRAME
+    matcher.PROGRAM_HEADER.pack_into(data, matcher.ELF_HEADER.size, *row)
+    result = graph.build_elf_graph(
+        bytes(data),
+        (graph.GraphSeed("table", "decoder_table", PAYLOAD_OFFSET, 8),),
+    )
+    assert result.artifacts == ()
+    assert any(gap.code == "seed_not_mapped" for gap in result.gaps)
+
+
+@pytest.mark.parametrize("value", [0, -1], ids=["zero", "negative"])
+def test_every_graph_work_limit_must_be_strictly_positive(value):
+    with pytest.raises(ValueError, match="limits must be positive"):
+        graph.build_elf_graph(elf(bytes(16)), limits=graph.GraphLimits(max_edges=value))
+
+
+def test_load_mapping_accepts_exact_memory_extent_and_last_file_byte():
+    data = elf(bytes(16))
+    builder = graph._GraphBuilder(data, graph.DEFAULT_GRAPH_LIMITS)  # noqa: SLF001
+    last_offset = len(data) - 1
+    last_address = BASE + 15
+    assert builder.address_to_offset(last_address) == last_offset
+    assert builder.offset_to_address(last_offset) == last_address
+    assert builder.executable_end(last_offset) == len(data)
+    assert builder.address_to_offset(last_address + 1) is None
+    assert builder.offset_to_address(last_offset + 1) is None
+
+    row = list(matcher.PROGRAM_HEADER.unpack_from(data, matcher.ELF_HEADER.size))
+    assert row[5] == row[6]
+    result = graph.build_elf_graph(
+        data,
+        (graph.GraphSeed("last", "decoder_table", last_offset, 1),),
+    )
+    assert [artifact.identifier for artifact in result.artifacts] == ["last"]
+    assert all(gap.code != "malformed_load_segment" for gap in result.gaps)
+
+    graph._validate_seeds(  # noqa: SLF001 -- Half-open artifact ownership contract.
+        builder,
+        (graph.GraphSeed("table", "decoder_table", PAYLOAD_OFFSET, 4),),
+    )
+    first = builder.artifact_for_offset(PAYLOAD_OFFSET)
+    last = builder.artifact_for_offset(PAYLOAD_OFFSET + 3)
+    assert first is not None
+    assert first.identifier == "table"
+    assert last is not None
+    assert last.identifier == "table"
+    assert builder.artifact_for_offset(PAYLOAD_OFFSET + 4) is None
+
+
+def test_identical_overlapping_load_mappings_are_not_falsely_ambiguous():
+    data = bytearray(elf(bytes(16)))
+    header = list(matcher.ELF_HEADER.unpack_from(data))
+    original = matcher.PROGRAM_HEADER.unpack_from(data, matcher.ELF_HEADER.size)
+    header[10] = 2
+    payload = bytes(data[PAYLOAD_OFFSET:])
+    rebuilt = bytearray(matcher.ELF_HEADER.pack(*header))
+    rebuilt.extend(matcher.PROGRAM_HEADER.pack(*original) * 2)
+    rebuilt.extend(payload)
+    payload_offset = matcher.ELF_HEADER.size + 2 * matcher.PROGRAM_HEADER.size
+    for index in range(2):
+        row = list(original)
+        row[2] = payload_offset
+        matcher.PROGRAM_HEADER.pack_into(
+            rebuilt, matcher.ELF_HEADER.size + index * matcher.PROGRAM_HEADER.size, *row
+        )
+    result = graph.build_elf_graph(
+        bytes(rebuilt),
+        (graph.GraphSeed("table", "decoder_table", payload_offset, 16),),
+    )
+    assert [artifact.identifier for artifact in result.artifacts] == ["table"]
+    assert all(gap.code != "ambiguous_load_mapping" for gap in result.gaps)
+
+
+@pytest.mark.parametrize(
+    ("offset", "size"),
+    [(-1, 1), (PAYLOAD_OFFSET, 0), ("eof", 1)],
+    ids=["negative-offset", "zero-size", "past-end"],
+)
+def test_invalid_seed_boundaries_are_rejected(offset, size):
+    data = elf(bytes(16))
+    actual_offset = len(data) if offset == "eof" else offset
+    with pytest.raises(ValueError, match="Invalid or duplicate graph seed"):
+        graph.build_elf_graph(
+            data,
+            (graph.GraphSeed("bad", "decoder_table", actual_offset, size),),
+        )
+
+
+def test_string_table_lookup_is_half_open_and_bounded():
+    parse = graph._string  # noqa: SLF001 -- ELF string-table boundary contract.
+    assert parse(b"\0name\0", 0, 6, 1) == "name"
+    assert parse(b"\0name\0", 0, 5, 1) is None
+    assert parse(b"\0name\0", 0, 6, 6) is None
+    assert parse(b"\0\xff\0", 0, 3, 1) is None
+
+
 def test_decode_byte_budget_fails_before_partial_code_window_edges():
     result = graph.build_elf_graph(
         elf(aarch64_fixture()),
@@ -710,6 +922,35 @@ def test_decode_range_union_and_subtraction_preserve_virtual_mapping():
         decode_range(0, 0x1000, 4, priority=False),
         decode_range(8, 0x1008, 8, priority=False),
     ]
+    assert subtract(
+        decode_range(4, 0x1004, 4, priority=False),
+        [
+            decode_range(0, 0x1000, 4, priority=True),
+            decode_range(8, 0x1008, 4, priority=True),
+        ],
+    ) == [decode_range(4, 0x1004, 4, priority=False)]
+    assert (
+        subtract(
+            decode_range(4, 0x1004, 4, priority=False),
+            [decode_range(4, 0x1004, 4, priority=True)],
+        )
+        == []
+    )
+
+
+def test_decode_budget_exactly_consumes_aligned_range_without_omission():
+    data = elf(bytes(8))
+    builder = graph._GraphBuilder(  # noqa: SLF001 -- Decode budget contract.
+        data, graph.GraphLimits(max_decode_bytes=8)
+    )
+    selected = graph._decode_ranges(  # noqa: SLF001
+        builder,
+        (graph._DecodeRange(PAYLOAD_OFFSET, BASE, 8, priority=False),),  # noqa: SLF001
+        alignment=4,
+    )
+    assert selected == (graph._DecodeRange(PAYLOAD_OFFSET, BASE, 8, priority=False),)  # noqa: SLF001
+    assert builder.decode_bytes == 8
+    assert all(gap.code != "unexamined_executable_ranges" for gap in builder.gaps.values)
 
 
 def test_recognized_function_window_near_end_is_decoded_before_large_prefix():
@@ -800,8 +1041,14 @@ def test_assessment_seed_derivation_uses_canonical_evidence():
     assert derived[1].is_function
 
 
-def linked_relocation_fixture(
-    relocation_kind=2, *, target_section=1, target_info=0x11, site_address=BASE + 4
+def linked_relocation_fixture(  # noqa: PLR0913 -- Malformed relocation fixture dimensions.
+    relocation_kind=2,
+    *,
+    target_section=1,
+    target_info=0x11,
+    target_address=BASE + 32,
+    target_size=8,
+    site_address=BASE + 4,
 ):
     code_offset = 0x100
     code = bytes(64)
@@ -811,7 +1058,7 @@ def linked_relocation_fixture(
         [
             bytes(symbol.size),
             symbol.pack(1, 0x12, 0, 1, BASE, 16),
-            symbol.pack(8, target_info, 0, target_section, BASE + 32, 8),
+            symbol.pack(8, target_info, 0, target_section, target_address, target_size),
         ]
     )
     sym_offset = code_offset + len(code)
@@ -919,6 +1166,35 @@ def test_relocation_site_must_be_wholly_executable_for_its_abi_width():
         auto_capstone=False,
     )
     assert all(edge.kind != "relocation_reference" for edge in result.edges)
+
+
+@pytest.mark.parametrize(
+    ("target_address", "target_size", "expected"),
+    [(BASE + 56, 8, True), (BASE + 56, 9, False)],
+    ids=["exact-section-end", "past-section-end"],
+)
+def test_relocation_symbol_range_must_fit_its_allocated_section(
+    target_address, target_size, expected
+):
+    target_offset = 0x100 + target_address - BASE
+    supplied = (
+        graph.GraphSeed("source", "trusted_function", 0x100, 16, is_function=True),
+        graph.GraphSeed("table", "decoder_table", target_offset, 8),
+    )
+    result = graph.build_elf_graph(
+        linked_relocation_fixture(
+            target_address=target_address,
+            target_size=target_size,
+        ),
+        supplied,
+        instructions=(),
+        auto_capstone=False,
+    )
+    edges = [edge for edge in result.edges if edge.kind == "relocation_reference"]
+    assert bool(edges) is expected
+    assert any(gap.code == "inconsistent_relocation_symbol" for gap in result.gaps) is (
+        not expected
+    )
 
 
 def test_function_symbol_requires_consistent_executable_section_ownership():

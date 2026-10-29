@@ -238,13 +238,21 @@ def _sha256(value: str | None, field: str) -> str | None:
     return value
 
 
+def _required_sha256(value: str | None, field: str) -> str:
+    digest = _sha256(value, field)
+    if digest is None:
+        message = f"SHA-256 identity is required: {field}"
+        raise ValueError(message)
+    return digest
+
+
 def _validate_evidence(items: tuple[EvidenceIdentity, ...]) -> tuple[EvidenceIdentity, ...]:
     unique = set()
     for item in items:
         if not item.category or not item.name:
             msg = "Evidence identities require category and name"
             raise ValueError(msg)
-        _sha256(item.sha256, f"{item.category}:{item.name}")
+        _required_sha256(item.sha256, f"{item.category}:{item.name}")
         key = item.category, item.name
         if key in unique:
             msg = f"Duplicate evidence identity: {item.category}:{item.name}"
@@ -428,8 +436,7 @@ def _decoded_evidence(value: object, field: str) -> EvidenceIdentity:
     if not isinstance(category, str) or not category or not isinstance(name, str) or not name:
         msg = f"Invalid envelope evidence identity: {field}"
         raise ValueError(msg)
-    digest = _sha256(value["sha256"], field)
-    assert digest is not None  # noqa: S101 -- Evidence digest is required by schema.
+    digest = _required_sha256(value["sha256"], field)
     return EvidenceIdentity(category, name, digest)
 
 
@@ -439,8 +446,7 @@ def _decoded_hashes(value: object, field: str) -> tuple[str, ...]:
         raise ValueError(msg)  # noqa: TRY004 -- Stored envelope is a value boundary.
     hashes = []
     for index, item in enumerate(value):
-        digest = _sha256(item, f"{field}[{index}]")
-        assert digest is not None  # noqa: S101 -- Fingerprint digest is required.
+        digest = _required_sha256(item, f"{field}[{index}]")
         hashes.append(digest)
     if len(hashes) != len(set(hashes)):
         msg = f"Duplicate envelope hash: {field}"
@@ -602,7 +608,7 @@ def decode_envelope(  # noqa: C901, PLR0912, PLR0915 -- Strict stored schema rec
         ),
         tuple(sorted(limits)),
         coverage,
-        _sha256(value["report_sha256"], "report_sha256") or "",
+        _required_sha256(value["report_sha256"], "report_sha256"),
         tuple(sorted(findings)),
         _decoded_hashes(value["relation_fingerprints"], "relation_fingerprints"),
         _decoded_hashes(value["gap_fingerprints"], "gap_fingerprints"),

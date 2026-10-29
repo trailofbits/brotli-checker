@@ -64,7 +64,8 @@ class PayloadLimits:
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
 
     def __post_init__(self) -> None:
-        if min(self.max_members, self.max_member_bytes, self.max_total_bytes) < 0:
+        values = (self.max_members, self.max_member_bytes, self.max_total_bytes)
+        if any(type(value) is not int for value in values) or min(values) < 0:
             raise ValueError("payload limits must be nonnegative")
 
 

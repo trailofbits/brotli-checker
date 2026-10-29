@@ -634,6 +634,8 @@ def _layout_function_hints(
                 ):
                     virtual = mapped["vmaddr"] + offset - mapped["file_offset"]
                     break
+        if len(hints) >= limits.max_function_hints:
+            return tuple(hints), True
         hints.append(
             FunctionHint(
                 name=names.get(offset),
@@ -642,8 +644,6 @@ def _layout_function_hints(
                 file_offset=offset,
             )
         )
-        if len(hints) >= limits.max_function_hints:
-            return tuple(hints), True
     return tuple(hints), False
 
 
