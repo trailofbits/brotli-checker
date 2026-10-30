@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import io
+import mmap
 import os
 import stat
 import tempfile
@@ -60,6 +61,7 @@ class FileData:
         self._descriptor = descriptor
         self._signature = signature
         self._position = 0
+        self._mapping: mmap.mmap | None = None
 
     @classmethod
     def from_stream(cls, stream: BinaryIO, max_bytes: int | None = None) -> FileData:
@@ -118,6 +120,19 @@ class FileData:
         msg = f"a bytes-like object is required, not {type(needle).__name__}"
         raise TypeError(msg)
 
+    def _read_offset(self, size: int, offset: int) -> bytes:
+        descriptor = self.fileno()
+        if hasattr(os, "pread"):
+            return os.pread(descriptor, size, offset)
+        self.check_unchanged()
+        if not len(self):
+            return b""
+        if self._mapping is None:
+            self._mapping = mmap.mmap(descriptor, 0, access=mmap.ACCESS_READ)
+        result = self._mapping[offset : offset + size]
+        self.check_unchanged()
+        return result
+
     def read_at(self, offset: int, size: int) -> bytes:
         if offset < 0 or size < 0 or offset > len(self) or size > len(self) - offset:
             msg = "Binary range outside file"
@@ -126,7 +141,7 @@ class FileData:
         remaining = size
         position = offset
         while remaining:
-            chunk = os.pread(self.fileno(), min(COPY_CHUNK_BYTES, remaining), position)
+            chunk = self._read_offset(min(COPY_CHUNK_BYTES, remaining), position)
             if not chunk:
                 self.check_unchanged()
                 msg = "Binary input ended while a validated range was being read"
@@ -159,7 +174,7 @@ class FileData:
         tail = b""
         position = start
         while position < end:
-            chunk = os.pread(self.fileno(), min(SEARCH_CHUNK_BYTES, end - position), position)
+            chunk = self._read_offset(min(SEARCH_CHUNK_BYTES, end - position), position)
             if not chunk:
                 self.check_unchanged()
                 return -1
@@ -243,6 +258,9 @@ class FileData:
 
     def close(self) -> None:
         if self._descriptor >= 0:
+            if self._mapping is not None:
+                self._mapping.close()
+                self._mapping = None
             os.close(self._descriptor)
             self._descriptor = -1
 
