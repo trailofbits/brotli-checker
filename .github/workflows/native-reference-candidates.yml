@@ -78,12 +78,19 @@ jobs:
                 }
                 $object = Get-Item $objectCandidates[0]
                 $versionFile = "$build/compiler.txt"
-                if ($toolchain -eq 'clang-cl') {
-                  & "$env:ProgramFiles/LLVM/bin/clang-cl.exe" --version | Out-File -Encoding utf8 $versionFile
-                } else {
-                  $cl = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/cl.exe' | Select-Object -First 1
-                  (Get-Item $cl).VersionInfo.FileVersion | Out-File -Encoding utf8 $versionFile
+                $compilerRecords = @(Get-ChildItem "$build/CMakeFiles" -Recurse -Filter CMakeCCompiler.cmake)
+                if ($compilerRecords.Count -ne 1) { throw "Compiler metadata is missing or ambiguous" }
+                $compilerMetadata = Get-Content -Raw $compilerRecords[0].FullName
+                $compilerPathMatch = [regex]::Match($compilerMetadata, 'set\(CMAKE_C_COMPILER "([^"\r\n]+)"\)')
+                $compilerIdMatch = [regex]::Match($compilerMetadata, 'set\(CMAKE_C_COMPILER_ID "([^"\r\n]+)"\)')
+                $compilerVersionMatch = [regex]::Match($compilerMetadata, 'set\(CMAKE_C_COMPILER_VERSION "([^"\r\n]+)"\)')
+                if (-not ($compilerPathMatch.Success -and $compilerIdMatch.Success -and $compilerVersionMatch.Success)) {
+                  throw "CMake compiler identity fields are incomplete"
                 }
+                $compilerPath = $compilerPathMatch.Groups[1].Value
+                $compilerDigest = (Get-FileHash -Algorithm SHA256 $compilerPath).Hash.ToLowerInvariant()
+                "$($compilerIdMatch.Groups[1].Value) $($compilerVersionMatch.Groups[1].Value); executable=$compilerPath; sha256=$compilerDigest" |
+                  Out-File -Encoding utf8 $versionFile
                 $output = "native-candidates/$($item.Version)-$toolchain-$profile.json"
                 uv run --no-project --python 3.12 python scripts/record_native_candidate.py --binary $binary.FullName `
                   --source-tree "native-candidates/brotli-$($item.Version)" `
