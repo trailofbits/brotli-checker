@@ -287,3 +287,12 @@ def test_atheris_campaign_rejects_symlink_seed(tmp_path, monkeypatch):
     monkeypatch.setattr(campaign.shutil, "which", lambda _name: "/usr/bin/timeout")
     with pytest.raises(SystemExit):
         campaign.main(["binary", str(seeds), str(tmp_path / "output")])
+
+
+
+def test_atheris_completed_count_is_not_last_corpus_update():
+    log = b"#9931 REDUCE cov: 595 ft: 912 corp: 94/57Kb\nDone 10000 in 0 second(s)\n"
+    observed = campaign._metrics(log)  # noqa: SLF001
+    assert observed is not None
+    assert observed["executions"] == 10000
+    assert observed["coverage"] == 595

@@ -114,8 +114,10 @@ def _metrics(log: bytes) -> dict | None:
     multiplier = {b"": 1, b"b": 1, b"Kb": 1024, b"Mb": 1024 * 1024}.get(values["unit"])
     if multiplier is None:
         return None
+    completed = tuple(re.finditer(rb"(?m)^Done (\d+) in ", log))
+    executions = int(completed[-1][1]) if completed else int(values["executions"])
     return {
-        "executions": int(values["executions"]),
+        "executions": executions,
         "coverage": int(values["coverage"]),
         "features": int(values["features"]),
         "corpus_files": int(values["corpus_files"]),
