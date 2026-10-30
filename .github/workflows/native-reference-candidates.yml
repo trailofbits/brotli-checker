@@ -69,10 +69,10 @@ jobs:
                 cmake @arguments
                 cmake --build $build --config Release --parallel 2
                 $binary = Get-ChildItem $build -Recurse -Filter brotlidec.dll | Select-Object -First 1
-                $objectCandidates = @(
+                $objectCandidates = @(@(
                   "$build/brotlidec.dir/Release/decode.obj",
                   "$build/brotlidec.dir/Release/decode.c.obj"
-                ) | Where-Object { Test-Path -PathType Leaf $_ }
+                ) | Where-Object { Test-Path -PathType Leaf $_ })
                 if (-not $binary -or $objectCandidates.Count -ne 1) {
                   throw "Native brotlidec build output is incomplete or ambiguous"
                 }
