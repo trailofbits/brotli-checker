@@ -1,3 +1,5 @@
+# ruff: noqa: SLF001 -- Trust-boundary unit tests exercise report validators directly.
+
 import argparse
 import contextlib
 import hashlib
@@ -66,7 +68,9 @@ def run_main(monkeypatch, target, *arguments, outputs=(), symbols=None, after_ru
     return code, json.loads(output.getvalue())
 
 
-def finalized_inventory_report(tmp_path, target, *, graph=None, findings=None, digest=None):
+def finalized_inventory_report(  # noqa: PLR0913 -- Independent signed-report fields.
+    tmp_path, target, *, graph=None, findings=None, digest=None, report_fields=None
+):
     target_digest = digest or hashlib.sha256(target.read_bytes()).hexdigest()
     report = {
         "schema_version": 1,
@@ -99,6 +103,7 @@ def finalized_inventory_report(tmp_path, target, *, graph=None, findings=None, d
             "limits": {"max_files": 10},
         },
     }
+    report.update(report_fields or {})
     envelope = evidence_report.build_envelope(
         report,
         scanner=evidence_report.ToolIdentity("brotli-checker", "test", "a" * 64),
@@ -607,7 +612,9 @@ def test_file_offset_must_be_in_one_executable_segment():
     "arguments",
     [
         ("--start-address", "1"),
+        ("--stop-address", "2"),
         ("--file-offset", "1"),
+        ("--length", "1"),
         ("--section", ".text"),
         (
             "--start-address",
@@ -620,6 +627,7 @@ def test_file_offset_must_be_in_one_executable_segment():
             "1",
         ),
     ],
+    ids=("start-only", "stop-only", "offset-only", "length-only", "section-only", "mixed"),
 )
 def test_invalid_scope_arguments_are_cli_errors(tmp_path, arguments):
     target = tmp_path / "service"
@@ -840,6 +848,153 @@ def test_partial_graph_and_oversized_ranges_remain_incomplete(tmp_path, monkeypa
     assert "function graph is incomplete" in reasons
     assert "exceeded --max-range-bytes" in reasons
     assert report["classification"]["patch_status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [None, {"identifier": 7}],
+    ids=("entry-type", "identifier-type"),
+)
+def test_graph_artifacts_require_object_entries_with_string_identifiers(artifact):
+    with pytest.raises(triage.TriageError, match="Malformed function graph artifact"):
+        triage._graph_artifacts(elf(b"x" * 64), [artifact])
+
+
+@pytest.mark.parametrize(
+    "function",
+    [None, {"identifier": 7, "boundary_methods": []}],
+    ids=("entry-type", "identifier-type"),
+)
+def test_graph_functions_require_object_entries_with_string_identifiers(function):
+    with pytest.raises(triage.TriageError, match="Malformed function graph function"):
+        triage._graph_functions(elf(b"x" * 64), [function], {}, {})
+
+
+@pytest.mark.parametrize(
+    "functions",
+    [
+        [
+            {"identifier": "f", "boundary_methods": []},
+            {"identifier": "f", "boundary_methods": []},
+        ],
+        [{"identifier": "f", "boundary_methods": "flirt_function"}],
+        [{"identifier": "f", "boundary_methods": [7]}],
+    ],
+    ids=("duplicate", "method-population", "method-type"),
+)
+def test_graph_functions_reject_duplicate_ids_and_malformed_boundary_methods(functions):
+    with pytest.raises(triage.TriageError, match="Malformed or duplicate"):
+        triage._graph_functions(elf(b"x" * 64), functions, {}, {})
+
+
+def test_graph_reference_instruction_must_be_strictly_inside_source_function():
+    function = {
+        "identifier": "f",
+        "file_offset": 124,
+        "virtual_address": 0x401004,
+        "size": 4,
+        "boundary_methods": [],
+    }
+    with pytest.raises(triage.TriageError, match="outside its source function"):
+        triage._graph_functions(elf(b"x" * 64), [function], {"f": [128]}, {})
+
+
+@pytest.mark.parametrize(
+    ("patch_status", "limited"),
+    [("fixed", False), ("unknown", 1)],
+    ids=("patch-status", "limited-type"),
+)
+def test_graph_classification_requires_unknown_patch_state_and_boolean_limit(patch_status, limited):
+    graph = {
+        "artifacts": [],
+        "functions": [],
+        "edges": [],
+        "gaps": [],
+        "patch_status": patch_status,
+        "limited": limited,
+    }
+    with pytest.raises(triage.TriageError, match="Malformed function graph classification"):
+        triage._graph_report_ranges(b"", graph)
+
+
+@pytest.mark.parametrize(
+    ("limited", "gaps"),
+    [(True, []), (False, [{"code": "partial", "reason": "bounded"}])],
+    ids=("limited", "gap"),
+)
+def test_graph_limit_and_gap_each_make_retained_ranges_partial(limited, gaps):
+    graph = {
+        "artifacts": [],
+        "functions": [],
+        "edges": [],
+        "gaps": gaps,
+        "patch_status": "unknown",
+        "limited": limited,
+    }
+    _, reasons = triage._graph_report_ranges(b"", graph)
+    assert reasons == ["Analysis report function graph is incomplete; retained ranges are partial"]
+
+
+@pytest.mark.parametrize(
+    ("status", "gaps"),
+    [("limited", []), ("matched", [{"code": "partial", "reason": "bounded"}])],
+    ids=("limited", "gap"),
+)
+def test_flirt_limit_and_gap_each_make_retained_ranges_partial(status, gaps):
+    evidence = {"code_matches": [], "flirt": {"matches": [], "status": status, "gaps": gaps}}
+    assert triage._finding_evidence_ranges(b"", evidence, {}) == (
+        "Analysis report FLIRT matching is incomplete; retained ranges are partial"
+    )
+
+
+def test_findings_ignore_nonobject_evidence():
+    data = elf(b"x" * 64)
+    digest = hashlib.sha256(data).hexdigest()
+    assert triage._finding_report_ranges(data, [{"evidence": []}], digest) == ([], [])
+
+
+def test_findings_ignore_hash_mismatches():
+    data = elf(b"x" * 64)
+    digest = hashlib.sha256(data).hexdigest()
+    findings = [
+        {
+            "evidence": {
+                "sha256": "b" * 64,
+                "code_matches": [{"file_offset": 124, "size_bytes": 4}],
+            }
+        }
+    ]
+    assert triage._finding_report_ranges(data, findings, digest) == ([], [])
+
+
+def test_report_range_limits_are_inclusive_at_exact_boundaries():
+    selected = {
+        (124, 4): {"file_offset": 124, "size_bytes": 4},
+        (128, 4): {"file_offset": 128, "size_bytes": 4},
+    }
+    reasons = []
+    assert triage._bounded_report_ranges(selected, reasons, 2, 4) == list(selected.values())
+    assert reasons == []
+
+
+def test_changed_analysis_inputs_keep_hash_bound_ranges_incomplete(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 64))
+    inventory = finalized_inventory_report(
+        tmp_path,
+        target,
+        graph=function_graph(),
+        report_fields={"analysis_inputs_changed": True},
+    )
+    code, report = run_main(
+        monkeypatch,
+        target,
+        "--analysis-report",
+        inventory,
+        outputs=("flirt function", "exact code"),
+    )
+    assert code == 3
+    assert "inputs changed during its scan" in " ".join(report["collection"]["reasons"])
 
 
 @pytest.mark.parametrize(

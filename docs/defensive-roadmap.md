@@ -58,8 +58,10 @@ ranges, including independent universal slices; ELF profiles cannot silently cro
 formats. A native hosted-runner pipeline builds reviewed affected/fixed MSVC,
 clang-cl, and Apple-clang pairs, normal and LTCG/LTO controls, signed universal
 Mach-O controls, relocation-masked patch-role patterns, and opposite-state tests.
-**Remaining qualification:** observe the hosted builds, independently review their
-manifests and patterns, then commit exact post-link artifact assertions. Complete
+**Qualification:** hosted Windows and macOS builds completed; their paired
+normal-library profiles, opposite-state controls, slice ownership, and PDB packets
+were independently replayed. Validated profiles are packaged. Exact post-link
+artifact assertions are kept separate from function recognition. Complete
 native function populations remain provenance only until one decoder copy is bound;
 the scanner does not combine matching functions scattered across copies into a fix.
 
@@ -128,5 +130,6 @@ safe. The validation record must distinguish implemented paths from proposed one
 
 Current additions include report-derived triage ranges, a bounded RISC-V decoder,
 explicit verified PDB-symbol packets, offline DSSE attestations, format-bound native
-FLIRT, and source-bound native/fuzz CI pipelines. Native catalog qualification and
-actual coverage-guided campaign results must be recorded after those workflows run.
+FLIRT, and source-bound native/fuzz CI pipelines. The native hosted qualification and bounded coverage-guided campaigns have now
+run; the validation record distinguishes those observations from unsupported
+compiler transformations and runtime claims.

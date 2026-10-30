@@ -140,3 +140,19 @@ not an application-safety verdict. Output and baseline handling never upload dat
 DSSE/Ed25519/in-toto profile using explicitly trusted local keys and binds subjects
 only by exact scanned SHA-256. Read [attestations](attestations.md) for the policy
 schema and trust limits. A verified signature never promotes patch status.
+
+## Reviewed exact native artifacts
+
+The packaged `native-artifacts.json` records six independently replayed normal
+Brotli 1.2.0/1.2.1 builds: MSVC, clang-cl, and Apple-clang universal libraries.
+Each assertion binds the complete file SHA-256 and size, reviewed decoder source
+hash, headers/object provenance, selected compiler identity, build commit/run,
+and paired opposite-state controls. The owning `import_native_artifacts.py` tool
+validates these inputs before generating the catalog.
+
+The scanner reuses the digest already computed during traversal; it does not
+rehash or load the whole file for catalog lookup. A byte-different rebuild,
+re-signing, LTO transformation, or embedded copy does not inherit an exact match.
+Complete native FLIRT role populations remain recognition/provenance evidence,
+not a substitute for this exact artifact identity or semantic review. A fixed
+exact artifact does not clear another copy or certify the running application.

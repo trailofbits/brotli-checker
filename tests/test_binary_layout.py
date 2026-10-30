@@ -919,3 +919,14 @@ def test_sparse_fat64_slice_above_four_gib_keeps_outer_offsets(tmp_path, monkeyp
         result = layout.inspect_layout(data)
     assert result["slices"][0]["ranges"]["mapped"][0]["file_offset"] == slice_offset + 0x200
     assert requested < 128 * 1024
+
+
+def test_nonempty_pe_relocation_summary_is_canonical_json_evidence():
+    from brotli_evidence_report import canonical_json  # noqa: PLC0415 -- Integration boundary.
+
+    data = bytearray(pe_fixture())
+    struct.pack_into("<I", data, 0x98 + 112 + 5 * 8 + 4, 12)
+    struct.pack_into("<IIHH", data, 0x900, 0x1000, 12, 0xA010, 0)
+    result = layout.inspect_layout(bytes(data))
+    assert result["ranges"]["relocations"][0]["types"] == {"10": 1}
+    assert canonical_json(result)

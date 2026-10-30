@@ -117,12 +117,21 @@ Hex-Rays signatures. See [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Packaged corpus and observed coverage
 
-The bundled corpus contains 3,439 full-function records across 360 provenance
-profiles and 12 ELF machine/class/byte-order identities. It covers the six
+The bundled corpus contains 3,506 full-function records across 368 provenance
+profiles: 360 ELF, four PE, and four Mach-O. The ELF subset retains its 12
+machine/class/byte-order identities and covers the six
 reviewed C releases at `-O2`/`-O3`, PIC/non-PIC, with GCC 14 cross-target builds,
 AArch64 GCC 16, and both GCC 14 and Clang 19 LoongArch profiles. Header hashes and
 build notes record LoongArch portability inputs; no C source-state rule is
 transferred to other implementations.
+
+The native profiles come from reviewed Brotli 1.2.0/1.2.1 pairs built with MSVC,
+clang-cl, and Apple clang. Real paired normal binaries match their own complete
+role profiles and reject the opposite state; universal Apple binaries preserve
+both x86-64 and arm64 slice ownership. Windows PDB exports independently verify
+104 MSVC or 98 clang-cl procedures per binary. LTCG/LTO, ICF/dead-strip and signed
+universal binaries are retained controls, not automatically covered patch profiles.
+Profile source state remains provenance only for arbitrary targets.
 
 Validation recognized functions in all 1,704 retained linked variants (600
 normal, 600 stripped, 504 sectionless), recovering 37 names with consistent

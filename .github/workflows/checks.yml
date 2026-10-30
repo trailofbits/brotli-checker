@@ -147,6 +147,8 @@ jobs:
             shard: arithmetic-boundary
           - module: brotli_inventory
             shard: boolean-return
+          - module: brotli_native_artifacts
+            shard: all
           - module: brotli_package_provenance
             shard: comparison
           - module: brotli_package_provenance

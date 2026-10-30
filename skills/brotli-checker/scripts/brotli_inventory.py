@@ -57,6 +57,7 @@ from brotli_flirt import (
     load_flirt_bundle,
     match_flirt,
 )
+from brotli_native_artifacts import native_artifact_match, packaged_native_artifacts
 from brotli_payloads import (
     NotOciImageError,
     PayloadError,
@@ -410,6 +411,8 @@ def assess_binary(  # noqa: C901, PLR0912 -- Ordered evidence precedence is expl
     data: Buffer,
     references: list[CodeReference],
     flirt_catalog: FlirtCatalog | FlirtSession | None = None,
+    *,
+    digest: str | None = None,
 ) -> dict:
     is_elf = data.startswith(b"\x7fELF")
     code = (
@@ -481,6 +484,14 @@ def assess_binary(  # noqa: C901, PLR0912 -- Ordered evidence precedence is expl
             "Statically read decoder version precedes the upstream fix. Update or verify a "
             "vendor backport; version evidence does not prove the code is vulnerable."
         )
+    native_artifact = native_artifact_match(digest, len(data)) if digest is not None else None
+    if native_artifact is not None:
+        status = native_artifact["patch_status"]
+        kind, linkage = "exact_native_artifact_match", "embedded_code"
+        reason = (
+            "Exact whole-artifact SHA-256 matches an independently reviewed paired native "
+            "build; deployment selection and reachability remain unverified."
+        )
     return {
         "kind": kind,
         "patch_status": status,
@@ -490,8 +501,9 @@ def assess_binary(  # noqa: C901, PLR0912 -- Ordered evidence precedence is expl
         "decoder_metadata": metadata,
         "recognition": recognition,
         "flirt": flirt,
+        "native_artifact": native_artifact or {},
         "detection_status": "decoder_code_identified"
-        if code.matches
+        if code.matches or native_artifact is not None
         else "decoder_functions_recognized"
         if flirt["matches"]
         else recognition["status"]
@@ -657,10 +669,16 @@ class Inventory:
                 self.files_read += 1
                 self.inspect(data, label, depth)
 
-    def inspect(self, data: Buffer, label: str, depth: int) -> None:
+    def inspect(  # noqa: C901 -- Exact, source, container, and binary evidence are ordered.
+        self, data: Buffer, label: str, depth: int
+    ) -> None:
         digest = sha256_data(data)
         if self.analysis is not None:
             self.analysis.record(data, label, digest, depth)
+        native = native_artifact_match(digest, len(data))
+        if native is not None:
+            self._inspect_exact_native(data, label, digest)
+            return
         if data.startswith(b"\x7fELF") and self.code_references is not None:
             self._inspect_elf(data, label, digest)
             kind = archive_kind(data, label)
@@ -706,6 +724,33 @@ class Inventory:
                 self.record_name_fallback(label, len(data))
             return
         self._inspect_noncontainer(data, label, digest)
+
+    def _inspect_exact_native(self, data: Buffer, label: str, digest: str) -> None:
+        assessment = assess_binary(
+            data,
+            self.code_references or [],
+            self.flirt_catalog,
+            digest=digest,
+        )
+        analysis = (
+            self.analysis.enrich(data, label, assessment) if self.analysis is not None else {}
+        )
+        for reason in assessment["gaps"]:
+            self.gap(label, reason)
+        self.findings.append(
+            finding(
+                label,
+                assessment["kind"],
+                assessment["patch_status"],
+                assessment["reason"],
+                sha256=digest,
+                linkage=assessment["linkage"],
+                detection_status=assessment["detection_status"],
+                native_artifact=assessment["native_artifact"],
+                flirt=assessment["flirt"],
+                analysis=analysis,
+            )
+        )
 
     def _text(self, data: Buffer, label: str) -> str:
         if b"\0" in data[: min(TEXT_PROBE_BYTES, len(data))]:
@@ -816,7 +861,7 @@ class Inventory:
         references = self.code_references
         if references is None:
             return
-        assessment = assess_binary(data, references, self.flirt_catalog)
+        assessment = assess_binary(data, references, self.flirt_catalog, digest=digest)
         analysis = (
             self.analysis.enrich(data, label, assessment) if self.analysis is not None else {}
         )
@@ -835,6 +880,7 @@ class Inventory:
                 decoder_metadata=assessment["decoder_metadata"],
                 recognition=assessment["recognition"],
                 flirt=assessment["flirt"],
+                native_artifact=assessment["native_artifact"],
                 detection_status=assessment["detection_status"],
                 linkage=assessment["linkage"],
                 analysis=analysis,
@@ -2094,6 +2140,7 @@ def main(argv: list[str] | None = None) -> int:
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     try:
         evidence = CliEvidence(args, REGISTRY)
+        packaged_native_artifacts()
         code_references = load_references(args.code_references)
         flirt_catalog, flirt_error = configure_flirt(args.flirt_references, enabled=args.flirt)
     except (OSError, ValueError) as error:
