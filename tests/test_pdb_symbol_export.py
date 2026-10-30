@@ -104,7 +104,7 @@ def test_symbol_packet_enforces_byte_and_function_limits():
     assert "Duplicate" in result.gaps[0].reason
 
 
-def test_llvm_dump_parser_uses_hex_section_offsets_and_executable_sections():
+def test_llvm_dump_parser_uses_decimal_section_offsets_and_executable_sections():
     sections = exporter.pe_sections(pe_fixture())
     output = """
  | 10 | S_GPROC32 [size = 60] `DecodeOne`
@@ -113,17 +113,47 @@ def test_llvm_dump_parser_uses_hex_section_offsets_and_executable_sections():
  | parent = 0, end = 132, addr = 0001:0020, code size = 8
 """
     assert exporter.parse_symbols(output, sections) == [
-        {"name": "DecodeOne", "rva": 0x1010, "size": 16},
-        {"name": "DecodeTwo", "rva": 0x1020, "size": 8},
+        {"name": "DecodeOne", "rva": 0x100A, "size": 16},
+        {"name": "DecodeTwo", "rva": 0x1014, "size": 8},
     ]
     with pytest.raises(ValueError, match="executable") as error:
         exporter.parse_symbols(
             " | 10 | S_GPROC32 [size = 60] `Data`\n | addr = 0002:0000, code size = 1",
             sections,
         )
-    assert "section=0x2 ('.rdata')" in str(error.value)
-    assert "offset=0x0, code_size=1" in str(error.value)
+    assert "section=2 ('.rdata')" in str(error.value)
+    assert "offset=0 (0x0), code_size=1" in str(error.value)
     assert "virtual_size=0x600, raw_size=0x600" in str(error.value)
+
+
+def test_llvm_21_msvc_dump_records_resolve_as_decimal_offsets():
+    sections = [(0x1000, 0x400, 0x8A28, 0x8C00, 0x60000020, ".text")]
+    output = """
+ 196 | S_GPROC32 [size = 60] `BrotliInitBitReader`
+       parent = 0, end = 340, addr = 0001:0000, code size = 10
+ 344 | S_GPROC32 [size = 64] `BrotliWarmupBitReader`
+       parent = 0, end = 592, addr = 0001:0016, code size = 60
+ 308 | S_LPROC32 [size = 72] `BrotliCalculateRingBufferSize`
+       parent = 0, end = 700, addr = 0001:0080, code size = 116
+ 704 | S_GPROC32 [size = 72] `BrotliDecoderAttachDictionary`
+       parent = 0, end = 1452, addr = 0001:0208, code size = 256
+ 19932 | S_LPROC32 [size = 68] `DecodeDistanceBlockSwitch`
+         parent = 0, end = 21656, addr = 0001:9712, code size = 559
+"""
+    assert exporter.parse_symbols(output, sections) == [
+        {"name": "BrotliInitBitReader", "rva": 0x1000, "size": 10},
+        {"name": "BrotliWarmupBitReader", "rva": 0x1010, "size": 60},
+        {"name": "BrotliCalculateRingBufferSize", "rva": 0x1050, "size": 116},
+        {"name": "BrotliDecoderAttachDictionary", "rva": 0x10D0, "size": 256},
+        {"name": "DecodeDistanceBlockSwitch", "rva": 0x35F0, "size": 559},
+    ]
+
+    with pytest.raises(ValueError, match="lacks a supported decimal address"):
+        exporter.parse_symbols(
+            " | 10 | S_GPROC32 [size = 60] `FutureFormat`\n"
+            " | parent = 0, end = 70, addr = 0001:00AF, code size = 16",
+            sections,
+        )
 
 
 def test_explicit_generator_records_exact_commands_and_self_verifies(tmp_path, monkeypatch):

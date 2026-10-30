@@ -177,14 +177,14 @@ jobs:
               codesign --sign - --force "$binary"
               version_file="$build/compiler.txt"
               xcrun clang --version > "$version_file"
-              objects=()
+              record_args=(--output "native-candidates/$version-apple-$profile.json")
               if [[ "$profile" == normal ]]; then
                 cmake_object="$(find "$build" -name 'decode.c.o' -type f | head -1)"
                 test -n "$cmake_object"
                 for arch in x86_64 arm64; do
                   object="$build/decode-$arch.o"
                   xcrun lipo "$cmake_object" -thin "$arch" -output "$object"
-                  objects+=(--object "$object")
+                  record_args+=(--object "$object")
                   cp "$object" "native-candidates/$version-apple-$profile-$arch.o"
                   uv run --no-project --python 3.12 python scripts/build_native_flirt_references.py \
                     --object "$object" --source-tree "native-candidates/brotli-$version" \
@@ -199,7 +199,7 @@ jobs:
                 --source-tree "native-candidates/brotli-$version" \
                 --compiler-version-file "$version_file" \
                 --flags "apple-clang $profile universal2 dead_strip no_fixup_chains" \
-                "${objects[@]}" --output "native-candidates/$version-apple-$profile.json"
+                "${record_args[@]}"
               cp "$binary" "native-candidates/$version-apple-$profile.dylib"
             done
             uv run --no-project --python 3.12 python scripts/build_flirt_references.py \

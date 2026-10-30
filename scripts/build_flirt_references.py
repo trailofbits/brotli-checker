@@ -512,6 +512,7 @@ def write_catalog(bundle_path: Path, pat_path: Path, pat_text: str, groups: list
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="ascii",
+                newline="\n",
                 dir=target.parent,
                 prefix=f".{target.name}.",
                 suffix=".tmp",
@@ -519,7 +520,11 @@ def write_catalog(bundle_path: Path, pat_path: Path, pat_text: str, groups: list
             ) as stream:
                 stream.write(data)
                 temporary_paths.append((target, Path(stream.name)))
-        validate_pat(temporary_paths[0][1].read_text(encoding="ascii"))
+        pat_bytes = temporary_paths[0][1].read_bytes()
+        if hashlib.sha256(pat_bytes).hexdigest() != bundle["pat_sha256"]:
+            msg = "Written FLIRT pattern bytes do not match the manifest digest"
+            raise ValueError(msg)
+        validate_pat(pat_bytes.decode("ascii"))
         written_bundle = json.loads(temporary_paths[1][1].read_text(encoding="ascii"))
         if written_bundle != bundle:
             msg = "Written FLIRT bundle failed validation"

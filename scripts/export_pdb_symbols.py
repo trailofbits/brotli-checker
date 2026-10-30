@@ -33,7 +33,7 @@ MAX_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_FUNCTIONS = 100_000
 MAX_VERSION_OUTPUT_BYTES = 16 * 1024
 PROC = re.compile(r"\bS_(?:G|L)PROC32(?:_ID|EX)?\b.*`([^`]+)`")
-ADDRESS = re.compile(r"\baddr\s*=\s*([0-9A-Fa-f]+):([0-9A-Fa-f]+),\s*code size\s*=\s*(\d+)\b")
+ADDRESS = re.compile(r"\baddr\s*=\s*(\d+):(\d+),\s*code size\s*=\s*(\d+)\b")
 IMAGE_SCN_MEM_EXECUTE = 0x20000000
 FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
@@ -255,38 +255,52 @@ def pe_sections(data: Buffer) -> list[tuple[int, int, int, int, int, str]]:
     return result
 
 
+def _parse_symbol_address(
+    name: str,
+    match: re.Match[str],
+    sections: list[tuple[int, int, int, int, int, str]],
+) -> dict:
+    section, offset, size = map(int, match.groups())
+    if not 0 < section <= len(sections) or size <= 0:
+        message = (
+            "llvm-pdbutil function has invalid section/size: "
+            f"name={name!r}, section={section}, offset={offset} (0x{offset:x}), "
+            f"code_size={size}, section_count={len(sections)}"
+        )
+        raise ValueError(message)
+    rva, _, virtual_size, raw_size, flags, section_name = sections[section - 1]
+    file_backed_size = min(virtual_size, raw_size)
+    if not flags & IMAGE_SCN_MEM_EXECUTE or offset + size > file_backed_size:
+        message = (
+            "llvm-pdbutil function is outside executable PE bytes: "
+            f"name={name!r}, section={section} ({section_name!r}), "
+            f"offset={offset} (0x{offset:x}), code_size={size}, rva=0x{rva:x}, "
+            f"virtual_size=0x{virtual_size:x}, raw_size=0x{raw_size:x}, "
+            f"flags=0x{flags:08x}"
+        )
+        raise ValueError(message)
+    return {"name": name, "rva": rva + offset, "size": size}
+
+
 def parse_symbols(text: str, sections: list[tuple[int, int, int, int, int, str]]) -> list[dict]:
     functions = []
     name = None
     for line in text.splitlines():
         if match := PROC.search(line):
+            if name is not None:
+                message = f"llvm-pdbutil procedure {name!r} lacks a supported decimal address"
+                raise ValueError(message)
             name = match[1]
             continue
         if name is None or (match := ADDRESS.search(line)) is None:
             continue
-        section, offset, size = int(match[1], 16), int(match[2], 16), int(match[3], 10)
-        if not 0 < section <= len(sections) or size <= 0:
-            message = (
-                "llvm-pdbutil function has invalid section/size: "
-                f"name={name!r}, section=0x{section:x}, offset=0x{offset:x}, "
-                f"code_size={size}, section_count={len(sections)}"
-            )
-            raise ValueError(message)
-        rva, _, virtual_size, raw_size, flags, section_name = sections[section - 1]
-        file_backed_size = min(virtual_size, raw_size)
-        if not flags & IMAGE_SCN_MEM_EXECUTE or offset + size > file_backed_size:
-            message = (
-                "llvm-pdbutil function is outside executable PE bytes: "
-                f"name={name!r}, section=0x{section:x} ({section_name!r}), "
-                f"offset=0x{offset:x}, code_size={size}, rva=0x{rva:x}, "
-                f"virtual_size=0x{virtual_size:x}, raw_size=0x{raw_size:x}, "
-                f"flags=0x{flags:08x}"
-            )
-            raise ValueError(message)
-        functions.append({"name": name, "rva": rva + offset, "size": size})
+        functions.append(_parse_symbol_address(name, match, sections))
         if len(functions) > MAX_FUNCTIONS:
             raise ValueError("llvm-pdbutil function limit reached")
         name = None
+    if name is not None:
+        message = f"llvm-pdbutil procedure {name!r} lacks a supported decimal address"
+        raise ValueError(message)
     if not functions:
         raise ValueError("llvm-pdbutil emitted no bounded procedure records")
     return functions
