@@ -176,3 +176,21 @@ def test_explicit_generator_records_exact_commands_and_self_verifies(tmp_path, m
             ]
         )
     assert error.value.code == 2
+
+
+def test_portable_mapped_inputs_share_chunked_hashing_without_pread(tmp_path, monkeypatch):
+    artifact = tmp_path / "mapped.bin"
+    content = b"sparse-readable-mapping"
+    artifact.write_bytes(content)
+
+    def forbidden(*_args):
+        pytest.fail("portable PDB inputs must not require os.pread")
+
+    monkeypatch.setattr(exporter.os, "pread", forbidden, raising=False)
+    with exporter.stable_data(artifact) as data:
+        assert data.startswith(b"sparse")
+        assert data.find(b"mapping") == content.index(b"mapping")
+        assert exporter.sha256_data(data) == hashlib.sha256(content).hexdigest()
+        assert data.read(6) == b"sparse"
+        assert data.seek(0) == 0
+        assert data.read() == content

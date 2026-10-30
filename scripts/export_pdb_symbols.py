@@ -20,12 +20,14 @@ from typing import TYPE_CHECKING, Any, cast
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills/brotli-checker/scripts"))
 
-from brotli_binary_data import Buffer, sha256_data  # noqa: E402
+from brotli_binary_data import sha256_data  # noqa: E402
 from brotli_binary_triage import run_bounded  # noqa: E402
 from brotli_debug_companions import debug_identity, verify_pdb_symbol_export  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+    from brotli_binary_data import Buffer
 
 MAX_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_FUNCTIONS = 100_000
@@ -33,6 +35,40 @@ MAX_VERSION_OUTPUT_BYTES = 16 * 1024
 PROC = re.compile(r"\bS_(?:G|L)PROC32(?:_ID|EX)?\b.*`([^`]+)`")
 ADDRESS = re.compile(r"\baddr\s*=\s*([0-9A-Fa-f]+):([0-9A-Fa-f]+),\s*code size\s*=\s*(\d+)\b")
 IMAGE_SCN_MEM_EXECUTE = 0x20000000
+
+
+class MappedBuffer:
+    """Minimal bytes-compatible sparse view over one read-only mmap."""
+
+    def __init__(self, data: mmap.mmap) -> None:
+        self.data = data
+        self.position = 0
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __getitem__(self, key: int | slice) -> int | bytes:
+        return self.data[key]
+
+    def startswith(self, prefix: bytes, start: int = 0, end: int | None = None) -> bool:
+        stop = len(self) if end is None else min(end, len(self))
+        return self.data[start : start + len(prefix)] == prefix and start + len(prefix) <= stop
+
+    def find(self, sub: bytes, start: int = 0, end: int | None = None) -> int:
+        return self.data.find(sub, start, len(self) if end is None else end)
+
+    def tell(self) -> int:
+        return self.position
+
+    def seek(self, offset: int) -> int:
+        self.position = offset
+        return offset
+
+    def read(self, size: int = -1) -> bytes:
+        stop = len(self) if size < 0 else min(len(self), self.position + size)
+        result = self.data[self.position : stop]
+        self.position = stop
+        return result
 
 
 def positive(value: str) -> int:
@@ -77,7 +113,7 @@ def stable_data(path: Path) -> Generator[Any]:
         ):
             raise ValueError("PE/PDB input changed while opening")
         with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-            yield data
+            yield MappedBuffer(data)
         after = os.fstat(stream.fileno())
         if signature != (
             after.st_dev,

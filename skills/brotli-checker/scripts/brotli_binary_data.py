@@ -323,12 +323,8 @@ def sha256_data(data: Buffer) -> str:
             digest.update(data.read_at(offset, min(COPY_CHUNK_BYTES, len(data) - offset)))
         data.check_unchanged()
         return digest.hexdigest()
-    view = memoryview(data)
-    try:
-        for offset in range(0, len(view), COPY_CHUNK_BYTES):
-            digest.update(view[offset : offset + COPY_CHUNK_BYTES])
-    finally:
-        view.release()
+    for offset in range(0, len(data), COPY_CHUNK_BYTES):
+        digest.update(data[offset : offset + COPY_CHUNK_BYTES])
     return digest.hexdigest()
 
 
