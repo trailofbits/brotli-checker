@@ -2,7 +2,6 @@ import fcntl
 import hashlib
 import json
 import resource
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -75,6 +74,7 @@ def test_seed_writer_is_deterministic_and_refuses_existing_output(tmp_path):
         subject.main(["--write-seeds", str(first)])
 
 
+@pytest.mark.skipif(runner.find_timeout() is None, reason="GNU timeout is required")
 def test_bounded_runner_executes_one_input_and_binds_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: str(tmp_path))
     corpus = tmp_path / "input"
@@ -94,6 +94,7 @@ def test_bounded_runner_executes_one_input_and_binds_manifest(tmp_path, monkeypa
 
 def test_runner_rejects_symlinks_and_existing_output(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "find_timeout", lambda: "/usr/bin/timeout")
     target = tmp_path / "target"
     target.write_bytes(b"seed")
     link = tmp_path / "link"
@@ -108,6 +109,7 @@ def test_runner_rejects_symlinks_and_existing_output(tmp_path, monkeypatch):
 
 def test_runner_lock_serializes_jobs_without_creating_output(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "find_timeout", lambda: "/usr/bin/timeout")
     corpus = tmp_path / "input"
     corpus.write_bytes(b"seed")
     output = tmp_path / "output"
@@ -129,6 +131,7 @@ def test_input_is_staged_with_stable_content_and_digest(tmp_path):
 
 def test_runner_records_timeout_without_treating_it_as_completion(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "find_timeout", lambda: "/usr/bin/timeout")
     corpus = tmp_path / "input"
     corpus.write_bytes(b"seed")
     monkeypatch.setattr(runner, "_run_one", lambda _spec: (124, 1.0, 100))
@@ -140,7 +143,7 @@ def test_runner_records_timeout_without_treating_it_as_completion(tmp_path, monk
     assert result["returncode"] == 124
 
 
-@pytest.mark.skipif(shutil.which("timeout") is None, reason="GNU timeout is required")
+@pytest.mark.skipif(runner.find_timeout() is None, reason="GNU timeout is required")
 def test_subprocess_supervisor_applies_memory_limit_and_dedicated_tmp(tmp_path):
     harness = tmp_path / "probe.py"
     harness.write_text(
@@ -163,7 +166,7 @@ def test_subprocess_supervisor_applies_memory_limit_and_dedicated_tmp(tmp_path):
                 source=source,
                 log=log,
                 temporary=temporary,
-                timeout=Path(shutil.which("timeout") or ""),
+                timeout=Path(runner.find_timeout() or ""),
                 timeout_seconds=5,
                 memory_bytes=memory,
                 lock_descriptor=lock.fileno(),
@@ -182,6 +185,16 @@ def test_runner_resource_limits_must_be_positive(tmp_path):
     for option in ("--memory-bytes", "--timeout-seconds", "--max-input-bytes"):
         with pytest.raises(SystemExit):
             runner.main(["binary", str(tmp_path / option[2:]), str(corpus), option, "0"])
+
+
+def test_runner_fails_closed_when_gnu_timeout_is_unavailable(tmp_path, monkeypatch):
+    corpus = tmp_path / "input"
+    corpus.write_bytes(b"seed")
+    output = tmp_path / "output"
+    monkeypatch.setattr(runner, "find_timeout", lambda: None)
+    with pytest.raises(SystemExit):
+        runner.main(["binary", str(output), str(corpus)])
+    assert not output.exists()
 
 
 def test_atheris_adapter_binds_pinned_backend_and_selected_harness(monkeypatch):
@@ -255,7 +268,7 @@ def test_bounded_atheris_campaign_binds_seeds_sources_and_metrics(tmp_path, monk
     monkeypatch.setattr(campaign.importlib.metadata, "version", lambda _name: "3.1.0")
     monkeypatch.setattr(campaign, "_snapshot_sources", lambda _harness: source)
     monkeypatch.setattr(campaign.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(campaign.shutil, "which", lambda _name: "/usr/bin/timeout")
+    monkeypatch.setattr(campaign, "find_timeout", lambda: "/usr/bin/timeout")
 
     def run(spec):
         corpus = Path(spec.command[3])
@@ -284,10 +297,9 @@ def test_atheris_campaign_rejects_symlink_seed(tmp_path, monkeypatch):
     (seeds / "link").symlink_to(target)
     monkeypatch.setattr(campaign.importlib.metadata, "version", lambda _name: "3.1.0")
     monkeypatch.setattr(campaign.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(campaign.shutil, "which", lambda _name: "/usr/bin/timeout")
+    monkeypatch.setattr(campaign, "find_timeout", lambda: "/usr/bin/timeout")
     with pytest.raises(SystemExit):
         campaign.main(["binary", str(seeds), str(tmp_path / "output")])
-
 
 
 def test_atheris_completed_count_is_not_last_corpus_update():

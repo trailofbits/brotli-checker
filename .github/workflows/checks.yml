@@ -56,6 +56,8 @@ jobs:
         with:
           version: '0.13.5'
           python-version: '3.12'
+      - name: Install bounded subprocess supervisor
+        run: brew list coreutils >/dev/null 2>&1 || brew install coreutils
       - name: Run portable offline tests
         run: uv run --locked --extra flirt --extra analysis pytest
 

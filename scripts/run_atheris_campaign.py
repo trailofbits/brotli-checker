@@ -24,6 +24,7 @@ from run_fuzz_corpus import (
     _snapshot_sources,
     _stage_input,
     _write_manifest,
+    find_timeout,
 )
 
 DEFAULT_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
@@ -146,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"Atheris {PINNED_VERSION} is required: {error}")
     if version != PINNED_VERSION:
         parser.error(f"Atheris {PINNED_VERSION} is required; found {version}")
-    timeout_name = shutil.which("timeout")
+    timeout_name = find_timeout()
     if timeout_name is None:
         parser.error("GNU timeout is required to supervise Atheris")
     output = args.output.expanduser().absolute()

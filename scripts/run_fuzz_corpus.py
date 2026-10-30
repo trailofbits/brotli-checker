@@ -257,6 +257,11 @@ def _acquire_lock(lock: TextIO, parser: argparse.ArgumentParser) -> None:
         parser.error("another fuzz corpus job is active")
 
 
+def find_timeout() -> str | None:
+    """Return GNU timeout under its common Linux or Homebrew name."""
+    return shutil.which("timeout") or shutil.which("gtimeout")
+
+
 def _initial_manifest(args: argparse.Namespace, snapshot: SourceSnapshot) -> dict:
     return {
         "schema_version": 1,
@@ -326,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if min(args.memory_bytes, args.timeout_seconds, args.max_input_bytes) <= 0:
         parser.error("resource limits must be positive integers")
-    timeout_name = shutil.which("timeout")
+    timeout_name = find_timeout()
     if timeout_name is None:
         parser.error("GNU timeout is required to supervise fuzz subprocesses")
     output = args.output.absolute()

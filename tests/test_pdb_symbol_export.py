@@ -178,6 +178,30 @@ def test_explicit_generator_records_exact_commands_and_self_verifies(tmp_path, m
     assert error.value.code == 2
 
 
+def test_stable_mapped_input_uses_open_handle_identity_and_detects_mutation(tmp_path, monkeypatch):
+    path = tmp_path / "input.bin"
+    path.write_bytes(b"original")
+    actual = exporter.path_identity_no_follow(path)
+    monkeypatch.setattr(
+        exporter, "path_identity_no_follow", lambda _path: (actual[0], actual[1] + 1)
+    )
+    with (
+        pytest.raises(ValueError, match=r"identity changed.*path=.*handle="),
+        exporter.stable_data(path),
+    ):
+        pass
+
+    monkeypatch.setattr(exporter, "path_identity_no_follow", lambda _path: actual)
+
+    def mutate_open_input():
+        with exporter.stable_data(path) as data:
+            assert data[:] == b"original"
+            path.write_bytes(b"modified!")
+
+    with pytest.raises(ValueError, match="changed while exporting"):
+        mutate_open_input()
+
+
 def test_portable_mapped_inputs_share_chunked_hashing_without_pread(tmp_path, monkeypatch):
     artifact = tmp_path / "mapped.bin"
     content = b"sparse-readable-mapping"
@@ -190,7 +214,7 @@ def test_portable_mapped_inputs_share_chunked_hashing_without_pread(tmp_path, mo
     with exporter.stable_data(artifact) as data:
         assert data.startswith(b"sparse")
         assert data.find(b"mapping") == content.index(b"mapping")
-        assert exporter.sha256_data(data) == hashlib.sha256(content).hexdigest()
+        assert exporter.sha256_buffer(data) == hashlib.sha256(content).hexdigest()
         assert data.read(6) == b"sparse"
         assert data.seek(0) == 0
         assert data.read() == content
