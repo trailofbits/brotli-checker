@@ -296,3 +296,23 @@ def test_matcher_and_metadata_accept_sparse_file_data(tmp_path):
     with version_target.open("rb") as stream, binary_data.file_data(stream) as data:
         result = metadata.decoder_metadata(data)
         assert result["versions"][0]["version"] == "1.2.1"
+
+
+def test_sparse_file_view_without_pread_preserves_stream_position(tmp_path, monkeypatch):
+    path = tmp_path / "portable.bin"
+    content = b"prefix-payload-suffix"
+    path.write_bytes(content)
+    monkeypatch.delattr(os, "pread", raising=False)
+    with path.open("rb") as stream:
+        stream.seek(3)
+        with binary_data.file_data(stream) as data:
+            assert data[7:14] == b"payload"
+            assert data.find(b"payload") == 7
+            assert binary_data.sha256_data(data) == hashlib.sha256(content).hexdigest()
+            assert stream.tell() == 3
+        assert data.closed
+    empty = tmp_path / "empty"
+    empty.write_bytes(b"")
+    with empty.open("rb") as stream, binary_data.file_data(stream) as data:
+        assert data[:] == b""
+        assert binary_data.sha256_data(data) == hashlib.sha256(b"").hexdigest()

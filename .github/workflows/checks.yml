@@ -56,6 +56,8 @@ jobs:
         with:
           version: '0.13.5'
           python-version: '3.12'
+      - name: Install bounded subprocess supervisor
+        run: brew list coreutils >/dev/null 2>&1 || brew install coreutils
       - name: Run portable offline tests
         run: uv run --locked --extra flirt --extra analysis pytest
 
@@ -99,6 +101,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - module: brotli_attestations
+            shard: all
           - module: brotli_analysis
             shard: all
           - module: brotli_binary_data
@@ -143,6 +147,8 @@ jobs:
             shard: arithmetic-boundary
           - module: brotli_inventory
             shard: boolean-return
+          - module: brotli_native_artifacts
+            shard: all
           - module: brotli_package_provenance
             shard: comparison
           - module: brotli_package_provenance

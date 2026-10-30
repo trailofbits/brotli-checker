@@ -10,7 +10,12 @@ dependencies = []
 
 [project.optional-dependencies]
 flirt = ["python-flirt==0.10.2; python_version < '3.15'"]
-analysis = ["capstone==5.0.9", "pyelftools==0.33", "zstandard==0.25.0"]
+analysis = [
+    "capstone==5.0.9",
+    "cryptography==50.0.2",
+    "pyelftools==0.33",
+    "zstandard==0.25.0",
+]
 
 [tool.uv]
 # Explicitly override any user-level waiting period for reviewed updates.
@@ -89,3 +94,6 @@ dev = [
 ]
 security = ["pip-audit>=2.10.1", "zizmor>=1.31.1"]
 mutation = ["pytest-gremlins>=1.12.2"]
+fuzz = [
+    "atheris==3.1.0 ; python_full_version < '3.15' and platform_machine == 'x86_64' and sys_platform == 'linux'",
+]

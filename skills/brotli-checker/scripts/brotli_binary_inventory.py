@@ -32,6 +32,7 @@ from brotli_inventory import (
     is_binary_name_candidate,
     positive,
 )
+from brotli_native_artifacts import packaged_native_artifacts
 from brotli_reporting_cli import CliEvidence, add_reporting_arguments, policy_exit
 
 if TYPE_CHECKING:
@@ -111,6 +112,7 @@ class BinaryInventory(Inventory):
         recognition: dict | None = None,
         detection_status: str = "not_detected",
         flirt: dict | None = None,
+        native_artifact: dict | None = None,
         code_assessment: str,
     ) -> dict:
         return {
@@ -128,6 +130,7 @@ class BinaryInventory(Inventory):
             "recognition": recognition or {},
             "detection_status": detection_status,
             "flirt": flirt or {},
+            "native_artifact": native_artifact or {},
             "code_assessment": code_assessment,
         }
 
@@ -137,7 +140,7 @@ class BinaryInventory(Inventory):
             self.analysis.record(data, label, digest, depth)
         file_format = next((name for magic, name in MAGICS.items() if data.startswith(magic)), None)
         catalog_label = self.catalog.get(digest)
-        assessment = assess_binary(data, self.references, self.flirt_catalog)
+        assessment = assess_binary(data, self.references, self.flirt_catalog, digest=digest)
         if self.analysis is not None:
             self.analysis.enrich(data, label, assessment)
         for reason in assessment["gaps"]:
@@ -147,9 +150,13 @@ class BinaryInventory(Inventory):
             self.findings.append(
                 self._finding(
                     label,
-                    kind="exact_artifact_match"
-                    if catalog_label is not None
-                    else assessment["kind"],
+                    kind=(
+                        assessment["kind"]
+                        if assessment["native_artifact"]
+                        else "exact_artifact_match"
+                        if catalog_label is not None
+                        else assessment["kind"]
+                    ),
                     sha256=digest,
                     size_bytes=len(data),
                     format_hint=file_format,
@@ -163,6 +170,7 @@ class BinaryInventory(Inventory):
                     decoder_metadata=assessment["decoder_metadata"],
                     recognition=assessment["recognition"],
                     flirt=assessment["flirt"],
+                    native_artifact=assessment["native_artifact"],
                     detection_status=assessment["detection_status"],
                     code_assessment=assessment["reason"],
                 )
@@ -260,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--no-flirt cannot be combined with --flirt-references")
     try:
         evidence = CliEvidence(args, REGISTRY)
+        packaged_native_artifacts()
         catalog = load_catalog(args.catalog)
         references = load_references(args.code_references)
         flirt_catalog, flirt_error = configure_flirt(args.flirt_references, enabled=args.flirt)
@@ -282,7 +291,13 @@ def main(argv: list[str] | None = None) -> int:
         root.expanduser().absolute() for root in [*args.roots, *args.deployment_root, *args.sbom]
     ]
     try:
-        analysis_report = scan_with_analysis(inventory, roots, args)
+        analysis_report = scan_with_analysis(
+            inventory,
+            roots,
+            args,
+            attestation_inputs=evidence.attestation_inputs,
+            debug_symbol_inputs=evidence.debug_symbol_inputs,
+        )
         identities = evidence.check_inputs(inventory)
     except (OSError, ValueError) as error:
         parser.error(str(error))

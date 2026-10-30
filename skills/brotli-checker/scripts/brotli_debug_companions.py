@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
+from brotli_binary_data import sha256_data
 from brotli_binary_layout import inspect_layout
 from brotli_binary_match import (
     SHT_DYNSYM,
@@ -106,6 +107,18 @@ class IdentityInspection:
 class SuppliedCompanion:
     label: str
     data: Buffer
+
+
+@dataclass(frozen=True)
+class PdbSymbolExportAssessment:
+    status: Literal["verified", "unresolved"]
+    function_hints: tuple[FunctionHint, ...]
+    gaps: tuple[DebugGap, ...]
+    limited: bool
+    patch_status: Literal["unknown"] = "unknown"
+
+    def as_dict(self) -> dict[str, Any]:
+        return json.loads(json.dumps(asdict(self), sort_keys=True))
 
 
 @dataclass(frozen=True)
@@ -645,6 +658,171 @@ def _layout_function_hints(
             )
         )
     return tuple(hints), False
+
+
+def _symbol_export_sha256(value: object, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or value.lower() != value
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        message = f"Invalid PDB symbol export SHA-256: {field}"
+        raise ValueError(message)
+    return value
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            message = f"Duplicate PDB symbol export field: {key}"
+            raise ValueError(message)
+        result[key] = value
+    return result
+
+
+def _pdb_export_identity(
+    artifact: Buffer, pdb_data: Buffer, packet: dict
+) -> tuple[DebugIdentity, DebugIdentity]:
+    artifact_identity = debug_identity(artifact).identity
+    pdb_identity = debug_identity(pdb_data).identity
+    if (
+        artifact_identity is None
+        or artifact_identity.format != "pe"
+        or pdb_identity is None
+        or pdb_identity.format != "pdb"
+        or (artifact_identity.pdb_guid, artifact_identity.pdb_age)
+        != (pdb_identity.pdb_guid, pdb_identity.pdb_age)
+    ):
+        raise ValueError("PE and PDB identities are unavailable or do not match")
+    identity = packet.get("pdb_identity")
+    if not isinstance(identity, dict) or set(identity) != {"guid", "age"}:
+        raise ValueError("Invalid PDB symbol export identity")
+    if (
+        not isinstance(identity["guid"], str)
+        or type(identity["age"]) is not int
+        or (identity["guid"], identity["age"]) != (pdb_identity.pdb_guid, pdb_identity.pdb_age)
+    ):
+        raise ValueError("PDB symbol export GUID/age does not match supplied PDB")
+    if _symbol_export_sha256(packet.get("pe_sha256"), "pe") != sha256_data(artifact):
+        raise ValueError("PDB symbol export PE hash does not match supplied artifact")
+    if _symbol_export_sha256(packet.get("pdb_sha256"), "pdb") != sha256_data(pdb_data):
+        raise ValueError("PDB symbol export PDB hash does not match supplied companion")
+    return artifact_identity, pdb_identity
+
+
+def _pdb_export_generator(packet: dict) -> None:
+    generator = packet.get("generator")
+    if not isinstance(generator, dict) or set(generator) != {"name", "version", "sha256"}:
+        raise ValueError("Invalid PDB symbol export generator")
+    if (
+        generator["name"] != "llvm-pdbutil"
+        or not isinstance(generator["version"], str)
+        or not generator["version"]
+    ):
+        raise ValueError("PDB symbol export requires an identified llvm-pdbutil")
+    _symbol_export_sha256(generator["sha256"], "generator")
+
+
+def pdb_symbol_export_targets(
+    raw: bytes, limits: DebugLimits = DEFAULT_DEBUG_LIMITS
+) -> tuple[str, str]:
+    """Return exact PE/PDB digests only after validating a packet's outer schema."""
+    _validate_limits(limits)
+    if len(raw) > limits.max_identity_bytes:
+        raise ValueError("PDB symbol export exceeds byte limit")
+    packet = json.loads(raw, object_pairs_hook=_unique_json_object)
+    expected = {
+        "schema_version",
+        "format",
+        "pe_sha256",
+        "pdb_sha256",
+        "pdb_identity",
+        "generator",
+        "functions",
+    }
+    if (
+        not isinstance(packet, dict)
+        or set(packet) != expected
+        or type(packet["schema_version"]) is not int
+        or packet["schema_version"] != 1
+        or packet["format"] != "llvm-pdbutil-symbols-v1"
+    ):
+        raise ValueError("Invalid PDB symbol export schema")
+    return (
+        _symbol_export_sha256(packet["pe_sha256"], "pe"),
+        _symbol_export_sha256(packet["pdb_sha256"], "pdb"),
+    )
+
+
+def _pdb_export_hints(
+    artifact: Buffer, packet: dict, limits: DebugLimits
+) -> tuple[FunctionHint, ...]:
+    functions = packet.get("functions")
+    if not isinstance(functions, list) or len(functions) > limits.max_function_hints:
+        raise ValueError("Invalid or excessive PDB symbol export function population")
+    layout = inspect_layout(artifact)
+    executable = layout.get("ranges", {}).get("executable", [])
+    if layout.get("kind") != "pe" or not isinstance(executable, list) or layout.get("gaps"):
+        raise ValueError("PE layout is incomplete for PDB symbol export binding")
+    hints = []
+    seen = set()
+    for function in functions:
+        if not isinstance(function, dict) or set(function) != {"name", "rva", "size"}:
+            raise ValueError("Invalid PDB symbol export function")
+        name, rva, size = function["name"], function["rva"], function["size"]
+        if (
+            not isinstance(name, str)
+            or not name
+            or len(name.encode("utf-8")) > MAX_NAME_BYTES
+            or any(ord(character) < 32 for character in name)
+            or type(rva) is not int
+            or type(size) is not int
+            or rva < 0
+            or size <= 0
+            or (name, rva, size) in seen
+        ):
+            raise ValueError("Invalid or duplicate PDB symbol export function")
+        seen.add((name, rva, size))
+        owners = [
+            item
+            for item in executable
+            if isinstance(item, dict)
+            and type(item.get("rva")) is int
+            and type(item.get("file_offset")) is int
+            and type(item.get("size")) is int
+            and item["rva"] <= rva
+            and rva + size <= item["rva"] + item["size"]
+        ]
+        offsets = {item["file_offset"] + rva - item["rva"] for item in owners}
+        if len(offsets) != 1:
+            raise ValueError("PDB symbol export function lacks unique executable PE ownership")
+        hints.append(FunctionHint(name, rva, size, offsets.pop()))
+    return tuple(hints)
+
+
+def verify_pdb_symbol_export(
+    artifact: Buffer,
+    pdb_data: Buffer,
+    raw: bytes,
+    limits: DebugLimits = DEFAULT_DEBUG_LIMITS,
+) -> PdbSymbolExportAssessment:
+    """Verify one explicit llvm-pdbutil packet against supplied PE/PDB bytes."""
+    _validate_limits(limits)
+    if len(raw) > limits.max_identity_bytes:
+        gap = DebugGap("pdb_symbol_export_limit", "PDB symbol export exceeds byte limit")
+        return PdbSymbolExportAssessment("unresolved", (), (gap,), True)
+    try:
+        pdb_symbol_export_targets(raw, limits)
+        packet = json.loads(raw, object_pairs_hook=_unique_json_object)
+        _pdb_export_identity(artifact, pdb_data, packet)
+        _pdb_export_generator(packet)
+        hints = _pdb_export_hints(artifact, packet, limits)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
+        gap = DebugGap("invalid_pdb_symbol_export", f"Cannot verify PDB symbol export: {error}")
+        return PdbSymbolExportAssessment("unresolved", (), (gap,), False)
+    return PdbSymbolExportAssessment("verified", hints, (), False)
 
 
 @contextmanager

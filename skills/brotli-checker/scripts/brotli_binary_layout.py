@@ -306,7 +306,13 @@ def _pe_relocations(
                     raise ValueError("PE base-relocation RVA overflow")
         cursor += block_size
     result["ranges"]["relocations"].append(
-        _range(offset, size, rva=rva, entry_count=entry_count, types=types)
+        _range(
+            offset,
+            size,
+            rva=rva,
+            entry_count=entry_count,
+            types={str(kind): count for kind, count in sorted(types.items())},
+        )
     )
 
 

@@ -15,6 +15,7 @@ from brotli_binary_match import (
     ELF32_BITS,
     ELF64_BITS,
     EM_AARCH64,
+    EM_RISCV,
     EM_X86_64,
     SHT_DYNSYM,
     SHT_STRTAB,
@@ -70,6 +71,17 @@ X86_REL32_INSTRUCTION_BYTES = 5
 X86_RIP_MODRM = 0x05
 EH_FRAME_HEADER_BYTES = 4
 AARCH64_CHUNK_BYTES = 64 * 1024
+RISCV_CHUNK_BYTES = 64 * 1024
+EF_RISCV_RVC = 0x0001
+RISCV_OPCODE_LOAD = 0x03
+RISCV_OPCODE_AUIPC = 0x17
+RISCV_OPCODE_LUI = 0x37
+RISCV_OPCODE_OP_IMM = 0x13
+RISCV_OPCODE_JALR = 0x67
+RISCV_OPCODE_JAL = 0x6F
+RISCV_LONG_INSTRUCTION_MASK = 0x3
+RISCV_COMPRESSED_INSTRUCTION_BYTES = 2
+RISCV_COMPRESSED_JUMP = 0xA001
 DERIVED_FUNCTION_METHODS = frozenset(
     {"elf_symbol", "eh_frame_hdr", "direct_branch_target", "reference_site_only"}
 )
@@ -1179,6 +1191,188 @@ def _decode_aarch64(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
                     pending_adrp = None
 
 
+def _riscv_jal_immediate(word: int) -> int:
+    value = (
+        ((word >> 31) & 1) << 20
+        | ((word >> 21) & 0x3FF) << 1
+        | ((word >> 20) & 1) << 11
+        | ((word >> 12) & 0xFF) << 12
+    )
+    return _sign_extend(value, 21)
+
+
+def _riscv_compressed_jump_immediate(halfword: int) -> int:
+    value = (
+        ((halfword >> 12) & 1) << 11
+        | ((halfword >> 11) & 1) << 4
+        | ((halfword >> 9) & 3) << 8
+        | ((halfword >> 8) & 1) << 10
+        | ((halfword >> 7) & 1) << 6
+        | ((halfword >> 6) & 1) << 7
+        | ((halfword >> 3) & 7) << 1
+        | ((halfword >> 2) & 1) << 5
+    )
+    return _sign_extend(value, 12)
+
+
+def _decode_riscv_word(
+    builder: _GraphBuilder,
+    word: int,
+    offset: int,
+    address: int,
+    pending: tuple[int, int, int, Literal["pc_relative_reference", "absolute_reference"]] | None,
+) -> tuple[int, int, int, Literal["pc_relative_reference", "absolute_reference"]] | None:
+    opcode = word & 0x7F
+    rd, rs1 = (word >> 7) & 31, (word >> 15) & 31
+    if opcode == RISCV_OPCODE_AUIPC:
+        return rd, address + _sign_extend(word & 0xFFFFF000, 32), address, "pc_relative_reference"
+    if opcode == RISCV_OPCODE_LUI:
+        return rd, _sign_extend(word & 0xFFFFF000, 32), address, "absolute_reference"
+    if opcode == RISCV_OPCODE_JAL:
+        if rd in {0, 1, 5}:
+            _add_direct_branch(
+                builder,
+                offset,
+                4,
+                address + _riscv_jal_immediate(word),
+                call=rd in {1, 5},
+            )
+        return None
+    if pending is not None and pending[2] + 4 == address and rs1 == pending[0]:
+        _decode_riscv_pending(builder, word, offset, address, pending)
+    elif opcode == RISCV_OPCODE_JALR and builder.function_at(offset, 4) is not None:
+        builder.gaps.add(
+            "unresolved_indirect_transfer",
+            "RISC-V indirect branch/call target is unresolved",
+        )
+    return None
+
+
+def _decode_riscv_pending(
+    builder: _GraphBuilder,
+    word: int,
+    offset: int,
+    address: int,
+    pending: tuple[int, int, int, Literal["pc_relative_reference", "absolute_reference"]],
+) -> None:
+    opcode, rd = word & 0x7F, (word >> 7) & 31
+    immediate = _sign_extend(word >> 20, 12)
+    if opcode in {RISCV_OPCODE_OP_IMM, RISCV_OPCODE_LOAD} and (
+        opcode == RISCV_OPCODE_LOAD or (word >> 12) & 7 == 0
+    ):
+        _add_data_reference(
+            builder,
+            offset,
+            address,
+            pending[1] + immediate,
+            kind=pending[3],
+        )
+    elif opcode == RISCV_OPCODE_JALR and (word >> 12) & 7 == 0 and rd in {0, 1, 5}:
+        _add_direct_branch(
+            builder,
+            offset,
+            4,
+            (pending[1] + immediate) & ~1,
+            call=rd in {1, 5},
+        )
+
+
+def _decode_riscv_compressed(
+    builder: _GraphBuilder,
+    halfword: int,
+    offset: int,
+    address: int,
+    *,
+    permitted: bool,
+) -> None:
+    if not permitted:
+        builder.gaps.add(
+            "unsupported_instruction_mode",
+            "RISC-V compressed instruction lacks EF_RISCV_RVC",
+            offset,
+        )
+    elif halfword & 0xE003 == RISCV_COMPRESSED_JUMP:
+        _add_direct_branch(
+            builder,
+            offset,
+            RISCV_COMPRESSED_INSTRUCTION_BYTES,
+            address + _riscv_compressed_jump_immediate(halfword),
+            call=False,
+        )
+    elif (
+        halfword & 0xF07F in {0x8002, 0x9002}
+        and builder.function_at(offset, RISCV_COMPRESSED_INSTRUCTION_BYTES) is not None
+    ):
+        builder.gaps.add(
+            "unresolved_indirect_transfer",
+            "RISC-V compressed indirect transfer is unresolved",
+        )
+
+
+def _decode_riscv(builder: _GraphBuilder) -> None:
+    remaining = (
+        _DecodeRange(offset, virtual, size, priority=False)
+        for offset, virtual, size, flags in builder.segments
+        if flags & PF_X
+    )
+    permits_compressed = bool(builder.header[7] & EF_RISCV_RVC)
+    for window in _decode_ranges(builder, remaining, alignment=2):
+        if (window.file_offset - window.virtual_address) % 2 or window.size % 2:
+            builder.gaps.add(
+                "unsupported_instruction_mode",
+                "RISC-V executable mapping or decode window is not halfword aligned",
+                window.file_offset,
+            )
+            continue
+        pending: (
+            tuple[int, int, int, Literal["pc_relative_reference", "absolute_reference"]] | None
+        ) = None
+        relative = 0
+        while relative < window.size:
+            chunk_start = relative
+            chunk_stop = min(window.size, chunk_start + RISCV_CHUNK_BYTES)
+            chunk = builder.data[
+                window.file_offset + chunk_start : window.file_offset
+                + min(window.size, chunk_stop + 2)
+            ]
+            while relative < chunk_stop:
+                local = relative - chunk_start
+                halfword = int.from_bytes(chunk[local : local + 2], "little")
+                instruction_size = (
+                    RISCV_COMPRESSED_INSTRUCTION_BYTES
+                    if halfword & RISCV_LONG_INSTRUCTION_MASK != RISCV_LONG_INSTRUCTION_MASK
+                    else 4
+                )
+                offset, address = (
+                    window.file_offset + relative,
+                    window.virtual_address + relative,
+                )
+                builder.instructions_seen += 1
+                if builder.instructions_seen > builder.limits.max_instructions:
+                    builder.gaps.add("instruction_limit", "Decoded-instruction limit reached")
+                    return
+                if relative + instruction_size > window.size:
+                    builder.gaps.add(
+                        "unsupported_instruction_mode",
+                        "RISC-V executable range ends within an instruction",
+                        offset,
+                    )
+                    return
+                if instruction_size == RISCV_COMPRESSED_INSTRUCTION_BYTES:
+                    _decode_riscv_compressed(
+                        builder,
+                        halfword,
+                        offset,
+                        address,
+                        permitted=permits_compressed,
+                    )
+                    pending = None
+                else:
+                    word = int.from_bytes(chunk[local : local + 4], "little")
+                    pending = _decode_riscv_word(builder, word, offset, address, pending)
+                relative += instruction_size
+
+
 def _sign_extend(value: int, bits: int) -> int:
     sign = 1 << (bits - 1)
     return (value ^ sign) - sign
@@ -1494,6 +1688,8 @@ def build_elf_graph(  # noqa: C901, PLR0913
         _decode_aarch64(builder)
     elif builder.machine == EM_X86_64:
         _decode_x86(builder, supplied)
+    elif builder.machine == EM_RISCV:
+        _decode_riscv(builder)
     else:
         builder.gaps.add(
             "unsupported_instruction_mode",

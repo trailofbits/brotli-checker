@@ -75,6 +75,7 @@ DEFAULT_OPTIONAL_TOOLS = (
     OptionalToolSpec("pyelftools", "pyelftools"),
     OptionalToolSpec("python-flirt", "python-flirt"),
     OptionalToolSpec("zstandard", "zstandard"),
+    OptionalToolSpec("cryptography", "cryptography"),
 )
 
 
@@ -268,6 +269,11 @@ def collect_cli_identities(  # noqa: PLR0913 -- CLI evidence sources are explici
     catalogs = [
         IdentityPath("catalog", "binary-references", code_references),
         IdentityPath("catalog", "source-fingerprints", source_fingerprints),
+        IdentityPath(
+            "catalog",
+            "native-artifacts",
+            Path(__file__).resolve().parent.parent / "references/native-artifacts.json",
+        ),
         *extra_catalog_files,
     ]
     optional_catalogs = []

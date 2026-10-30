@@ -9,10 +9,22 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from brotli_binary_data import file_data
+from brotli_attestations import (
+    AttestationInputs,
+    CapturedDocument,
+    capture_attestation_inputs,
+    capture_document,
+    inspect_captured_attestations,
+)
+from brotli_binary_data import file_data, sha256_data
 from brotli_binary_graph import build_elf_graph, seeds_from_assessment
 from brotli_binary_layout import inspect_layout
-from brotli_debug_companions import SuppliedCompanion, verify_debug_companions
+from brotli_debug_companions import (
+    SuppliedCompanion,
+    pdb_symbol_export_targets,
+    verify_debug_companions,
+    verify_pdb_symbol_export,
+)
 from brotli_package_provenance import (
     MetadataRecord,
     PackageDatabase,
@@ -53,27 +65,42 @@ def _hashes(data: Buffer, sha256: str) -> dict[str, str]:
 
 
 class AnalysisSession:
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- Independent supplied evidence populations.
         self,
         roots: list[Path],
         *,
         deployment_roots: Sequence[Path] = (),
         xrefs: bool = True,
         companions: tuple[SuppliedCompanion, ...] = (),
+        debug_symbol_exports: tuple[CapturedDocument, ...] = (),
         snapshots: tuple[VendorSnapshot, ...] = (),
     ) -> None:
         self.roots = [str(path.absolute()) for path in roots]
         self.deployment_roots = [str(path.absolute()) for path in deployment_roots]
         self.xrefs = xrefs
+        self.gaps: list[dict] = []
+        self.gap_count = 0
         self.companions = companions
+        self.debug_symbol_exports = debug_symbol_exports
+        self._used_debug_symbol_exports: set[str] = set()
+        self._debug_symbols_by_pe: dict[str, list[tuple[CapturedDocument, str]]] = {}
+        for item in debug_symbol_exports:
+            try:
+                pe_sha256, pdb_sha256 = pdb_symbol_export_targets(item.raw)
+            except ValueError as error:
+                self._used_debug_symbol_exports.add(item.label)
+                self.gap(item.label, f"Invalid debug-symbol packet: {error}")
+                continue
+            self._debug_symbols_by_pe.setdefault(pe_sha256, []).append((item, pdb_sha256))
+        self._companions_by_sha256: dict[str, list[SuppliedCompanion]] = {}
+        for companion in companions:
+            self._companions_by_sha256.setdefault(sha256_data(companion.data), []).append(companion)
         self.snapshots = snapshots
         self.artifacts: list[dict] = []
         self._by_path: dict[tuple[str, int], dict] = {}
         self.images: list[dict] = []
         self._images_by_label: dict[str, dict] = {}
         self.image_history_count = 0
-        self.gaps: list[dict] = []
-        self.gap_count = 0
         self.metadata_bytes = 0
         self.sidecars: set[str] = set()
 
@@ -325,10 +352,44 @@ class AnalysisSession:
             result["debug_companions"] = debug
             for gap in debug["gaps"]:
                 self.gap(path, gap["reason"])
+        symbol_exports = self._pdb_symbol_exports(data, record, path)
+        if symbol_exports:
+            result["pdb_symbol_exports"] = symbol_exports
         record["analysis"] = result
         return result
 
+    def _pdb_symbol_exports(self, data: Buffer, record: dict, path: str) -> list[dict]:
+        results = []
+        selected_exports = self._debug_symbols_by_pe.get(record["sha256"], [])
+        if len(selected_exports) > 1:
+            self._used_debug_symbol_exports.update(item.label for item, _ in selected_exports)
+            self.gap(path, "Multiple debug-symbol packets match one PE artifact")
+            selected_exports = []
+        for item, pdb_sha256 in selected_exports:
+            self._used_debug_symbol_exports.add(item.label)
+            companions = self._companions_by_sha256.get(pdb_sha256, [])
+            if len(companions) != 1:
+                self.gap(
+                    item.label,
+                    "Debug-symbol packet requires exactly one hash-matched supplied PDB",
+                )
+                continue
+            verified = verify_pdb_symbol_export(data, companions[0].data, item.raw).as_dict()
+            results.append(
+                {
+                    "label": item.label,
+                    "companion": companions[0].label,
+                    **verified,
+                }
+            )
+            for gap in verified["gaps"]:
+                self.gap(item.label, gap["reason"])
+        return results
+
     def finish(self) -> dict:
+        for item in self.debug_symbol_exports:
+            if item.label not in self._used_debug_symbol_exports:
+                self.gap(item.label, "Debug-symbol packet matched no supplied PE artifact")
         graph = provider_graph(self.artifacts)
         for gap in graph["gaps"]:
             self.gap("<providers>", gap)
@@ -475,6 +536,18 @@ class AnalysisSession:
 
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--attestation",
+        action="append",
+        default=[],
+        type=Path,
+        help="local DSSE/in-toto attestation; requires explicit trust policy",
+    )
+    parser.add_argument(
+        "--attestation-policy",
+        type=Path,
+        help="local pinned Ed25519 keys, threshold, and allowed predicates",
+    )
+    parser.add_argument(
         "--no-xrefs", action="store_true", help="disable function graph decoding explicitly"
     )
     parser.add_argument(
@@ -492,6 +565,13 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
         help="explicit debug companion; identity must match before use",
     )
     parser.add_argument(
+        "--debug-symbols",
+        action="append",
+        default=[],
+        type=Path,
+        help="hash-bound llvm-pdbutil symbol packet for a supplied PE/PDB pair",
+    )
+    parser.add_argument(
         "--sbom",
         action="append",
         default=[],
@@ -507,7 +587,14 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def scan_with_analysis(inventory: Inventory, roots: list[Path], args: argparse.Namespace) -> dict:
+def scan_with_analysis(
+    inventory: Inventory,
+    roots: list[Path],
+    args: argparse.Namespace,
+    *,
+    attestation_inputs: AttestationInputs | None = None,
+    debug_symbol_inputs: tuple[CapturedDocument, ...] | None = None,
+) -> dict:
     """Keep supplied companion descriptors stable for the entire scan."""
     roots = list(dict.fromkeys(roots))
     with ExitStack() as stack:
@@ -524,17 +611,32 @@ def scan_with_analysis(inventory: Inventory, roots: list[Path], args: argparse.N
                 message = "Vendor snapshot exceeds metadata byte budget"
                 raise ValueError(message)
             snapshots.append(load_vendor_snapshot(raw.decode("utf-8")))
+        if debug_symbol_inputs is None:
+            debug_symbol_inputs = tuple(
+                capture_document(path) for path in getattr(args, "debug_symbols", [])
+            )
         session = AnalysisSession(
             roots,
             deployment_roots=[p.expanduser().absolute() for p in args.deployment_root],
             xrefs=not args.no_xrefs,
             companions=tuple(companions),
+            debug_symbol_exports=debug_symbol_inputs,
             snapshots=tuple(snapshots),
         )
         session.sidecars = {str(path.expanduser().absolute()) for path in args.sbom}
         inventory.analysis = session
         inventory.scan_roots(roots)
         result = session.finish()
+        if attestation_inputs is None:
+            attestation_inputs = capture_attestation_inputs(
+                getattr(args, "attestation", []), getattr(args, "attestation_policy", None)
+            )
+        attestations, attestation_gaps = inspect_captured_attestations(
+            attestation_inputs, result["artifacts"]
+        )
+        result["attestations"] = attestations
+        for gap in attestation_gaps:
+            inventory.gap(gap["path"], gap["reason"])
         for gap in result.pop("gaps"):
             inventory.gap(gap["path"], gap["reason"])
         inventory.gap_count += result["gap_details_omitted"]
@@ -542,6 +644,7 @@ def scan_with_analysis(inventory: Inventory, roots: list[Path], args: argparse.N
             "xrefs": session.xrefs,
             "deployment_roots": session.deployment_roots,
             "debug_files": [str(path) for path in args.debug_file],
+            "debug_symbols": [item.label for item in debug_symbol_inputs],
             "sboms": sorted(session.sidecars),
             "vendor_snapshots": [str(path) for path in args.vendor_snapshot],
         }

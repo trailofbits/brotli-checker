@@ -148,11 +148,13 @@ addresses, and mapping scope; locate code cross-references to these **data** tab
 then inspect bounded executable ranges and error propagation. Do not disassemble
 table bytes as if they were code or promote a table match to an affected/fixed
 verdict. PE/Mach-O/Wasm table evidence is scoped to validated mapped data or data
-initializers; universal Mach-O slices remain separate. These formats do not yet
-have a paired patch-code reference corpus. Dictionary-only
+initializers; universal Mach-O slices remain separate. Explicitly format-bound
+PE/Mach-O FLIRT profiles may add function identity, but cannot borrow an ELF
+profile or promote a scattered patch-role population to fixed. Dictionary-only
 presence does not establish a decoder, and unmatched signatures do not prove absence.
 
-For unmatched ELF code, use the automatic [FLIRT function-recognition workflow](references/flirt.md)
+For unmatched ELF, PE, or Mach-O code, use the automatic
+[FLIRT function-recognition workflow](references/flirt.md)
 to obtain individual function names and bounded code windows from trusted
 patterns. It runs by default; `--no-flirt` is an explicit speed/coverage tradeoff.
 Use Python 3.12-3.14 and the pinned backend as documented. Inspect `flirt.matches`, `ambiguous_matches`, gaps, and
@@ -183,6 +185,19 @@ makes the report incomplete:
 ```sh
 python3 scripts/brotli_binary_triage.py /absolute/target > triage.json
 ```
+
+For a stripped target already scanned with JSON output, prefer the report-bound
+mode instead of manually transcribing offsets:
+
+```sh
+python3 scripts/brotli_binary_triage.py /absolute/target \
+  --analysis-report /absolute/inventory.json > triage.json
+```
+
+This mode accepts only a valid scanner evidence envelope for the exact target
+SHA-256. It revalidates graph/FLIRT/exact-code windows against executable ELF
+mappings and ignores names, source provenance, and prior patch-status fields
+when selecting bytes. Partial graph/FLIRT evidence keeps triage incomplete.
 
 The default mode selects defined `Decode*BlockSwitch`,
 `SafeDecode*BlockSwitch`, and `ProcessCommands*` symbols, with

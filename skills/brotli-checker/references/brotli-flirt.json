@@ -39995,9 +39995,569 @@
       "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
       "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
       "source_state": "vulnerable"
+    },
+    {
+      "abi": "windows",
+      "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+      "byteorder": "little",
+      "compiler": "Clang 19.1.5; executable=C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin/clang-cl.exe; sha256=93faf6d0a9e66ed1629eb1c9ca638a070aa1839b9490a87ff89b9cb39eeae36b",
+      "elf_class": 64,
+      "evidence_scope": "patch_bearing_population_v1",
+      "flags": "clang-cl /O2 /Gy x86_64",
+      "format": "pe",
+      "functions": {
+        "DecodeCommandBlockSwitch": [
+          "brotli_3ac448adfea860c382d61c5ecd497bea"
+        ],
+        "DecodeDistanceBlockSwitch": [
+          "brotli_2ce402633b4df9d98a76bfdc89653978"
+        ],
+        "DecodeLiteralBlockSwitch": [
+          "brotli_127d6a70b9906bc0a57e87b1acf35a95"
+        ],
+        "ProcessCommands": [
+          "brotli_197f38b4a7c0c0fd90e5f90cb41f41b4"
+        ],
+        "SafeDecodeCommandBlockSwitch": [
+          "brotli_8b9790632952674753664ae15482a51e"
+        ],
+        "SafeDecodeDistanceBlockSwitch": [
+          "brotli_4bbd021dda6197cec113dbbd585d20a6"
+        ],
+        "SafeDecodeLiteralBlockSwitch": [
+          "brotli_85f3b91a8fa95c3af6424d6fb5d90785"
+        ],
+        "SafeProcessCommands": [
+          "brotli_1d1db4e4563a08741a620852cfbf28ca"
+        ]
+      },
+      "headers_sha256": "eec0943329e4175f1006775a9b739c623d7ffe04a55dff95b27bad588669721b",
+      "id": "brotli_native_0817ddfaa6d928191bc94f0b0f741885",
+      "machine": 62,
+      "object_sha256": "d352087ebe9b0bf8c0cbba6e221bd78661538e525aec65ae9c8fbd8b3f0575aa",
+      "patch_functions": {
+        "command": [
+          "DecodeCommandBlockSwitch"
+        ],
+        "distance": [
+          "DecodeDistanceBlockSwitch"
+        ],
+        "helpers": [],
+        "literal": [
+          "DecodeLiteralBlockSwitch"
+        ],
+        "process": [
+          "ProcessCommands"
+        ],
+        "safe_command": [
+          "SafeDecodeCommandBlockSwitch"
+        ],
+        "safe_distance": [
+          "SafeDecodeDistanceBlockSwitch"
+        ],
+        "safe_literal": [
+          "SafeDecodeLiteralBlockSwitch"
+        ],
+        "safe_process": [
+          "SafeProcessCommands"
+        ]
+      },
+      "source": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c",
+      "source_sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+      "source_state": "fixed"
+    },
+    {
+      "abi": "windows",
+      "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+      "byteorder": "little",
+      "compiler": "Clang 19.1.5; executable=C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin/clang-cl.exe; sha256=93faf6d0a9e66ed1629eb1c9ca638a070aa1839b9490a87ff89b9cb39eeae36b",
+      "elf_class": 64,
+      "evidence_scope": "patch_bearing_population_v1",
+      "flags": "clang-cl /O2 /Gy x86_64",
+      "format": "pe",
+      "functions": {
+        "DecodeCommandBlockSwitch": [
+          "brotli_67709e9eefca9855b3641351748823f1"
+        ],
+        "DecodeDistanceBlockSwitch": [
+          "brotli_c56b99c597115bf6cee44f6b7e1ae9f2"
+        ],
+        "DecodeLiteralBlockSwitch": [
+          "brotli_acc7a3e5a140867ee80cfb68f0a4e3bd"
+        ],
+        "ProcessCommands": [
+          "brotli_4d0888be49c67b0909c8e8c797a6c87d"
+        ],
+        "SafeDecodeCommandBlockSwitch": [
+          "brotli_a2a5cec39c43e1354a2fa40d30c19dc0"
+        ],
+        "SafeDecodeDistanceBlockSwitch": [
+          "brotli_72c403477d674bc0f1a1a4ee77ee408c"
+        ],
+        "SafeDecodeLiteralBlockSwitch": [
+          "brotli_43ca8f8188490079ca3359adc98aeefc"
+        ],
+        "SafeProcessCommands": [
+          "brotli_c86b92cd52986a89b103b3c153ebca11"
+        ]
+      },
+      "headers_sha256": "bb5f0313e1323df6b1d93c10a8d6aed64c569caa8c5f8c94a1140a38e908e9df",
+      "id": "brotli_native_2981646ca284131a185c009247619abf",
+      "machine": 62,
+      "object_sha256": "a53bbb3cca49bdafadd4295e9f837ed90dc4a41d8cf2bc13bff10da10eba9aab",
+      "patch_functions": {
+        "command": [
+          "DecodeCommandBlockSwitch"
+        ],
+        "distance": [
+          "DecodeDistanceBlockSwitch"
+        ],
+        "helpers": [],
+        "literal": [
+          "DecodeLiteralBlockSwitch"
+        ],
+        "process": [
+          "ProcessCommands"
+        ],
+        "safe_command": [
+          "SafeDecodeCommandBlockSwitch"
+        ],
+        "safe_distance": [
+          "SafeDecodeDistanceBlockSwitch"
+        ],
+        "safe_literal": [
+          "SafeDecodeLiteralBlockSwitch"
+        ],
+        "safe_process": [
+          "SafeProcessCommands"
+        ]
+      },
+      "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
+      "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+      "source_state": "vulnerable"
+    },
+    {
+      "abi": "windows",
+      "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+      "byteorder": "little",
+      "compiler": "MSVC 19.44.35229.0; executable=C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe; sha256=fe251ef50a1545b1b0835ee17b1e785459712b38d79e45b5c1d3d28970a36619",
+      "elf_class": 64,
+      "evidence_scope": "patch_bearing_population_v1",
+      "flags": "msvc /O2 /Gy x86_64",
+      "format": "pe",
+      "functions": {
+        "DecodeCommandBlockSwitch": [
+          "brotli_518f368225bb8edf3eefa005049ba91a"
+        ],
+        "DecodeDistanceBlockSwitch": [
+          "brotli_79091423c423732d13f47c9d872d3d8c"
+        ],
+        "DecodeLiteralBlockSwitch": [
+          "brotli_edc8f34f98dd080ef5ec9edbc65472e8"
+        ],
+        "ProcessCommands": [
+          "brotli_5528cd26ff60ea6d219ee51bec099760"
+        ],
+        "SafeDecodeCommandBlockSwitch": [
+          "brotli_a66237b435c3199f52e04b556cbc15f2"
+        ],
+        "SafeDecodeDistanceBlockSwitch": [
+          "brotli_bce31df4c6048ddac2fd6e0fe72ae8e9"
+        ],
+        "SafeDecodeLiteralBlockSwitch": [
+          "brotli_6c327544e408556faab988491f8542e2"
+        ],
+        "SafeProcessCommands": [
+          "brotli_1e54ac2a2bfbacca652660c1b3e9226b"
+        ]
+      },
+      "headers_sha256": "eec0943329e4175f1006775a9b739c623d7ffe04a55dff95b27bad588669721b",
+      "id": "brotli_native_2bbe0212d48b364035bb1eb6eab24964",
+      "machine": 62,
+      "object_sha256": "247088d7fe43a86ca6e7924e5c54b51ab1bfb9d45cd3c9a1a704a89adb93c3db",
+      "patch_functions": {
+        "command": [
+          "DecodeCommandBlockSwitch"
+        ],
+        "distance": [
+          "DecodeDistanceBlockSwitch"
+        ],
+        "helpers": [],
+        "literal": [
+          "DecodeLiteralBlockSwitch"
+        ],
+        "process": [
+          "ProcessCommands"
+        ],
+        "safe_command": [
+          "SafeDecodeCommandBlockSwitch"
+        ],
+        "safe_distance": [
+          "SafeDecodeDistanceBlockSwitch"
+        ],
+        "safe_literal": [
+          "SafeDecodeLiteralBlockSwitch"
+        ],
+        "safe_process": [
+          "SafeProcessCommands"
+        ]
+      },
+      "source": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c",
+      "source_sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+      "source_state": "fixed"
+    },
+    {
+      "abi": "darwin",
+      "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+      "byteorder": "little",
+      "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+      "elf_class": 64,
+      "evidence_scope": "patch_bearing_population_v1",
+      "flags": "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG arm64",
+      "format": "mach_o",
+      "functions": {
+        "DecodeCommandBlockSwitch": [
+          "brotli_b895df0944b05e1f6bbdb490faedc5a9"
+        ],
+        "DecodeDistanceBlockSwitch": [
+          "brotli_e86307f43fa658de749dfe1219cab686"
+        ],
+        "DecodeLiteralBlockSwitch": [
+          "brotli_a68a8e67c76b19fa7d301167c16f1820"
+        ],
+        "ProcessCommands": [
+          "brotli_30b836bbf159b31a0b1aca12bed3778b"
+        ],
+        "SafeDecodeCommandBlockSwitch": [
+          "brotli_405b51a38ba10fcc731cd87c4aa472f1"
+        ],
+        "SafeDecodeDistanceBlockSwitch": [
+          "brotli_f3656f168c6d2c1a50ba153f10f9adac"
+        ],
+        "SafeDecodeLiteralBlockSwitch": [
+          "brotli_c0433b89db4f96bfc92c8112e7e6e585"
+        ],
+        "SafeProcessCommands": [
+          "brotli_e95e3b7610e78295f8bff623553d5f30"
+        ]
+      },
+      "headers_sha256": "eec0943329e4175f1006775a9b739c623d7ffe04a55dff95b27bad588669721b",
+      "id": "brotli_native_82bf8d4cd14f6ecc7d7fc902318b4330",
+      "machine": 183,
+      "object_sha256": "46e2afcd9cb6e48222921f78e749142e0ce65115eaf2178fa9886f1647c8b618",
+      "patch_functions": {
+        "command": [
+          "DecodeCommandBlockSwitch"
+        ],
+        "distance": [
+          "DecodeDistanceBlockSwitch"
+        ],
+        "helpers": [],
+        "literal": [
+          "DecodeLiteralBlockSwitch"
+        ],
+        "process": [
+          "ProcessCommands"
+        ],
+        "safe_command": [
+          "SafeDecodeCommandBlockSwitch"
+        ],
+        "safe_distance": [
+          "SafeDecodeDistanceBlockSwitch"
+        ],
+        "safe_literal": [
+          "SafeDecodeLiteralBlockSwitch"
+        ],
+        "safe_process": [
+          "SafeProcessCommands"
+        ]
+      },
+      "source": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c",
+      "source_sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+      "source_state": "fixed"
+    },
+    {
+      "abi": "darwin",
+      "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+      "byteorder": "little",
+      "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+      "elf_class": 64,
+      "evidence_scope": "patch_bearing_population_v1",
+      "flags": "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG x86_64",
+      "format": "mach_o",
+      "functions": {
+        "DecodeCommandBlockSwitch": [
+          "brotli_4b18f01a1499b2d8f9d079ddc5a3f5ac"
+        ],
+        "DecodeDistanceBlockSwitch": [
+          "brotli_b9419710f8e96807aba1fa69a5f9ce81"
+        ],
+        "DecodeLiteralBlockSwitch": [
+          "brotli_5d9902cc28777f631c0c7adb0b1c5a99"
+        ],
+        "ProcessCommands": [
+          "brotli_b4774391979588779c8b1d3ec5897acf"
+        ],
+        "SafeDecodeCommandBlockSwitch": [
+          "brotli_25ab4620812384766e71ceca2af673ed"
+        ],
+        "SafeDecodeDistanceBlockSwitch": [
+          "brotli_b47bc7300c2fa3b48ac24095cbe5d0d0"
+        ],
+        "SafeDecodeLiteralBlockSwitch": [
+          "brotli_630fbdda091dc86edd43dac5c837b68d"
+        ],
+        "SafeProcessCommands": [
+          "brotli_11153a3a354cfd432a0a704ca18d8bd3"
+        ]
+      },
+      "headers_sha256": "eec0943329e4175f1006775a9b739c623d7ffe04a55dff95b27bad588669721b",
+      "id": "brotli_native_98c8e227c5d7d4ac5475254d8c79c263",
+      "machine": 62,
+      "object_sha256": "ee2635f77d15dffd2f49460b872c8ee8e4d5ff364e5424e167d1fef543427a95",
+      "patch_functions": {
+        "command": [
+          "DecodeCommandBlockSwitch"
+        ],
+        "distance": [
+          "DecodeDistanceBlockSwitch"
+        ],
+        "helpers": [],
+        "literal": [
+          "DecodeLiteralBlockSwitch"
+        ],
+        "process": [
+          "ProcessCommands"
+        ],
+        "safe_command": [
+          "SafeDecodeCommandBlockSwitch"
+        ],
+        "safe_distance": [
+          "SafeDecodeDistanceBlockSwitch"
+        ],
+        "safe_literal": [
+          "SafeDecodeLiteralBlockSwitch"
+        ],
+        "safe_process": [
+          "SafeProcessCommands"
+        ]
+      },
+      "source": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c",
+      "source_sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+      "source_state": "fixed"
+    },
+    {
+      "abi": "darwin",
+      "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+      "byteorder": "little",
+      "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+      "elf_class": 64,
+      "evidence_scope": "patch_bearing_population_v1",
+      "flags": "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG x86_64",
+      "format": "mach_o",
+      "functions": {
+        "DecodeCommandBlockSwitch": [
+          "brotli_0a76e67beb1bac46c9cbbf355d364298"
+        ],
+        "DecodeDistanceBlockSwitch": [
+          "brotli_a2773c0fa9848caf5bda95be1e0b8909"
+        ],
+        "DecodeLiteralBlockSwitch": [
+          "brotli_932b197ca629c6adc0ef7ef6138eefc6"
+        ],
+        "ProcessCommands": [
+          "brotli_2ee5487f400f31932a312eb222f4c6f6"
+        ],
+        "SafeDecodeCommandBlockSwitch": [
+          "brotli_510c915f5c73a5b81cd150acd8871d75"
+        ],
+        "SafeDecodeDistanceBlockSwitch": [
+          "brotli_ab83d033d2b7490573d4ec75d5768eab"
+        ],
+        "SafeDecodeLiteralBlockSwitch": [
+          "brotli_4bd7d940a50a11641a10762069206ab4"
+        ],
+        "SafeProcessCommands": [
+          "brotli_4673edd0fd351b44b3ea0e557147cb28"
+        ]
+      },
+      "headers_sha256": "bb5f0313e1323df6b1d93c10a8d6aed64c569caa8c5f8c94a1140a38e908e9df",
+      "id": "brotli_native_d37d6638be5423abd7613af82479e1cc",
+      "machine": 62,
+      "object_sha256": "cd3efbb4aad09a0df1427e4ccb899aa7a52b3c377dff06b9f6b8736ed0f9cab7",
+      "patch_functions": {
+        "command": [
+          "DecodeCommandBlockSwitch"
+        ],
+        "distance": [
+          "DecodeDistanceBlockSwitch"
+        ],
+        "helpers": [],
+        "literal": [
+          "DecodeLiteralBlockSwitch"
+        ],
+        "process": [
+          "ProcessCommands"
+        ],
+        "safe_command": [
+          "SafeDecodeCommandBlockSwitch"
+        ],
+        "safe_distance": [
+          "SafeDecodeDistanceBlockSwitch"
+        ],
+        "safe_literal": [
+          "SafeDecodeLiteralBlockSwitch"
+        ],
+        "safe_process": [
+          "SafeProcessCommands"
+        ]
+      },
+      "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
+      "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+      "source_state": "vulnerable"
+    },
+    {
+      "abi": "darwin",
+      "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+      "byteorder": "little",
+      "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+      "elf_class": 64,
+      "evidence_scope": "patch_bearing_population_v1",
+      "flags": "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG arm64",
+      "format": "mach_o",
+      "functions": {
+        "DecodeCommandBlockSwitch": [
+          "brotli_71b7d2ed67ee639a4479410c5ef2f261"
+        ],
+        "DecodeDistanceBlockSwitch": [
+          "brotli_b91e8585bf60c3bcc72b31d40786cf1a"
+        ],
+        "DecodeLiteralBlockSwitch": [
+          "brotli_447269f98096bfad56ba27ff1174f7c3"
+        ],
+        "ProcessCommands": [
+          "brotli_ea214d88ec712f09bf76a927f9f53713"
+        ],
+        "SafeDecodeCommandBlockSwitch": [
+          "brotli_e169a8b876a9793e60ec4759daf4471a"
+        ],
+        "SafeDecodeDistanceBlockSwitch": [
+          "brotli_4827d710e12b72d9586eec9955caf696"
+        ],
+        "SafeDecodeLiteralBlockSwitch": [
+          "brotli_a7d6837fb9fe8d9313ddb8ac00cd06a9"
+        ],
+        "SafeProcessCommands": [
+          "brotli_01743b421fef883d461289ab4e1c3b02"
+        ]
+      },
+      "headers_sha256": "bb5f0313e1323df6b1d93c10a8d6aed64c569caa8c5f8c94a1140a38e908e9df",
+      "id": "brotli_native_f08ca5ca9da84cf7a4befc113cfcdd54",
+      "machine": 183,
+      "object_sha256": "99c28e8805bdd90d89fee5ea3da19946cabcb959ffe8953ef8c8b46f11055974",
+      "patch_functions": {
+        "command": [
+          "DecodeCommandBlockSwitch"
+        ],
+        "distance": [
+          "DecodeDistanceBlockSwitch"
+        ],
+        "helpers": [],
+        "literal": [
+          "DecodeLiteralBlockSwitch"
+        ],
+        "process": [
+          "ProcessCommands"
+        ],
+        "safe_command": [
+          "SafeDecodeCommandBlockSwitch"
+        ],
+        "safe_distance": [
+          "SafeDecodeDistanceBlockSwitch"
+        ],
+        "safe_literal": [
+          "SafeDecodeLiteralBlockSwitch"
+        ],
+        "safe_process": [
+          "SafeProcessCommands"
+        ]
+      },
+      "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
+      "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+      "source_state": "vulnerable"
+    },
+    {
+      "abi": "windows",
+      "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+      "byteorder": "little",
+      "compiler": "MSVC 19.44.35229.0; executable=C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe; sha256=fe251ef50a1545b1b0835ee17b1e785459712b38d79e45b5c1d3d28970a36619",
+      "elf_class": 64,
+      "evidence_scope": "patch_bearing_population_v1",
+      "flags": "msvc /O2 /Gy x86_64",
+      "format": "pe",
+      "functions": {
+        "DecodeCommandBlockSwitch": [
+          "brotli_c55839def9913d844cdb05a164e93478"
+        ],
+        "DecodeDistanceBlockSwitch": [
+          "brotli_013e4a9be508895822b0727c77888dfe"
+        ],
+        "DecodeLiteralBlockSwitch": [
+          "brotli_346396c564a2f21669cdf60f2107d8c9"
+        ],
+        "ProcessCommands": [
+          "brotli_e71bada2ac9ff700df838931df1e1202"
+        ],
+        "SafeDecodeCommandBlockSwitch": [
+          "brotli_fcce90b5405eb213c2145a663d550b82"
+        ],
+        "SafeDecodeDistanceBlockSwitch": [
+          "brotli_ab3307b65b05eb9a0d6b9f066cb8e6b6"
+        ],
+        "SafeDecodeLiteralBlockSwitch": [
+          "brotli_8107201593c03a2958be31d58a58cae4"
+        ],
+        "SafeProcessCommands": [
+          "brotli_9e1f9123b72dd2a9723c6ca3c372068f"
+        ]
+      },
+      "headers_sha256": "bb5f0313e1323df6b1d93c10a8d6aed64c569caa8c5f8c94a1140a38e908e9df",
+      "id": "brotli_native_f53ffb032f6807fb6fdd01c22eccd9fa",
+      "machine": 62,
+      "object_sha256": "a96fd127e9b7c9e160eba654109102223bd92d44eb80c6eb47a590bf76b72f17",
+      "patch_functions": {
+        "command": [
+          "DecodeCommandBlockSwitch"
+        ],
+        "distance": [
+          "DecodeDistanceBlockSwitch"
+        ],
+        "helpers": [],
+        "literal": [
+          "DecodeLiteralBlockSwitch"
+        ],
+        "process": [
+          "ProcessCommands"
+        ],
+        "safe_command": [
+          "SafeDecodeCommandBlockSwitch"
+        ],
+        "safe_distance": [
+          "SafeDecodeDistanceBlockSwitch"
+        ],
+        "safe_literal": [
+          "SafeDecodeLiteralBlockSwitch"
+        ],
+        "safe_process": [
+          "SafeProcessCommands"
+        ]
+      },
+      "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
+      "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+      "source_state": "vulnerable"
     }
   ],
   "pat_file": "brotli-flirt.pat",
-  "pat_sha256": "3a34be7cfbe6d35398635f4564ec468d6873dda34ebd9fb9923bb7f8ca6bccb7",
+  "pat_sha256": "cd758aae7417ac3e932d154089be70d982bbba93bb80e77b362d6ee0b2499267",
   "schema_version": 1
 }

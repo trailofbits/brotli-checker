@@ -1,0 +1,205 @@
+{
+  "artifacts": [
+    {
+      "artifact_name": "1.2.0-msvc-normal.dll",
+      "build_commit": "5994c3e16c0fcd54840d3c91b6a8331ef3be4501",
+      "build_run_url": "https://github.com/trailofbits/brotli-checker/actions/runs/41130675715",
+      "method": "paired_native_build_exact_artifact",
+      "negative_control": "opposite_source_state_rejected",
+      "patch_status": "vulnerable_code_match",
+      "provenance": [
+        {
+          "abi": "windows",
+          "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+          "byteorder": "little",
+          "compiler": "MSVC 19.44.35229.0; executable=C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe; sha256=fe251ef50a1545b1b0835ee17b1e785459712b38d79e45b5c1d3d28970a36619",
+          "elf_class": 64,
+          "flags": "msvc /O2 /Gy x86_64",
+          "format": "pe",
+          "headers_sha256": "bb5f0313e1323df6b1d93c10a8d6aed64c569caa8c5f8c94a1140a38e908e9df",
+          "id": "brotli_native_f53ffb032f6807fb6fdd01c22eccd9fa",
+          "machine": 62,
+          "object_sha256": "a96fd127e9b7c9e160eba654109102223bd92d44eb80c6eb47a590bf76b72f17",
+          "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
+          "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+          "source_state": "vulnerable"
+        }
+      ],
+      "sha256": "48e1d89928d3eb6d5151f5a5b5c11e5f88a3429a51ba102044e2d2b797dd038d",
+      "size": 52224
+    },
+    {
+      "artifact_name": "1.2.1-apple-normal.dylib",
+      "build_commit": "5994c3e16c0fcd54840d3c91b6a8331ef3be4501",
+      "build_run_url": "https://github.com/trailofbits/brotli-checker/actions/runs/41130675715",
+      "method": "paired_native_build_exact_artifact",
+      "negative_control": "opposite_source_state_rejected",
+      "patch_status": "fixed_code_match",
+      "provenance": [
+        {
+          "abi": "darwin",
+          "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+          "byteorder": "little",
+          "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+          "elf_class": 64,
+          "flags": "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG arm64",
+          "format": "mach_o",
+          "headers_sha256": "eec0943329e4175f1006775a9b739c623d7ffe04a55dff95b27bad588669721b",
+          "id": "brotli_native_82bf8d4cd14f6ecc7d7fc902318b4330",
+          "machine": 183,
+          "object_sha256": "46e2afcd9cb6e48222921f78e749142e0ce65115eaf2178fa9886f1647c8b618",
+          "source": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c",
+          "source_sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+          "source_state": "fixed"
+        },
+        {
+          "abi": "darwin",
+          "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+          "byteorder": "little",
+          "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+          "elf_class": 64,
+          "flags": "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG x86_64",
+          "format": "mach_o",
+          "headers_sha256": "eec0943329e4175f1006775a9b739c623d7ffe04a55dff95b27bad588669721b",
+          "id": "brotli_native_98c8e227c5d7d4ac5475254d8c79c263",
+          "machine": 62,
+          "object_sha256": "ee2635f77d15dffd2f49460b872c8ee8e4d5ff364e5424e167d1fef543427a95",
+          "source": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c",
+          "source_sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+          "source_state": "fixed"
+        }
+      ],
+      "sha256": "5d73f2da25335a424d0a1c6869c6307f30252c19461d9868c0065731fd5a511a",
+      "size": 202784
+    },
+    {
+      "artifact_name": "1.2.1-clang-cl-normal.dll",
+      "build_commit": "5994c3e16c0fcd54840d3c91b6a8331ef3be4501",
+      "build_run_url": "https://github.com/trailofbits/brotli-checker/actions/runs/41130675715",
+      "method": "paired_native_build_exact_artifact",
+      "negative_control": "opposite_source_state_rejected",
+      "patch_status": "fixed_code_match",
+      "provenance": [
+        {
+          "abi": "windows",
+          "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+          "byteorder": "little",
+          "compiler": "Clang 19.1.5; executable=C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin/clang-cl.exe; sha256=93faf6d0a9e66ed1629eb1c9ca638a070aa1839b9490a87ff89b9cb39eeae36b",
+          "elf_class": 64,
+          "flags": "clang-cl /O2 /Gy x86_64",
+          "format": "pe",
+          "headers_sha256": "eec0943329e4175f1006775a9b739c623d7ffe04a55dff95b27bad588669721b",
+          "id": "brotli_native_0817ddfaa6d928191bc94f0b0f741885",
+          "machine": 62,
+          "object_sha256": "d352087ebe9b0bf8c0cbba6e221bd78661538e525aec65ae9c8fbd8b3f0575aa",
+          "source": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c",
+          "source_sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+          "source_state": "fixed"
+        }
+      ],
+      "sha256": "69af35d5e7c6841806fc6b56bbb13f5f77003b676210bb5ca787d84c26a76232",
+      "size": 52736
+    },
+    {
+      "artifact_name": "1.2.0-clang-cl-normal.dll",
+      "build_commit": "5994c3e16c0fcd54840d3c91b6a8331ef3be4501",
+      "build_run_url": "https://github.com/trailofbits/brotli-checker/actions/runs/41130675715",
+      "method": "paired_native_build_exact_artifact",
+      "negative_control": "opposite_source_state_rejected",
+      "patch_status": "vulnerable_code_match",
+      "provenance": [
+        {
+          "abi": "windows",
+          "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+          "byteorder": "little",
+          "compiler": "Clang 19.1.5; executable=C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin/clang-cl.exe; sha256=93faf6d0a9e66ed1629eb1c9ca638a070aa1839b9490a87ff89b9cb39eeae36b",
+          "elf_class": 64,
+          "flags": "clang-cl /O2 /Gy x86_64",
+          "format": "pe",
+          "headers_sha256": "bb5f0313e1323df6b1d93c10a8d6aed64c569caa8c5f8c94a1140a38e908e9df",
+          "id": "brotli_native_2981646ca284131a185c009247619abf",
+          "machine": 62,
+          "object_sha256": "a53bbb3cca49bdafadd4295e9f837ed90dc4a41d8cf2bc13bff10da10eba9aab",
+          "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
+          "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+          "source_state": "vulnerable"
+        }
+      ],
+      "sha256": "b936d1e0f7b0f509798095ff179d2dc42cf05d794bfa5b0ad42a57a83b5a7d6b",
+      "size": 52224
+    },
+    {
+      "artifact_name": "1.2.1-msvc-normal.dll",
+      "build_commit": "5994c3e16c0fcd54840d3c91b6a8331ef3be4501",
+      "build_run_url": "https://github.com/trailofbits/brotli-checker/actions/runs/41130675715",
+      "method": "paired_native_build_exact_artifact",
+      "negative_control": "opposite_source_state_rejected",
+      "patch_status": "fixed_code_match",
+      "provenance": [
+        {
+          "abi": "windows",
+          "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+          "byteorder": "little",
+          "compiler": "MSVC 19.44.35229.0; executable=C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe; sha256=fe251ef50a1545b1b0835ee17b1e785459712b38d79e45b5c1d3d28970a36619",
+          "elf_class": 64,
+          "flags": "msvc /O2 /Gy x86_64",
+          "format": "pe",
+          "headers_sha256": "eec0943329e4175f1006775a9b739c623d7ffe04a55dff95b27bad588669721b",
+          "id": "brotli_native_2bbe0212d48b364035bb1eb6eab24964",
+          "machine": 62,
+          "object_sha256": "247088d7fe43a86ca6e7924e5c54b51ab1bfb9d45cd3c9a1a704a89adb93c3db",
+          "source": "https://raw.githubusercontent.com/google/brotli/v1.2.1/c/dec/decode.c",
+          "source_sha256": "8d7beeafed5ff9f3f00f6e528e92ad6a36059b3549356bed5a9ca3ee16938438",
+          "source_state": "fixed"
+        }
+      ],
+      "sha256": "d219a20b9b102878867cdfebb85af0adb0b6212d7e96865d4675e7be5b8b7fb8",
+      "size": 52224
+    },
+    {
+      "artifact_name": "1.2.0-apple-normal.dylib",
+      "build_commit": "5994c3e16c0fcd54840d3c91b6a8331ef3be4501",
+      "build_run_url": "https://github.com/trailofbits/brotli-checker/actions/runs/41130675715",
+      "method": "paired_native_build_exact_artifact",
+      "negative_control": "opposite_source_state_rejected",
+      "patch_status": "vulnerable_code_match",
+      "provenance": [
+        {
+          "abi": "darwin",
+          "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+          "byteorder": "little",
+          "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+          "elf_class": 64,
+          "flags": "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG x86_64",
+          "format": "mach_o",
+          "headers_sha256": "bb5f0313e1323df6b1d93c10a8d6aed64c569caa8c5f8c94a1140a38e908e9df",
+          "id": "brotli_native_d37d6638be5423abd7613af82479e1cc",
+          "machine": 62,
+          "object_sha256": "cd3efbb4aad09a0df1427e4ccb899aa7a52b3c377dff06b9f6b8736ed0f9cab7",
+          "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
+          "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+          "source_state": "vulnerable"
+        },
+        {
+          "abi": "darwin",
+          "build_note": "Native hosted runner; reviewed source and complete patch-role population",
+          "byteorder": "little",
+          "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+          "elf_class": 64,
+          "flags": "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG arm64",
+          "format": "mach_o",
+          "headers_sha256": "bb5f0313e1323df6b1d93c10a8d6aed64c569caa8c5f8c94a1140a38e908e9df",
+          "id": "brotli_native_f08ca5ca9da84cf7a4befc113cfcdd54",
+          "machine": 183,
+          "object_sha256": "99c28e8805bdd90d89fee5ea3da19946cabcb959ffe8953ef8c8b46f11055974",
+          "source": "https://raw.githubusercontent.com/google/brotli/v1.2.0/c/dec/decode.c",
+          "source_sha256": "f7749b1296128c0add4eaa454b9d82ee1c7b0451c1c9ed47d96733e6de6f2d7b",
+          "source_state": "vulnerable"
+        }
+      ],
+      "sha256": "f5430e9b2f512584be65c9e5f7668f70e3ceba14e147dc3a58b89ea691736ed1",
+      "size": 202784
+    }
+  ],
+  "schema_version": 1
+}

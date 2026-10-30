@@ -53,9 +53,11 @@ from brotli_flirt import (
     FlirtCatalog,
     FlirtSession,
     FlirtUnavailableError,
+    flirt_target_candidate,
     load_flirt_bundle,
     match_flirt,
 )
+from brotli_native_artifacts import native_artifact_match, packaged_native_artifacts
 from brotli_payloads import (
     NotOciImageError,
     PayloadError,
@@ -405,10 +407,12 @@ def version_finding(path: str, minimum: str, evidence: dict, *, fixed: bool) -> 
     )
 
 
-def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally explicit.
+def assess_binary(  # noqa: C901, PLR0912 -- Ordered evidence precedence is explicit.
     data: Buffer,
     references: list[CodeReference],
     flirt_catalog: FlirtCatalog | FlirtSession | None = None,
+    *,
+    digest: str | None = None,
 ) -> dict:
     is_elf = data.startswith(b"\x7fELF")
     code = (
@@ -425,25 +429,11 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
         "limitations": [],
         "ambiguous_matches": [],
     }
-    if flirt_catalog is not None:
+    if flirt_catalog is not None and flirt_target_candidate(data):
         flirt = (
-            (
-                flirt_catalog.analyze(data)
-                if isinstance(flirt_catalog, FlirtSession)
-                else match_flirt(data, flirt_catalog)
-            )
-            if is_elf
-            else {
-                "status": "not_applicable",
-                "matches": [],
-                "gaps": ["FLIRT executable mapping is unsupported for this non-ELF binary."]
-                if recognition["scope"] != "none"
-                else [],
-                "ambiguous_matches": [],
-                "limitations": [
-                    "FLIRT function recognition currently requires mapped ELF executable ranges."
-                ],
-            }
+            flirt_catalog.analyze(data)
+            if isinstance(flirt_catalog, FlirtSession)
+            else match_flirt(data, flirt_catalog)
         )
     versions = metadata.get("versions", [])
     for version in versions:
@@ -480,6 +470,12 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
                 "Brotli function patterns matched with FLIRT; source-profile state is provenance, "
                 "not this binary's patch verdict. Review the located code and its references."
             )
+        if flirt.get("patch_profiles"):
+            kind, linkage = "decoder_function_signature", "embedded_code"
+            reason = (
+                "Every required patch-bearing native function pattern matched, but copy "
+                "association and relocation targets remain unverified; patch state is unknown."
+            )
         if versions:
             reason += " Reported decoder version is metadata, not proof of a fix."
     if old_version and status not in {"vulnerable_code_match", "mixed_code_matches"}:
@@ -487,6 +483,14 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
         reason = (
             "Statically read decoder version precedes the upstream fix. Update or verify a "
             "vendor backport; version evidence does not prove the code is vulnerable."
+        )
+    native_artifact = native_artifact_match(digest, len(data)) if digest is not None else None
+    if native_artifact is not None:
+        status = native_artifact["patch_status"]
+        kind, linkage = "exact_native_artifact_match", "embedded_code"
+        reason = (
+            "Exact whole-artifact SHA-256 matches an independently reviewed paired native "
+            "build; deployment selection and reachability remain unverified."
         )
     return {
         "kind": kind,
@@ -497,8 +501,9 @@ def assess_binary(  # noqa: C901 -- Ordered evidence precedence is intentionally
         "decoder_metadata": metadata,
         "recognition": recognition,
         "flirt": flirt,
+        "native_artifact": native_artifact or {},
         "detection_status": "decoder_code_identified"
-        if code.matches
+        if code.matches or native_artifact is not None
         else "decoder_functions_recognized"
         if flirt["matches"]
         else recognition["status"]
@@ -664,10 +669,16 @@ class Inventory:
                 self.files_read += 1
                 self.inspect(data, label, depth)
 
-    def inspect(self, data: Buffer, label: str, depth: int) -> None:
+    def inspect(  # noqa: C901 -- Exact, source, container, and binary evidence are ordered.
+        self, data: Buffer, label: str, depth: int
+    ) -> None:
         digest = sha256_data(data)
         if self.analysis is not None:
             self.analysis.record(data, label, digest, depth)
+        native = native_artifact_match(digest, len(data))
+        if native is not None:
+            self._inspect_exact_native(data, label, digest)
+            return
         if data.startswith(b"\x7fELF") and self.code_references is not None:
             self._inspect_elf(data, label, digest)
             kind = archive_kind(data, label)
@@ -714,6 +725,33 @@ class Inventory:
             return
         self._inspect_noncontainer(data, label, digest)
 
+    def _inspect_exact_native(self, data: Buffer, label: str, digest: str) -> None:
+        assessment = assess_binary(
+            data,
+            self.code_references or [],
+            self.flirt_catalog,
+            digest=digest,
+        )
+        analysis = (
+            self.analysis.enrich(data, label, assessment) if self.analysis is not None else {}
+        )
+        for reason in assessment["gaps"]:
+            self.gap(label, reason)
+        self.findings.append(
+            finding(
+                label,
+                assessment["kind"],
+                assessment["patch_status"],
+                assessment["reason"],
+                sha256=digest,
+                linkage=assessment["linkage"],
+                detection_status=assessment["detection_status"],
+                native_artifact=assessment["native_artifact"],
+                flirt=assessment["flirt"],
+                analysis=analysis,
+            )
+        )
+
     def _text(self, data: Buffer, label: str) -> str:
         if b"\0" in data[: min(TEXT_PROBE_BYTES, len(data))]:
             return ""
@@ -735,14 +773,50 @@ class Inventory:
             self.analysis.enrich(
                 data, label, {"detection_status": recognition["status"], "recognition": recognition}
             )
-        if self.flirt_catalog is not None and recognition["scope"] == "loader_data_ranges":
-            self.gap(label, "FLIRT executable mapping is unsupported for this non-ELF binary.")
         if recognition["limited"]:
             self.gap(label, recognition["reason"])
         return recognition
 
+    def _record_native_flirt(
+        self, data: Buffer, label: str, digest: str, recognition: dict
+    ) -> bool:
+        native = data.startswith(
+            (
+                b"MZ",
+                b"\xfe\xed",
+                b"\xce\xfa",
+                b"\xcf\xfa",
+                b"\xca\xfe",
+                b"\xbe\xba",
+                b"\xbf\xba",
+            )
+        )
+        if not native or self.flirt_catalog is None:
+            return False
+        assessment = assess_binary(data, self.code_references or [], self.flirt_catalog)
+        for reason in assessment["gaps"]:
+            self.gap(label, reason)
+        if not assessment["flirt"]["matches"]:
+            return False
+        self.findings.append(
+            finding(
+                label,
+                assessment["kind"],
+                assessment["patch_status"],
+                assessment["reason"],
+                sha256=digest,
+                recognition=recognition,
+                flirt=assessment["flirt"],
+                detection_status=assessment["detection_status"],
+                linkage=assessment["linkage"],
+            )
+        )
+        return True
+
     def _inspect_noncontainer(self, data: Buffer, label: str, digest: str) -> None:
         recognition = self._recognize_data(data, label)
+        if self._record_native_flirt(data, label, digest, recognition):
+            return
         if recognition["matches"]:
             self.findings.append(
                 finding(
@@ -787,7 +861,7 @@ class Inventory:
         references = self.code_references
         if references is None:
             return
-        assessment = assess_binary(data, references, self.flirt_catalog)
+        assessment = assess_binary(data, references, self.flirt_catalog, digest=digest)
         analysis = (
             self.analysis.enrich(data, label, assessment) if self.analysis is not None else {}
         )
@@ -806,6 +880,7 @@ class Inventory:
                 decoder_metadata=assessment["decoder_metadata"],
                 recognition=assessment["recognition"],
                 flirt=assessment["flirt"],
+                native_artifact=assessment["native_artifact"],
                 detection_status=assessment["detection_status"],
                 linkage=assessment["linkage"],
                 analysis=analysis,
@@ -2065,6 +2140,7 @@ def main(argv: list[str] | None = None) -> int:
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     try:
         evidence = CliEvidence(args, REGISTRY)
+        packaged_native_artifacts()
         code_references = load_references(args.code_references)
         flirt_catalog, flirt_error = configure_flirt(args.flirt_references, enabled=args.flirt)
     except (OSError, ValueError) as error:
@@ -2086,7 +2162,13 @@ def main(argv: list[str] | None = None) -> int:
         inventory.gap("<FLIRT>", flirt_error)
     roots = [root.expanduser().absolute() for root in [*roots, *args.deployment_root, *args.sbom]]
     try:
-        analysis_report = scan_with_analysis(inventory, roots, args)
+        analysis_report = scan_with_analysis(
+            inventory,
+            roots,
+            args,
+            attestation_inputs=evidence.attestation_inputs,
+            debug_symbol_inputs=evidence.debug_symbol_inputs,
+        )
         identities = evidence.check_inputs(inventory)
     except (OSError, ValueError) as error:
         print(f"Invalid analysis input: {error}", file=sys.stderr)

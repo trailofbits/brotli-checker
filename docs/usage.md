@@ -377,6 +377,19 @@ To collect bounded disassembly for a relevant unresolved ELF, use a trusted host
 python3 skills/brotli-checker/scripts/brotli_binary_triage.py /path/to/application > triage.json
 ```
 
+When a prior inventory JSON contains graph, FLIRT, or exact-code evidence for a
+stripped target, bind selection to that report instead of copying offsets:
+
+```sh
+python3 skills/brotli-checker/scripts/brotli_binary_triage.py /path/to/application \
+  --analysis-report /path/to/inventory.json > triage.json
+```
+
+The report must have a valid evidence envelope and an artifact SHA-256 matching
+the target. Selected ranges are independently checked against executable ELF
+mappings. Reported names and patch-status fields do not select ranges or become
+a triage verdict.
+
 The helper selects block-switch/command-processing symbols, falling back to
 decoder entry points. For stripped code, explicit address or file-offset ranges
 require trusted map/link or scanner evidence; see `--help`. It hashes the input
@@ -385,6 +398,10 @@ Only bounded code fragments are copied for disassembly. The target is never
 loaded or executed. The host `objdump` must support the target architecture.
 ARM Thumb symbols select Thumb decoding automatically; for a trusted explicit
 Thumb range add `--thumb`. An architecture/tool mismatch leaves collection incomplete.
+The function graph has bounded built-in AArch64 and RISC-V decoders. RISC-V
+supports base PC-relative/absolute address pairs and direct jumps, plus compressed
+direct jumps only when the ELF `EF_RISCV_RVC` flag permits them; indirect targets
+remain gaps.
 MIPS raw disassembly currently accepts classic MIPS32r2/MIPS64r2 selected from
 ELF ISA flags, including ELF32 N32 with MIPS64r2. MIPS16, microMIPS, other ISA
 revisions, vendor-machine/ASE flags, and incompatible symbol-declared modes

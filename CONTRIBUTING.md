@@ -60,6 +60,66 @@ Do not replace scanner imports with direct `exec_module` or `runpy.run_path`.
 Keep the ordinary suite offline. Document optional downloads and trusted
 compiler inputs separately.
 
+### Parser fuzzing
+
+The development fuzz entry points import parser functions directly; they never
+execute inspected artifacts, invoke target loaders, or contact a network:
+
+```sh
+uv run python scripts/fuzz_binary_analysis.py --write-seeds /tmp/fuzz-seeds
+uv run python scripts/fuzz_binary_analysis.py /tmp/fuzz-seeds/layout-* \
+  /tmp/fuzz-seeds/payload-* /tmp/fuzz-seeds/oci-* \
+  /tmp/fuzz-seeds/graph-* /tmp/fuzz-seeds/debug-*
+uv run python scripts/fuzz_package_provenance.py corpus/*
+```
+
+Coverage-guided runners may import either module's `fuzz_one` function. Start
+from the generated structured binary seeds and retained package/provenance
+inputs; random magic prefixes alone do not exercise deep parser invariants.
+Unexpected exceptions are findings. Expected malformed-input `ValueError` and
+Unicode decoding failures are rejected inputs, not crashes.
+
+The resource-bounded corpus and campaign launchers currently support Linux only;
+other platforms fail closed before execution. This is a development-runner limit,
+not a restriction on the portable offline scanner. Do not bypass the memory guard
+to run a campaign on an unqualified platform.
+
+The maintained Atheris adapter pins the reviewed backend and instruments the
+selected harness and its imports. Atheris currently supports Python 3.11-3.14;
+use Python 3.14 and bound the campaign by both run count and total time:
+
+```sh
+uv run --python 3.14 --group fuzz python scripts/run_atheris_campaign.py \
+  binary /tmp/fuzz-seeds artifacts/fuzz-binary \
+  --runs 10000 --seconds 60 --memory-bytes 2147483648 \
+  --max-input-bytes 16777216
+```
+
+Run package/provenance coverage with `package` in place of `binary`. Atheris is
+development-only and is not imported by production scans. Treat a native crash,
+uncaught exception, or resource termination as a finding/incomplete campaign;
+do not convert it into an expected malformed-input result.
+
+For retained-corpus replay, serialize and isolate inputs with the checked-in
+runner. It hashes stable regular input files, uses one worker, keeps per-input
+logs and an atomic manifest, applies a per-process address-space limit, and
+uses a process-group deadline:
+
+```sh
+uv run python scripts/run_fuzz_corpus.py binary artifacts/fuzz-run \
+  /tmp/fuzz-seeds/* --memory-bytes 1073741824 --timeout-seconds 30
+```
+
+The bounded runner currently requires Linux address-space enforcement and GNU
+`timeout`; it also recognizes Homebrew's `gtimeout` name but fails closed on
+platforms where the maintained per-process memory cap is unavailable. It
+refuses symlink inputs, concurrent runs, existing output directories, and
+nonpositive limits. Its RSS field is an upper bound for child processes, not
+aggregate host memory. A timeout, signal, or resource failure remains a
+failed/incomplete run; it is never counted as a successful fuzz result. Keep
+sustained campaigns and large corpora out of the repository unless their
+retained cases protect a specific parser invariant.
+
 ## Reference and dependency updates
 
 Preserve conservative results: fixed evidence for one copy must not clear an
