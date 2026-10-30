@@ -259,6 +259,7 @@ def paired_fixture(tmp_path, state, salt):
 
 
 def test_paired_native_profiles_match_own_state_and_reject_opposite_state(tmp_path):
+    pytest.importorskip("flirt")
     affected_binary, affected_bundle = paired_fixture(tmp_path, "vulnerable", "old")
     fixed_binary, fixed_bundle = paired_fixture(tmp_path, "fixed", "new")
 

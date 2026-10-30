@@ -262,6 +262,11 @@ def find_timeout() -> str | None:
     return shutil.which("timeout") or shutil.which("gtimeout")
 
 
+def memory_limit_supported() -> bool:
+    """Return whether this runner can enforce the configured address-space cap."""
+    return sys.platform.startswith("linux")
+
+
 def _initial_manifest(args: argparse.Namespace, snapshot: SourceSnapshot) -> dict:
     return {
         "schema_version": 1,
@@ -331,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if min(args.memory_bytes, args.timeout_seconds, args.max_input_bytes) <= 0:
         parser.error("resource limits must be positive integers")
+    if not memory_limit_supported():
+        parser.error(f"per-process address-space limits are unsupported on {sys.platform}")
     timeout_name = find_timeout()
     if timeout_name is None:
         parser.error("GNU timeout is required to supervise fuzz subprocesses")

@@ -25,6 +25,7 @@ from run_fuzz_corpus import (
     _stage_input,
     _write_manifest,
     find_timeout,
+    memory_limit_supported,
 )
 
 DEFAULT_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
@@ -126,6 +127,28 @@ def _metrics(log: bytes) -> dict | None:
     }
 
 
+def _campaign_environment(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> tuple[str, str]:
+    if (
+        min(args.runs, args.seconds, args.memory_bytes, args.max_input_bytes) <= 0
+        or args.seconds > MAX_CAMPAIGN_SECONDS
+    ):
+        parser.error("campaign limits must be positive and within the maintained time bound")
+    if not memory_limit_supported():
+        parser.error(f"per-process address-space limits are unsupported on {sys.platform}")
+    try:
+        version = importlib.metadata.version("atheris")
+    except importlib.metadata.PackageNotFoundError as error:
+        parser.error(f"Atheris {PINNED_VERSION} is required: {error}")
+    if version != PINNED_VERSION:
+        parser.error(f"Atheris {PINNED_VERSION} is required; found {version}")
+    timeout_name = find_timeout()
+    if timeout_name is None:
+        parser.error("GNU timeout is required to supervise Atheris")
+    return version, timeout_name
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("harness", choices=sorted(HARNESSES))
@@ -136,20 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--memory-bytes", type=int, default=DEFAULT_MEMORY_BYTES)
     parser.add_argument("--max-input-bytes", type=int, default=DEFAULT_MAX_INPUT_BYTES)
     args = parser.parse_args(argv)
-    if (
-        min(args.runs, args.seconds, args.memory_bytes, args.max_input_bytes) <= 0
-        or args.seconds > MAX_CAMPAIGN_SECONDS
-    ):
-        parser.error("campaign limits must be positive and within the maintained time bound")
-    try:
-        version = importlib.metadata.version("atheris")
-    except importlib.metadata.PackageNotFoundError as error:
-        parser.error(f"Atheris {PINNED_VERSION} is required: {error}")
-    if version != PINNED_VERSION:
-        parser.error(f"Atheris {PINNED_VERSION} is required; found {version}")
-    timeout_name = find_timeout()
-    if timeout_name is None:
-        parser.error("GNU timeout is required to supervise Atheris")
+    version, timeout_name = _campaign_environment(args, parser)
     output = args.output.expanduser().absolute()
     if output.exists():
         parser.error(f"output directory already exists: {output}")

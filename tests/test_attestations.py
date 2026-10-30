@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import io
 import json
+from dataclasses import FrozenInstanceError
 from typing import Any, cast
 
 import brotli_attestations as subject
@@ -11,7 +12,7 @@ import pytest
 from test_binary_match import reference, write_catalog
 
 
-def signed_fixture(*, keys=1, threshold=1):
+def signed_fixture(*, keys=1, threshold=1, statement_mutator=None):
     ed = pytest.importorskip("cryptography.hazmat.primitives.asymmetric.ed25519")
     private = [
         ed.Ed25519PrivateKey.from_private_bytes(bytes([index + 1]) * 32) for index in range(keys)
@@ -30,6 +31,8 @@ def signed_fixture(*, keys=1, threshold=1):
         "predicateType": policy["predicate_types"][0],
         "predicate": {"fixed": True},
     }
+    if statement_mutator is not None:
+        statement_mutator(statement)
     payload = json.dumps(statement).encode()
     envelope = {
         "payloadType": subject.PAYLOAD_TYPE,
@@ -222,6 +225,132 @@ def test_programmatic_captured_documents_cannot_supply_fake_digests():
     assert captured.sha256 == hashlib.sha256(b"raw").hexdigest()
     with pytest.raises(TypeError):
         cast("Any", subject.CapturedDocument)("bundle", b"raw", "f" * 64)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda value: value.update(extra=True), "Unsupported in-toto statement"),
+        (lambda value: value.update(predicateType="https://untrusted.test/v1"), "not allowed"),
+        (lambda value: value.update(predicate=[]), "not allowed"),
+        (lambda value: value["subject"][0].update(extra=True), "Invalid statement subject"),
+        (lambda value: value["subject"][0]["digest"].update(sha256=1), "exact lowercase"),
+        (lambda value: value["subject"][0]["digest"].update(sha256="A" * 64), "exact lowercase"),
+    ],
+    ids=(
+        "extra-field",
+        "predicate-type",
+        "predicate-shape",
+        "subject-field",
+        "sha-type",
+        "sha-case",
+    ),
+)
+def test_authenticated_statement_fields_fail_closed_independently(mutation, message):
+    policy, envelope = signed_fixture(statement_mutator=mutation)
+    with pytest.raises(ValueError, match=message):
+        subject.verify_attestation(json.dumps(envelope).encode(), policy)
+
+
+def test_signature_object_shape_and_keyid_limit_are_independent_of_signature_bytes():
+    policy, envelope = signed_fixture()
+    envelope["signatures"][0]["extra"] = True
+    with pytest.raises(ValueError, match="signature object"):
+        subject.verify_attestation(json.dumps(envelope).encode(), policy)
+    policy, envelope = signed_fixture()
+    envelope["signatures"][0]["keyid"] = "k" * subject.MAX_KEYID_CHARS
+    subject.verify_attestation(json.dumps(envelope).encode(), policy)
+    envelope["signatures"][0]["keyid"] += "k"
+    with pytest.raises(ValueError, match="keyid hint exceeds"):
+        subject.verify_attestation(json.dumps(envelope).encode(), policy)
+    envelope["signatures"] = ["not-an-object"]
+    with pytest.raises(ValueError, match="signature object"):
+        subject.verify_attestation(json.dumps(envelope).encode(), policy)
+
+
+def test_signature_key_and_predicate_populations_accept_exact_limits_only():
+    policy, envelope = signed_fixture()
+    signature = envelope["signatures"][0]
+    envelope["signatures"] = [signature] * subject.MAX_SIGNATURES
+    subject.verify_attestation(json.dumps(envelope).encode(), policy)
+    envelope["signatures"].append(signature)
+    with pytest.raises(ValueError, match="signature population"):
+        subject.verify_attestation(json.dumps(envelope).encode(), policy)
+    keys = tuple(bytes([index]) * subject.ED25519_PUBLIC_BYTES for index in range(subject.MAX_KEYS))
+    predicates = tuple(f"predicate:{index}" for index in range(subject.MAX_KEYS))
+    exact = subject.TrustPolicy(keys, len(keys), predicates)
+    assert len(exact.keys) == subject.MAX_KEYS
+    with pytest.raises(ValueError, match="key population"):
+        subject.TrustPolicy((*keys, b"x" * subject.ED25519_PUBLIC_BYTES), 1, predicates)
+    with pytest.raises(ValueError, match="predicate population"):
+        subject.TrustPolicy(keys, 1, (*predicates, "extra"))
+
+
+def test_subject_population_accepts_exact_limit_only():
+    policy, _ = signed_fixture()
+    subject_row = {"name": "artifact", "digest": {"sha256": "a" * 64}}
+    statement = {
+        "_type": subject.STATEMENT_TYPE,
+        "subject": [subject_row] * subject.MAX_SUBJECTS,
+        "predicateType": policy.predicate_types[0],
+        "predicate": {},
+    }
+    _, hashes = subject._statement_subjects(  # noqa: SLF001
+        json.dumps(statement, separators=(",", ":")).encode(),
+        policy,
+    )
+    assert hashes == {"a" * 64}
+    statement["subject"].append(subject_row)
+    with pytest.raises(ValueError, match="subject population"):
+        subject._statement_subjects(  # noqa: SLF001
+            json.dumps(statement, separators=(",", ":")).encode(),
+            policy,
+        )
+
+
+def test_json_node_and_depth_budgets_are_inclusive():
+    subject._check_json_budget([0] * (subject.MAX_JSON_NODES - 1))  # noqa: SLF001
+    with pytest.raises(ValueError, match="structure budget"):
+        subject._check_json_budget([0] * subject.MAX_JSON_NODES)  # noqa: SLF001
+    value = 0
+    for _ in range(subject.MAX_JSON_DEPTH):
+        value = [value]
+    subject._check_json_budget(value)  # noqa: SLF001
+    with pytest.raises(ValueError, match="structure budget"):
+        subject._check_json_budget([value])  # noqa: SLF001
+
+
+def test_multichunk_capture_and_stat_signature_protect_exact_input(tmp_path):
+    raw = bytes(range(256)) * ((subject.READ_CHUNK_BYTES // 256) + 2)
+    path = tmp_path / "large-attestation"
+    path.write_bytes(raw)
+    captured = subject.capture_attestation_inputs([path], None).bundles[0]
+    assert captured.raw == raw
+    assert captured.sha256 == hashlib.sha256(raw).hexdigest()
+    metadata = path.stat()
+    assert subject._stat_signature(metadata) == (  # noqa: SLF001
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def test_capture_rejects_every_nonregular_input(tmp_path):
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="regular non-symlink"):
+        subject.capture_attestation_inputs([directory], None)
+
+
+def test_trust_and_captured_values_are_immutable():
+    policy, _ = signed_fixture()
+    captured = subject.CapturedDocument("bundle", b"raw")
+    inputs = subject.AttestationInputs(captured, (captured,))
+    for value, field in ((policy, "threshold"), (captured, "label"), (inputs, "bundles")):
+        with pytest.raises(FrozenInstanceError):
+            setattr(value, field, None)
 
 
 def test_cli_attestation_preserves_unknown_patch_and_binds_exact_target(tmp_path):

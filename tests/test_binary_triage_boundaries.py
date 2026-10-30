@@ -1,5 +1,6 @@
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import brotli_binary_match as matcher
@@ -110,6 +111,61 @@ def test_process_exact_output_limit_remains_complete():
     assert result["limited"] is False
     assert result["reason"] is None
     assert 0 <= result["elapsed_seconds"] < 2
+
+
+def test_process_timeout_terminates_descendants(tmp_path):
+    gate = tmp_path / "gate"
+    marker = tmp_path / "survived"
+    child = (
+        "import pathlib,sys,time\n"
+        "gate=pathlib.Path(sys.argv[1]); marker=pathlib.Path(sys.argv[2])\n"
+        "while not gate.exists():\n    time.sleep(.01)\n"
+        "marker.write_text('survived')\n"
+    )
+    parent = (
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}, *sys.argv[1:]]); "
+        "print('child started', flush=True); time.sleep(10)"
+    )
+    result = triage.run_bounded(
+        [sys.executable, "-c", parent, str(gate), str(marker)],
+        timeout_seconds=1,
+        max_output_bytes=1024,
+    )
+    assert result["limited"] is True
+    assert result["reason"] == "objdump timeout reached"
+    assert result["output"] == "child started\n"
+    gate.write_text("continue")
+    time.sleep(0.25)
+    assert not marker.exists()
+
+
+def test_successful_process_cannot_leave_descendants(tmp_path):
+    gate = tmp_path / "gate"
+    marker = tmp_path / "survived"
+    child = (
+        "import pathlib,sys,time\n"
+        "gate=pathlib.Path(sys.argv[1]); marker=pathlib.Path(sys.argv[2])\n"
+        "while not gate.exists():\n    time.sleep(.01)\n"
+        "marker.write_text('survived')\n"
+    )
+    parent = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}, *sys.argv[1:]], "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        "print('child started', flush=True)"
+    )
+    result = triage.run_bounded(
+        [sys.executable, "-c", parent, str(gate), str(marker)],
+        timeout_seconds=2,
+        max_output_bytes=1024,
+    )
+    assert result["returncode"] == 0
+    assert result["limited"] is False
+    assert result["output"] == "child started\n"
+    gate.write_text("continue")
+    time.sleep(0.25)
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(("offset", "length", "address"), [(120, 4, 0x401000), (123, 1, 0x401003)])
