@@ -33,6 +33,51 @@ class CountingBuffer:
         return self.data.find(sub, start, len(self.data) if end is None else end)
 
 
+def riscv_addi(rd, rs1, immediate):
+    return ((immediate & 0xFFF) << 20) | (rs1 << 15) | (rd << 7) | 0x13
+
+
+def riscv_auipc(rd, immediate=0):
+    return (immediate & 0xFFFFF000) | (rd << 7) | 0x17
+
+
+def riscv_lui(rd, immediate):
+    return (immediate & 0xFFFFF000) | (rd << 7) | 0x37
+
+
+def riscv_jal(rd, immediate):
+    value = immediate & 0x1FFFFF
+    return (
+        ((value >> 20) & 1) << 31
+        | ((value >> 1) & 0x3FF) << 21
+        | ((value >> 11) & 1) << 20
+        | ((value >> 12) & 0xFF) << 12
+        | rd << 7
+        | 0x6F
+    )
+
+
+def riscv_compressed_jump(immediate):
+    value = immediate & 0xFFF
+    return (
+        0xA001
+        | ((value >> 11) & 1) << 12
+        | ((value >> 4) & 1) << 11
+        | ((value >> 8) & 3) << 9
+        | ((value >> 10) & 1) << 8
+        | ((value >> 6) & 1) << 7
+        | ((value >> 7) & 1) << 6
+        | ((value >> 1) & 7) << 3
+        | ((value >> 5) & 1) << 2
+    )
+
+
+def riscv_elf(payload, *, compressed=False):
+    result = bytearray(elf(payload, matcher.EM_RISCV))
+    struct.pack_into("<I", result, 48, graph.EF_RISCV_RVC if compressed else 0)
+    return bytes(result)
+
+
 def aarch64_adr(pc, target, register=0):
     immediate = target - pc
     return (
@@ -986,6 +1031,77 @@ def test_recognized_function_window_near_end_is_decoded_before_large_prefix():
     assert any(gap.code == "unexamined_executable_ranges" for gap in result.gaps)
     assert all(gap.code != "priority_decode_window_limit" for gap in result.gaps)
     assert 4 not in tracked.slice_sizes
+
+
+def test_riscv_pc_relative_table_reference_and_direct_call_are_qualified():
+    words = [
+        riscv_auipc(5),
+        riscv_addi(5, 5, 32),
+        riscv_jal(1, 8),
+        riscv_addi(0, 0, 0),
+        riscv_lui(6, BASE),
+        riscv_addi(6, 6, 32),
+        riscv_addi(0, 0, 0),
+        riscv_addi(0, 0, 0),
+        riscv_addi(0, 0, 0),
+        riscv_addi(0, 0, 0),
+    ]
+    supplied = (
+        graph.GraphSeed("source", "flirt_function", PAYLOAD_OFFSET, 12, is_function=True),
+        graph.GraphSeed("callee", "flirt_function", PAYLOAD_OFFSET + 16, 12, is_function=True),
+        graph.GraphSeed("table", "decoder_table", PAYLOAD_OFFSET + 32, 8),
+    )
+    result = graph.build_elf_graph(riscv_elf(struct.pack("<10I", *words)), supplied)
+    assert any(
+        edge.kind == "pc_relative_reference" and edge.target == "table" and edge.qualified
+        for edge in result.edges
+    )
+    assert any(
+        edge.kind == "absolute_reference" and edge.target == "table" and edge.qualified
+        for edge in result.edges
+    )
+    assert any(
+        edge.kind == "direct_call"
+        and edge.source == f"function:0x{PAYLOAD_OFFSET:x}"
+        and edge.target == f"function:0x{PAYLOAD_OFFSET + 16:x}"
+        for edge in result.edges
+    )
+    assert all(gap.code != "unsupported_instruction_mode" for gap in result.gaps)
+
+
+def test_riscv_compressed_jump_requires_elf_flag_and_preserves_indirect_gap():
+    payload = struct.pack("<4H", riscv_compressed_jump(4), 0x0001, 0x0001, 0x9002)
+    supplied = (
+        graph.GraphSeed("source", "flirt_function", PAYLOAD_OFFSET, 2, is_function=True),
+        graph.GraphSeed("callee", "flirt_function", PAYLOAD_OFFSET + 4, 4, is_function=True),
+    )
+    supported = graph.build_elf_graph(riscv_elf(payload, compressed=True), supplied)
+    assert any(
+        edge.kind == "tail_call" and edge.target == f"function:0x{PAYLOAD_OFFSET + 4:x}"
+        for edge in supported.edges
+    )
+    assert any(gap.code == "unresolved_indirect_transfer" for gap in supported.gaps)
+
+    unsupported = graph.build_elf_graph(riscv_elf(payload), supplied)
+    assert all(edge.kind != "tail_call" for edge in unsupported.edges)
+    assert any(
+        gap.code == "unsupported_instruction_mode" and "EF_RISCV_RVC" in gap.reason
+        for gap in unsupported.gaps
+    )
+
+
+def test_riscv_truncated_and_sparse_windows_are_bounded():
+    tracked = CountingBuffer(riscv_elf(struct.pack("<H", 0x0003)))
+    result = graph.build_elf_graph(cast("Buffer", tracked))
+    assert result.edges == ()
+    assert any(
+        gap.code == "unsupported_instruction_mode" and "ends within" in gap.reason
+        for gap in result.gaps
+    )
+    large = CountingBuffer(riscv_elf(struct.pack("<64I", *([riscv_addi(0, 0, 0)] * 64))))
+    graph.build_elf_graph(cast("Buffer", large))
+    assert 2 not in large.slice_sizes
+    assert 4 not in large.slice_sizes
 
 
 def test_function_seed_outside_executable_mapping_is_rejected():

@@ -99,6 +99,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - module: brotli_attestations
+            shard: all
           - module: brotli_analysis
             shard: all
           - module: brotli_binary_data

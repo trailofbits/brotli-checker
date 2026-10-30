@@ -14,6 +14,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts"
 sys.path.insert(0, str(SCRIPTS))
 import brotli_binary_match as matcher  # noqa: E402
 import brotli_binary_triage as triage  # noqa: E402
+import brotli_evidence_report as evidence_report  # noqa: E402
 from test_binary_metadata import elf_with_symbols  # noqa: E402
 
 
@@ -63,6 +64,104 @@ def run_main(monkeypatch, target, *arguments, outputs=(), symbols=None, after_ru
     with contextlib.redirect_stdout(output):
         code = triage.main([str(target), "--objdump", sys.executable, *map(str, arguments)])
     return code, json.loads(output.getvalue())
+
+
+def finalized_inventory_report(tmp_path, target, *, graph=None, findings=None, digest=None):
+    target_digest = digest or hashlib.sha256(target.read_bytes()).hexdigest()
+    report = {
+        "schema_version": 1,
+        "scope": [str(target.parent)],
+        "findings": findings or [],
+        "relations": [],
+        "artifacts": [
+            {
+                "id": "artifact:target",
+                "path": str(target),
+                "sha256": target_digest,
+                "analysis": {"function_graph": graph} if graph is not None else {},
+            }
+        ],
+        "coverage": {
+            "files_seen": 1,
+            "files_read": 1,
+            "bytes_read": len(target.read_bytes()),
+            "expanded_items_read": 0,
+            "expanded_bytes_read": 0,
+            "archives_attempted": 0,
+            "archives_opened": 0,
+            "gap_count": 0,
+            "gap_details_retained": 0,
+            "gap_details_omitted": 0,
+            "gaps": [],
+            "excluded": [".git"],
+            "symlinks_followed": False,
+            "symlink_targets_checked_directly": 0,
+            "limits": {"max_files": 10},
+        },
+    }
+    envelope = evidence_report.build_envelope(
+        report,
+        scanner=evidence_report.ToolIdentity("brotli-checker", "test", "a" * 64),
+    )
+    stored = {**report, evidence_report.ENVELOPE_FIELD: evidence_report.envelope_json(envelope)}
+    path = tmp_path / "inventory.json"
+    path.write_text(json.dumps(stored))
+    return path
+
+
+def function_graph(*, limited=False, gaps=None, extra_functions=()):
+    return {
+        "machine": matcher.EM_AARCH64,
+        "artifacts": [
+            {
+                "identifier": "table",
+                "kind": "decoder_table",
+                "file_offset": 152,
+                "virtual_address": 0x401020,
+                "size": 4,
+                "name": "table name is not used for selection",
+            },
+            {
+                "identifier": "exact",
+                "kind": "exact_code_region",
+                "file_offset": 136,
+                "virtual_address": 0x401010,
+                "size": 4,
+                "name": "exact source name is metadata only",
+            },
+        ],
+        "functions": [
+            {
+                "identifier": "function:124",
+                "file_offset": 124,
+                "virtual_address": 0x401004,
+                "size": 4,
+                "names": ["arbitrary report name"],
+                "boundary_methods": ["flirt_function"],
+            },
+            {
+                "identifier": "function:144",
+                "file_offset": 144,
+                "virtual_address": 0x401018,
+                "size": 4,
+                "names": ["unrelated"],
+                "boundary_methods": ["elf_symbol"],
+            },
+            *extra_functions,
+        ],
+        "edges": [
+            {
+                "source": "function:124",
+                "target": "table",
+                "kind": "pc_relative_reference",
+                "instruction_file_offset": 124,
+                "qualified": True,
+            }
+        ],
+        "gaps": gaps or [],
+        "limited": limited,
+        "patch_status": "unknown",
+    }
 
 
 SYMBOL_FIXTURES = [
@@ -576,3 +675,186 @@ def test_output_cannot_alias_target(tmp_path):
         )
     assert error.value.code == 2
     assert target.read_bytes() == original
+
+
+def test_finalized_inventory_report_selects_only_bound_executable_windows(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 64))
+    inventory = finalized_inventory_report(tmp_path, target, graph=function_graph())
+
+    code, report = run_main(
+        monkeypatch,
+        target,
+        "--analysis-report",
+        inventory,
+        outputs=("flirt function", "exact code"),
+    )
+
+    assert code == 0
+    assert report["classification"]["patch_status"] == "unknown"
+    assert report["scope"] == {"mode": "analysis_report", "selected_ranges": 2}
+    assert [item["scope"]["file_offset"] for item in report["evidence"]["disassembly"]] == [
+        124,
+        136,
+    ]
+    assert report["evidence"]["disassembly"][0]["scope"]["evidence_sources"] == [
+        "graph_flirt_function",
+        "graph_table_reference",
+    ]
+    assert (
+        report["evidence"]["analysis_report"]["target_sha256"]
+        == hashlib.sha256(target.read_bytes()).hexdigest()
+    )
+    # The unrelated function name at file offset 144 never selects code.
+    assert all(item["scope"]["file_offset"] != 144 for item in report["evidence"]["disassembly"])
+
+
+def test_report_hash_mismatch_and_tampering_never_reach_objdump(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 64))
+    mismatch = finalized_inventory_report(tmp_path, target, graph=function_graph(), digest="b" * 64)
+    code, report = run_main(monkeypatch, target, "--analysis-report", mismatch)
+    assert code == 3
+    assert report["tool"]["commands"] == []
+    assert "no hash-bound" in " ".join(report["collection"]["reasons"])
+
+    valid = finalized_inventory_report(tmp_path, target, graph=function_graph())
+    stored = json.loads(valid.read_text())
+    stored["artifacts"][0]["analysis"]["function_graph"]["functions"][0]["size"] = 8
+    valid.write_text(json.dumps(stored))
+    code, report = run_main(monkeypatch, target, "--analysis-report", valid)
+    assert code == 3
+    assert report["tool"]["commands"] == []
+    assert "digest does not match" in " ".join(report["collection"]["reasons"])
+
+
+def test_report_range_mapping_and_count_limits_fail_closed_with_partial_evidence(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 64))
+    extra = {
+        "identifier": "function:128",
+        "file_offset": 128,
+        "virtual_address": 0x401008,
+        "size": 4,
+        "names": [],
+        "boundary_methods": ["flirt_function"],
+    }
+    inventory = finalized_inventory_report(
+        tmp_path, target, graph=function_graph(extra_functions=(extra,))
+    )
+    code, report = run_main(
+        monkeypatch,
+        target,
+        "--analysis-report",
+        inventory,
+        "--max-report-ranges",
+        "1",
+        outputs=("first range",),
+    )
+    assert code == 3
+    assert report["scope"]["selected_ranges"] == 1
+    assert len(report["evidence"]["disassembly"]) == 1
+    assert "max-report-ranges" in " ".join(report["collection"]["reasons"])
+
+    malformed = function_graph()
+    malformed["functions"][0]["virtual_address"] += 4
+    inventory.unlink()
+    inventory = finalized_inventory_report(tmp_path, target, graph=malformed)
+    code, report = run_main(monkeypatch, target, "--analysis-report", inventory)
+    assert code == 3
+    assert report["tool"]["commands"] == []
+    assert "disagrees with target bytes" in " ".join(report["collection"]["reasons"])
+
+    malformed = function_graph()
+    malformed["artifacts"][0]["file_offset"] = len(target.read_bytes()) + 1
+    inventory.unlink()
+    inventory = finalized_inventory_report(tmp_path, target, graph=malformed)
+    code, report = run_main(monkeypatch, target, "--analysis-report", inventory)
+    assert code == 3
+    assert report["tool"]["commands"] == []
+    assert "graph_decoder_table range is not executable" in " ".join(
+        report["collection"]["reasons"]
+    )
+
+    malformed = function_graph()
+    malformed["edges"][0]["instruction_file_offset"] = 144
+    inventory.unlink()
+    inventory = finalized_inventory_report(tmp_path, target, graph=malformed)
+    code, report = run_main(monkeypatch, target, "--analysis-report", inventory)
+    assert code == 3
+    assert report["tool"]["commands"] == []
+    assert "outside its source function" in " ".join(report["collection"]["reasons"])
+
+
+def test_direct_flirt_fallback_is_hash_bound_and_never_imports_patch_state(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 64))
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    inventory = finalized_inventory_report(
+        tmp_path,
+        target,
+        findings=[
+            {
+                "path": str(target),
+                "patch_status": "fixed_code_match",
+                "evidence": {
+                    "sha256": digest,
+                    "flirt": {
+                        "status": "matched",
+                        "matches": [{"file_offset": 124, "size_bytes": 4}],
+                        "gaps": [],
+                    },
+                },
+            }
+        ],
+    )
+    code, report = run_main(
+        monkeypatch, target, "--analysis-report", inventory, outputs=("flirt bytes",)
+    )
+    assert code == 0
+    assert report["classification"]["patch_status"] == "unknown"
+    assert report["evidence"]["disassembly"][0]["scope"]["evidence_sources"] == [
+        "finding_flirt_match"
+    ]
+
+
+def test_partial_graph_and_oversized_ranges_remain_incomplete(tmp_path, monkeypatch):
+    target = tmp_path / "service"
+    target.write_bytes(elf(b"x" * 64))
+    graph = function_graph(limited=True, gaps=[{"code": "decode_limit", "reason": "bounded"}])
+    graph["functions"][0]["size"] = 16
+    inventory = finalized_inventory_report(tmp_path, target, graph=graph)
+    code, report = run_main(
+        monkeypatch,
+        target,
+        "--analysis-report",
+        inventory,
+        "--max-range-bytes",
+        "4",
+        outputs=("exact code",),
+    )
+    assert code == 3
+    reasons = " ".join(report["collection"]["reasons"])
+    assert "function graph is incomplete" in reasons
+    assert "exceeded --max-range-bytes" in reasons
+    assert report["classification"]["patch_status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("--analysis-report", "report.json", "--file-offset", "120", "--length", "4"),
+        ("--analysis-report", "report.json", "--start-address", "1", "--stop-address", "2"),
+        ("--analysis-report", "report.json", "--section", ".text"),
+        ("--analysis-report", "report.json", "--thumb"),
+    ],
+    ids=("file-offset", "address", "section", "thumb"),
+)
+def test_analysis_report_scope_is_mutually_exclusive(tmp_path, arguments):
+    target = tmp_path / "service"
+    target.write_bytes(elf())
+    with pytest.raises(SystemExit) as error:
+        triage.main([str(target), *arguments])
+    assert error.value.code == 2

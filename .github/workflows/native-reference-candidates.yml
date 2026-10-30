@@ -1,0 +1,217 @@
+name: Native reference candidates
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/native-reference-candidates.yml
+      - scripts/record_native_candidate.py
+      - scripts/build_native_flirt_references.py
+      - scripts/verify_native_flirt_pair.py
+      - scripts/export_pdb_symbols.py
+      - scripts/build_flirt_references.py
+      - skills/brotli-checker/scripts/brotli_flirt.py
+      - skills/brotli-checker/scripts/brotli_debug_companions.py
+      - skills/brotli-checker/scripts/brotli_binary_layout.py
+      - skills/brotli-checker/scripts/brotli_binary_signatures.py
+      - skills/brotli-checker/references/fingerprints.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BROTLI_120_SHA256: 816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec
+  BROTLI_121_SHA256: 98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f
+
+jobs:
+  windows:
+    name: MSVC and clang-cl candidates
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+      - name: Build reviewed native candidates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Path native-candidates | Out-Null
+          $versions = @(
+            @{ Version = '1.2.0'; Digest = $env:BROTLI_120_SHA256 },
+            @{ Version = '1.2.1'; Digest = $env:BROTLI_121_SHA256 }
+          )
+          foreach ($item in $versions) {
+            $archive = "native-candidates/brotli-$($item.Version).tar.gz"
+            Invoke-WebRequest "https://github.com/google/brotli/archive/refs/tags/v$($item.Version).tar.gz" -OutFile $archive
+            if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $item.Digest) {
+              throw "Brotli source archive digest mismatch"
+            }
+            tar -xf $archive -C native-candidates
+            foreach ($toolchain in @('msvc', 'clang-cl')) {
+              foreach ($profile in @('normal', 'ltcg')) {
+                $build = "native-candidates/build-$($item.Version)-$toolchain-$profile"
+                $arguments = @('-S', "native-candidates/brotli-$($item.Version)", '-B', $build,
+                  '-A', 'x64', '-DBUILD_SHARED_LIBS=ON', '-DCMAKE_BUILD_TYPE=Release',
+                  '-DCMAKE_C_FLAGS_RELEASE=/O2 /Gy /Zi /DNDEBUG',
+                  '-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=/DEBUG /OPT:REF /OPT:ICF')
+                if ($toolchain -eq 'clang-cl') { $arguments += @('-T', 'ClangCL') }
+                if ($profile -eq 'ltcg') { $arguments += '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON' }
+                cmake @arguments
+                cmake --build $build --config Release --parallel 2
+                $binary = Get-ChildItem $build -Recurse -Filter brotlidec.dll | Select-Object -First 1
+                $object = Get-ChildItem $build -Recurse -Filter decode.c.obj | Select-Object -First 1
+                if (-not $binary -or -not $object) { throw "Native build output is incomplete" }
+                $versionFile = "$build/compiler.txt"
+                if ($toolchain -eq 'clang-cl') {
+                  & "$env:ProgramFiles/LLVM/bin/clang-cl.exe" --version | Out-File -Encoding utf8 $versionFile
+                } else {
+                  $cl = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/cl.exe' | Select-Object -First 1
+                  (Get-Item $cl).VersionInfo.FileVersion | Out-File -Encoding utf8 $versionFile
+                }
+                $output = "native-candidates/$($item.Version)-$toolchain-$profile.json"
+                uv run --no-project --python 3.12 python scripts/record_native_candidate.py --binary $binary.FullName `
+                  --source-tree "native-candidates/brotli-$($item.Version)" `
+                  --compiler-version-file $versionFile --flags "$toolchain $profile x86_64 /OPT:REF /OPT:ICF" `
+                  --object $object.FullName --output $output
+                if ($profile -eq 'normal') {
+                  $pdb = Get-ChildItem $build -Recurse -Filter brotlidec.pdb | Select-Object -First 1
+                  if (-not $pdb) { throw "Native build PDB is missing" }
+                  $compiler = (Get-Content -Raw $versionFile).Trim()
+                  uv run --no-project --python 3.12 python scripts/build_native_flirt_references.py `
+                    --object $object.FullName --source-tree "native-candidates/brotli-$($item.Version)" `
+                    --compiler $compiler --flags "$toolchain /O2 /Gy x86_64" `
+                    --build-note 'Native hosted runner; reviewed source and complete patch-role population' `
+                    --output "native-candidates/$($item.Version)-$toolchain-flirt.json" `
+                    --pat-output "native-candidates/$($item.Version)-$toolchain-flirt.pat"
+                  uv run --no-project --python 3.12 python scripts/export_pdb_symbols.py `
+                    $binary.FullName $pdb.FullName `
+                    --llvm-pdbutil "$env:ProgramFiles/LLVM/bin/llvm-pdbutil.exe" `
+                    --output "native-candidates/$($item.Version)-$toolchain-pdb-symbols.json"
+                  Copy-Item $pdb.FullName "native-candidates/$($item.Version)-$toolchain.pdb"
+                }
+                Copy-Item $binary.FullName "native-candidates/$($item.Version)-$toolchain-$profile.dll"
+                Copy-Item $object.FullName "native-candidates/$($item.Version)-$toolchain-$profile.obj"
+              }
+            }
+          }
+          foreach ($toolchain in @('msvc', 'clang-cl')) {
+            uv run --no-project --python 3.12 --with 'python-flirt==0.10.2' python `
+              scripts/verify_native_flirt_pair.py `
+              --affected-binary "native-candidates/1.2.0-$toolchain-normal.dll" `
+              --affected-bundle "native-candidates/1.2.0-$toolchain-flirt.json" `
+              --fixed-binary "native-candidates/1.2.1-$toolchain-normal.dll" `
+              --fixed-bundle "native-candidates/1.2.1-$toolchain-flirt.json" `
+              --output "native-candidates/$toolchain-pair-verification.json"
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-reference-candidates-windows
+          path: |
+            native-candidates/*.dll
+            native-candidates/*.obj
+            native-candidates/*.pdb
+            native-candidates/*.json
+            native-candidates/*.pat
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: Apple clang universal candidates
+    needs: windows
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+      - name: Build reviewed native candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir native-candidates
+          for version in 1.2.0 1.2.1; do
+            variable="BROTLI_${version//./}_SHA256"
+            archive="native-candidates/brotli-$version.tar.gz"
+            curl --fail --location --retry 3 --output "$archive" \
+              "https://github.com/google/brotli/archive/refs/tags/v$version.tar.gz"
+            printf '%s  %s\n' "${!variable}" "$archive" | shasum -a 256 --check
+            tar -xzf "$archive" -C native-candidates
+            for profile in normal lto; do
+              build="native-candidates/build-$version-$profile"
+              args=(-S "native-candidates/brotli-$version" -B "$build" -G Ninja
+                -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
+                '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64'
+                '-DCMAKE_C_FLAGS_RELEASE=-O2 -ffunction-sections -DNDEBUG'
+                '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-no_fixup_chains,-dead_strip')
+              if [[ "$profile" == lto ]]; then
+                args+=(-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)
+              fi
+              cmake "${args[@]}"
+              cmake --build "$build" --parallel 2
+              binary="$(find "$build" -name 'libbrotlidec*.dylib' -type f | head -1)"
+              test -n "$binary"
+              codesign --sign - --force "$binary"
+              version_file="$build/compiler.txt"
+              xcrun clang --version > "$version_file"
+              objects=()
+              if [[ "$profile" == normal ]]; then
+                cmake_object="$(find "$build" -name 'decode.c.o' -type f | head -1)"
+                test -n "$cmake_object"
+                for arch in x86_64 arm64; do
+                  object="$build/decode-$arch.o"
+                  xcrun lipo "$cmake_object" -thin "$arch" -output "$object"
+                  objects+=(--object "$object")
+                  cp "$object" "native-candidates/$version-apple-$profile-$arch.o"
+                  uv run --no-project --python 3.12 python scripts/build_native_flirt_references.py \
+                    --object "$object" --source-tree "native-candidates/brotli-$version" \
+                    --compiler "$(head -1 "$version_file")" \
+                    --flags "apple-clang CMake Release -O2 -ffunction-sections -DNDEBUG $arch" \
+                    --build-note 'Native hosted runner; reviewed source and complete patch-role population' \
+                    --output "native-candidates/$version-apple-$arch-flirt.json" \
+                    --pat-output "native-candidates/$version-apple-$arch-flirt.pat"
+                done
+              fi
+              uv run --no-project --python 3.12 python scripts/record_native_candidate.py --binary "$binary" \
+                --source-tree "native-candidates/brotli-$version" \
+                --compiler-version-file "$version_file" \
+                --flags "apple-clang $profile universal2 dead_strip no_fixup_chains" \
+                "${objects[@]}" --output "native-candidates/$version-apple-$profile.json"
+              cp "$binary" "native-candidates/$version-apple-$profile.dylib"
+            done
+            uv run --no-project --python 3.12 python scripts/build_flirt_references.py \
+              --merge "native-candidates/$version-apple-x86_64-flirt.json" \
+              --merge "native-candidates/$version-apple-arm64-flirt.json" \
+              --output "native-candidates/$version-apple-flirt.json" \
+              --pat-output "native-candidates/$version-apple-flirt.pat"
+          done
+          uv run --no-project --python 3.12 --with 'python-flirt==0.10.2' python \
+            scripts/verify_native_flirt_pair.py \
+            --affected-binary native-candidates/1.2.0-apple-normal.dylib \
+            --affected-bundle native-candidates/1.2.0-apple-flirt.json \
+            --fixed-binary native-candidates/1.2.1-apple-normal.dylib \
+            --fixed-bundle native-candidates/1.2.1-apple-flirt.json \
+            --output native-candidates/apple-pair-verification.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-reference-candidates-macos
+          path: |
+            native-candidates/*.dylib
+            native-candidates/*.o
+            native-candidates/*.json
+            native-candidates/*.pat
+          if-no-files-found: error
+          retention-days: 14

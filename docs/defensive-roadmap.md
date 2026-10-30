@@ -53,10 +53,15 @@ required backend is unavailable. Recognition never substitutes for patch proof.
 ### 5. Loader-aware PE and Mach-O (`H`)
 
 **Implementation:** First validate mapped sections, imports/exports, dependencies, relocations, and platform function metadata. Scope stable tables to mapped data. Official paired Windows/macOS wheels are hash-pinned loader/table fixtures.
-**Remaining qualification:** paired affected/fixed MSVC, clang-cl, and Apple-clang
-patch-code references, including signed/LTCG/LTO/dead-strip/ICF controls. The local
-clang-cl probe lacks MSVC/UCRT headers and the Apple target lacks its SDK. Neither
-ELF references nor table matches are presented as replacements for that corpus.
+FLIRT target ownership now supports explicitly format-bound PE and Mach-O executable
+ranges, including independent universal slices; ELF profiles cannot silently cross
+formats. A native hosted-runner pipeline builds reviewed affected/fixed MSVC,
+clang-cl, and Apple-clang pairs, normal and LTCG/LTO controls, signed universal
+Mach-O controls, relocation-masked patch-role patterns, and opposite-state tests.
+**Remaining qualification:** observe the hosted builds, independently review their
+manifests and patterns, then commit exact post-link artifact assertions. Complete
+native function populations remain provenance only until one decoder copy is bound;
+the scanner does not combine matching functions scattered across copies into a fix.
 
 **Acceptance:** Resources and nonloaded data do not count as decoder use; fat slices and CPU subtypes stay separate; unsupported fixups, encryption, arm64e, or linker modes remain gaps; fixed evidence never crosses artifacts or slices.
 
@@ -98,5 +103,30 @@ Primary contracts: [ELF dynamic linking](https://refspecs.linuxfoundation.org/el
 
 See [structured analysis](../skills/brotli-checker/references/analysis.md) for flags,
 namespace rules, local vendor snapshot schema, and remaining format limitations.
-The implementation does not claim general semantic patch verification, full PDB
-symbol decoding, verified attestations, or automatic runtime loader selection.
+The implementation does not claim general semantic patch verification or automatic
+runtime loader selection. Explicit PDB exports provide verified names/bounds, not
+a complete native PDB parser. Offline attestations authenticate predicate claims;
+they do not independently establish build truth, patch state, or signer freshness.
+
+
+## Remaining-limit resolution paths
+
+These are explicit support boundaries, not guarantees that an unmatched target is
+safe. The validation record must distinguish implemented paths from proposed ones.
+
+| Boundary | Concrete next evidence or implementation | Preserved invariant |
+| --- | --- | --- |
+| Multiple embedded native copies | Associate each required role with one table/caller component; use reviewed exact post-link hashes for standalone artifacts | No slice-wide union becomes a fixed copy |
+| LTO/LTCG transformation | Paired post-link profiles from verified PDB/dSYM function bounds, with opposite-state and mixed-copy controls | Build provenance alone is not target patch proof |
+| ARM/Thumb graph modes | Add mode provenance from odd function addresses or `$a`/`$t` mapping symbols before bounded decoding | Never guess instruction mode from bytes |
+| Other ELF graph ISAs | Audited per-ABI decoder or trusted byte-bound objdump packet | Unsupported executable encodings remain gaps |
+| Mach universal dSYM/source lines | UUID- and artifact-hash-bound per-slice DWARF/export verification | Do not cross slices or open embedded source paths |
+| Wasm function identity | Validated function-body profiles with canonicalized indices and direct-call/data references | Native FLIRT and independent ports are not interchangeable |
+| Runtime provider/reachability | Explicit deployment traces bound to scanned artifact hashes and namespaces | Static candidates do not prove runtime selection |
+| Sigstore/JSF/attestation freshness | Separate offline trust-root, certificate-identity, transparency, canonicalization and revocation policies | A signature is not independently verified predicate truth |
+| Parser differential assurance | Maintained LLVM/LIEF oracle comparisons over retained valid/malformed fixtures | Oracle disagreement is evidence to investigate, not an automatic verdict |
+
+Current additions include report-derived triage ranges, a bounded RISC-V decoder,
+explicit verified PDB-symbol packets, offline DSSE attestations, format-bound native
+FLIRT, and source-bound native/fuzz CI pipelines. Native catalog qualification and
+actual coverage-guided campaign results must be recorded after those workflows run.

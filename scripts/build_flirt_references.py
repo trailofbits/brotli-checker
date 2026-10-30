@@ -452,9 +452,15 @@ def prune_ambiguous_names(
     records: dict[str, str], groups: list[dict]
 ) -> tuple[dict[str, str], list[dict]]:
     """Drop same-target patterns that provenance maps to multiple symbol names."""
-    names: dict[tuple[tuple[int, int, str], str], set[str]] = {}
+    names: dict[tuple[tuple[str, int, int, str, str], str], set[str]] = {}
     for group in groups:
-        identity = group["machine"], group["elf_class"], group["byteorder"]
+        identity = (
+            group.get("format", "elf"),
+            group["machine"],
+            group["elf_class"],
+            group["byteorder"],
+            group.get("abi", "sysv"),
+        )
         for symbol, identifiers in group["functions"].items():
             for identifier in identifiers:
                 names.setdefault((identity, identifier), set()).add(symbol)
@@ -462,7 +468,13 @@ def prune_ambiguous_names(
     kept_groups = []
     for original in groups:
         group = {**original, "functions": {}}
-        identity = group["machine"], group["elf_class"], group["byteorder"]
+        identity = (
+            group.get("format", "elf"),
+            group["machine"],
+            group["elf_class"],
+            group["byteorder"],
+            group.get("abi", "sysv"),
+        )
         for symbol, identifiers in original["functions"].items():
             retained = [
                 identifier for identifier in identifiers if (identity, identifier) not in ambiguous

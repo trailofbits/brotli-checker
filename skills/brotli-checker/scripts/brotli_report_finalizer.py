@@ -75,6 +75,7 @@ DEFAULT_OPTIONAL_TOOLS = (
     OptionalToolSpec("pyelftools", "pyelftools"),
     OptionalToolSpec("python-flirt", "python-flirt"),
     OptionalToolSpec("zstandard", "zstandard"),
+    OptionalToolSpec("cryptography", "cryptography"),
 )
 
 

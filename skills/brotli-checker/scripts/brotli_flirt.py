@@ -11,10 +11,22 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from brotli_binary_data import Buffer, normalize_ranges
-from brotli_binary_match import TARGETS, elf_header, executable_ranges, target_identity
+from brotli_binary_layout import inspect_layout
+from brotli_binary_match import (
+    EM_386,
+    EM_AARCH64,
+    EM_ARM,
+    EM_PPC64,
+    EM_X86_64,
+    TARGETS,
+    elf_header,
+    executable_ranges,
+    target_identity,
+    valid_patch_functions,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -54,7 +66,7 @@ PAT_RECORD_PATTERN = re.compile(
     r"(?P<identifier>[A-Za-z0-9_.:-]{1,160})"
     r"(?: (?P<tail>(?:[0-9A-Fa-f]{2}|\.\.)+))?"
 )
-GROUP_FIELDS = {
+LEGACY_GROUP_FIELDS = {
     "id",
     "machine",
     "elf_class",
@@ -69,11 +81,38 @@ GROUP_FIELDS = {
     "build_note",
     "functions",
 }
+NATIVE_GROUP_FIELDS = LEGACY_GROUP_FIELDS | {"format", "abi"}
+NATIVE_PATCH_GROUP_FIELDS = NATIVE_GROUP_FIELDS | {"evidence_scope", "patch_functions"}
+PATCH_EVIDENCE_SCOPE = "patch_bearing_population_v1"
 IDENTITY_LIMITATION = "FLIRT recognition does not determine target patch status"
+TargetIdentity = tuple[str, int, int, str, str]
+NATIVE_MACHINES = {
+    "i386": EM_386,
+    "x86_64": EM_X86_64,
+    "arm": EM_ARM,
+    "armv7": EM_ARM,
+    "aarch64": EM_AARCH64,
+    "ppc64": EM_PPC64,
+}
+NATIVE_MAGICS = (
+    b"MZ",
+    b"\xfe\xed\xfa\xce",
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+    b"\xca\xfe\xba\xbf",
+    b"\xbf\xba\xfe\xca",
+)
 
 
 class FlirtUnavailableError(ValueError):
     """The optional python-flirt backend is unavailable or incompatible."""
+
+
+def flirt_target_candidate(data: Buffer) -> bool:
+    return data.startswith(b"\x7fELF") or data.startswith(NATIVE_MAGICS)
 
 
 class _BackendSignature(Protocol):
@@ -99,6 +138,7 @@ class FlirtAssessment(TypedDict):
     gaps: list[str]
     limitations: list[str]
     ambiguous_matches: list[dict[str, Any]]
+    patch_profiles: NotRequired[list[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -124,11 +164,13 @@ class FlirtGroup:
     functions: dict[str, tuple[str, ...]]
 
     @property
-    def identity(self) -> tuple[int, int, str]:
+    def identity(self) -> TargetIdentity:
         return (
+            self.metadata.get("format", "elf"),
             self.metadata["machine"],
             self.metadata["elf_class"],
             self.metadata["byteorder"],
+            self.metadata.get("abi", "sysv"),
         )
 
     @property
@@ -140,9 +182,17 @@ class FlirtGroup:
 class FlirtCatalog:
     records: dict[str, FlirtRecord]
     groups: tuple[FlirtGroup, ...]
-    matchers: dict[tuple[tuple[int, int, str], str], _BackendMatcher]
-    profiles: dict[tuple[tuple[int, int, str], str], tuple[tuple[FlirtGroup, tuple[str, ...]], ...]]
-    identities: dict[tuple[int, int, str], frozenset[str]]
+    matchers: dict[tuple[TargetIdentity, str], _BackendMatcher]
+    profiles: dict[tuple[TargetIdentity, str], tuple[tuple[FlirtGroup, tuple[str, ...]], ...]]
+    identities: dict[TargetIdentity, frozenset[str]]
+
+
+@dataclass(frozen=True)
+class _TargetContext:
+    identity: TargetIdentity
+    ranges: tuple[tuple[int, int], ...]
+    format: str
+    slice_index: int | None = None
 
 
 class FlirtSession:
@@ -335,15 +385,35 @@ def _valid_digest(value: object) -> bool:
 def _parse_group(  # noqa: C901
     entry: object, records: dict[str, FlirtRecord]
 ) -> FlirtGroup:
-    if not isinstance(entry, dict) or set(entry) != GROUP_FIELDS:
+    if not isinstance(entry, dict) or set(entry) not in (
+        LEGACY_GROUP_FIELDS,
+        NATIVE_GROUP_FIELDS,
+        NATIVE_PATCH_GROUP_FIELDS,
+    ):
         msg = "Invalid FLIRT reference group fields"
         raise ValueError(msg)
+    native = "format" in entry
     identity = (entry["machine"], entry["elf_class"], entry["byteorder"])
     if (
         type(identity[0]) is not int
         or type(identity[1]) is not int
         or not isinstance(identity[2], str)
         or identity not in TARGETS
+        or (
+            native
+            and (
+                entry["format"] not in ("pe", "mach_o")
+                or entry["abi"] not in ("windows", "darwin")
+                or (entry["format"], entry["abi"]) not in (("pe", "windows"), ("mach_o", "darwin"))
+            )
+        )
+        or (
+            "evidence_scope" in entry
+            and (
+                entry["evidence_scope"] != PATCH_EVIDENCE_SCOPE
+                or not valid_patch_functions(entry["patch_functions"])
+            )
+        )
         or entry["source_state"] not in ("fixed", "vulnerable")
         or not _valid_digest(entry["source_sha256"])
         or not _valid_digest(entry["object_sha256"])
@@ -378,6 +448,11 @@ def _parse_group(  # noqa: C901
             msg = "Invalid FLIRT function-to-signature mapping"
             raise ValueError(msg)
         parsed[symbol] = tuple(identifiers)
+    if "patch_functions" in entry and set(parsed) != {
+        name for names in entry["patch_functions"].values() for name in names
+    }:
+        msg = "Native patch-bearing FLIRT functions do not match their required role population"
+        raise ValueError(msg)
     metadata = {key: value for key, value in entry.items() if key != "functions"}
     return FlirtGroup(metadata, parsed)
 
@@ -430,7 +505,7 @@ def validate_bundle_data(
 
 
 def _compile_identity(
-    backend: _Backend, identity: tuple[int, int, str], records: Iterable[FlirtRecord]
+    backend: _Backend, identity: TargetIdentity, records: Iterable[FlirtRecord]
 ) -> dict[str, _BackendMatcher]:
     selected = sorted(records, key=lambda record: record.identifier)
     text = "\n".join(record.line for record in selected) + "\n---\n"
@@ -479,7 +554,7 @@ def load_flirt_bundle(path: Path, *, backend: _Backend | None = None) -> FlirtCa
     pat_data = _read_bounded(pat_path, MAX_PAT_BYTES, "FLIRT PAT")
     records, groups = validate_bundle_data(bundle, pat_data)
     selected_backend = backend if backend is not None else _load_backend()
-    matchers: dict[tuple[tuple[int, int, str], str], _BackendMatcher] = {}
+    matchers: dict[tuple[TargetIdentity, str], _BackendMatcher] = {}
     for identity in sorted({group.identity for group in groups}):
         identifiers = set().union(
             *(group.signature_ids for group in groups if group.identity == identity)
@@ -490,8 +565,8 @@ def load_flirt_bundle(path: Path, *, backend: _Backend | None = None) -> FlirtCa
         matchers.update(
             ((identity, identifier), matcher) for identifier, matcher in compiled.items()
         )
-    profiles: dict[tuple[tuple[int, int, str], str], list[tuple[FlirtGroup, tuple[str, ...]]]] = {}
-    identities: dict[tuple[int, int, str], set[str]] = {}
+    profiles: dict[tuple[TargetIdentity, str], list[tuple[FlirtGroup, tuple[str, ...]]]] = {}
+    identities: dict[TargetIdentity, set[str]] = {}
     for group in groups:
         identities.setdefault(group.identity, set()).update(group.signature_ids)
         names_by_identifier: dict[str, list[str]] = {}
@@ -573,29 +648,74 @@ def _profiles_for_signature(
     return profiles, sorted(names)
 
 
-def match_flirt(  # noqa: C901, PLR0912, PLR0915
-    data: Buffer, catalog: FlirtCatalog
+def _target_contexts(data: Buffer) -> tuple[tuple[_TargetContext, ...], tuple[str, ...]]:
+    if data.startswith(b"\x7fELF"):
+        header = elf_header(data)
+        _, ranges = executable_ranges(data)
+        machine, bits, byteorder = target_identity(header)
+        return (
+            _TargetContext(("elf", machine, bits, byteorder, "sysv"), tuple(ranges), "elf"),
+        ), ()
+    layout = inspect_layout(data)
+    if layout["kind"] not in {"pe", "mach_o", "mach_o_universal"}:
+        msg = f"FLIRT target format is unsupported: {layout['kind']}"
+        raise ValueError(msg)
+    rows = layout["slices"] or [layout]
+    contexts = []
+    gaps = []
+    for index, row in enumerate(rows):
+        gaps.extend(str(gap) for gap in row["gaps"])
+        machine = NATIVE_MACHINES.get(row["machine"])
+        candidate = (machine, row["bits"], row["byteorder"])
+        if machine is None or candidate not in TARGETS:
+            gaps.append(f"Unsupported {row['kind']} FLIRT target identity: {row['machine']}")
+            continue
+        ranges = tuple(
+            (item["file_offset"], item["size"])
+            for item in row["ranges"]["executable"]
+            if item["size"]
+        )
+        if not ranges:
+            gaps.append(f"{row['kind']} has no validated executable file ranges")
+            continue
+        if row["kind"] == "pe":
+            format_name, abi = "pe", "windows"
+        else:
+            format_name, abi = "mach_o", "darwin"
+        contexts.append(
+            _TargetContext(
+                (format_name, machine, row["bits"], row["byteorder"], abi),
+                ranges,
+                format_name,
+                index if layout["slices"] else None,
+            )
+        )
+    if not contexts:
+        msg = "; ".join(gaps) or "target has no supported executable layout"
+        raise ValueError(msg)
+    return tuple(contexts), tuple(gaps)
+
+
+def _match_flirt_context(  # noqa: C901, PLR0912, PLR0915
+    data: Buffer, catalog: FlirtCatalog, context: _TargetContext
 ) -> FlirtAssessment:
-    """Recognize independent full-function patterns; never infer target patch state."""
     limitations = [IDENTITY_LIMITATION]
     gaps: list[str] = []
     ambiguous_matches: list[dict[str, Any]] = []
     ambiguity_count = 0
-    try:
-        header = elf_header(data)
-        _, ranges = executable_ranges(data)
-    except ValueError as error:
-        return {
-            "status": "unknown",
-            "matches": [],
-            "gaps": [f"FLIRT target unsupported: {error}"],
-            "limitations": [IDENTITY_LIMITATION],
-            "ambiguous_matches": [],
-        }
-    identity = target_identity(header)
+    identity = context.identity
     compatible_ids = catalog.identities.get(identity)
     if not compatible_ids:
-        gap = f"No FLIRT references for {TARGETS[identity][0]}"
+        if not any(value[0] == context.format for value in catalog.identities):
+            return {
+                "status": "not_applicable",
+                "matches": [],
+                "gaps": [],
+                "limitations": limitations,
+                "ambiguous_matches": [],
+            }
+        target = TARGETS[identity[1:4]][0]
+        gap = f"No FLIRT references for {context.format} {target}"
         return {
             "status": "unknown",
             "matches": [],
@@ -604,7 +724,9 @@ def match_flirt(  # noqa: C901, PLR0912, PLR0915
             "ambiguous_matches": [],
         }
     records = {identifier: catalog.records[identifier] for identifier in compatible_ids}
-    candidates, candidate_collection_limited = _candidate_starts(data, records, ranges)
+    candidates, candidate_collection_limited = _candidate_starts(
+        data, records, list(context.ranges)
+    )
     limited = candidate_collection_limited
     if candidate_collection_limited:
         gap = "FLIRT candidate limit reached; recognition is incomplete"
@@ -664,6 +786,12 @@ def match_flirt(  # noqa: C901, PLR0912, PLR0915
                     {
                         "kind": "ambiguous_candidate",
                         "file_offset": offset,
+                        "format": context.format,
+                        **(
+                            {"slice_index": context.slice_index}
+                            if context.slice_index is not None
+                            else {}
+                        ),
                         "signature_count": len(identifiers),
                         "signature_ids": identifiers[:MAX_REPORTED_SIGNATURES],
                     }
@@ -695,6 +823,8 @@ def match_flirt(  # noqa: C901, PLR0912, PLR0915
                 "signature_id": identifier,
                 "file_offset": offset,
                 "size_bytes": record.size,
+                "format": context.format,
+                **({"slice_index": context.slice_index} if context.slice_index is not None else {}),
                 "method": "python_flirt_full_function_pattern",
                 "candidate_names": candidate_names,
                 "definitive_name": candidate_names[0]
@@ -709,8 +839,27 @@ def match_flirt(  # noqa: C901, PLR0912, PLR0915
         gaps.append(
             f"{ambiguity_count} FLIRT candidate(s) matched multiple signatures; names unresolved"
         )
+    matched_ids = {row["signature_id"] for row in matches}
+    patch_profiles = []
+    if not limited and not ambiguity_count:
+        patch_profiles.extend(
+            {
+                **group.metadata,
+                "method": "native_flirt_patch_bearing_population",
+                "source_state_provenance": group.metadata["source_state"],
+                "source_state": "provenance_only",
+                "target_patch_status": "unknown",
+                "matched_signature_ids": sorted(group.signature_ids),
+            }
+            for group in catalog.groups
+            if (
+                group.identity == identity
+                and group.metadata.get("evidence_scope") == PATCH_EVIDENCE_SCOPE
+                and group.signature_ids <= matched_ids
+            )
+        )
     if limited:
-        status: Literal["recognized", "partial", "unknown", "limited"] = "limited"
+        status: Literal["recognized", "partial", "unknown", "limited", "not_applicable"] = "limited"
     elif matches:
         status = "recognized"
     elif gaps:
@@ -723,4 +872,62 @@ def match_flirt(  # noqa: C901, PLR0912, PLR0915
         "gaps": gaps,
         "limitations": limitations,
         "ambiguous_matches": ambiguous_matches,
+        "patch_profiles": patch_profiles,
+    }
+
+
+def match_flirt(data: Buffer, catalog: FlirtCatalog) -> FlirtAssessment:  # noqa: C901
+    """Recognize independent full-function patterns; never infer target patch state."""
+    try:
+        contexts, layout_gaps = _target_contexts(data)
+    except ValueError as error:
+        return {
+            "status": "unknown",
+            "matches": [],
+            "gaps": [f"FLIRT target unsupported: {error}"],
+            "limitations": [IDENTITY_LIMITATION],
+            "ambiguous_matches": [],
+        }
+    matches = []
+    gaps = [f"FLIRT layout limitation: {gap}" for gap in layout_gaps]
+    limitations = [IDENTITY_LIMITATION]
+    ambiguous = []
+    patch_profiles = []
+    limited = False
+    statuses = []
+    for context in contexts:
+        result = _match_flirt_context(data, catalog, context)
+        statuses.append(result["status"])
+        matches.extend(result["matches"])
+        gaps.extend(result["gaps"])
+        limitations.extend(item for item in result["limitations"] if item not in limitations)
+        ambiguous.extend(result["ambiguous_matches"])
+        patch_profiles.extend(result.get("patch_profiles", []))
+        limited = limited or result["status"] == "limited"
+    if len(matches) > MAX_MATCHES:
+        matches = matches[:MAX_MATCHES]
+        gaps.append("FLIRT aggregate match reporting limit reached; recognition is incomplete")
+        limited = True
+    if len(ambiguous) > MAX_REPORTED_GAPS:
+        ambiguous = ambiguous[:MAX_REPORTED_GAPS]
+        limitations.append("FLIRT aggregate ambiguity reporting limit reached")
+    if limited:
+        status: Literal["recognized", "partial", "unknown", "limited", "not_applicable"] = "limited"
+    elif matches:
+        status = "recognized"
+    elif statuses and all(item == "not_applicable" for item in statuses):
+        status = "not_applicable"
+    elif statuses and all(item in ("unknown", "not_applicable") for item in statuses):
+        status = "unknown"
+    elif gaps:
+        status = "partial"
+    else:
+        status = "unknown"
+    return {
+        "status": status,
+        "matches": matches,
+        "gaps": gaps,
+        "limitations": limitations,
+        "ambiguous_matches": ambiguous,
+        "patch_profiles": patch_profiles,
     }

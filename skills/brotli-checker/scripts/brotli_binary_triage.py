@@ -34,6 +34,11 @@ from brotli_binary_match import (
     target_identity,
 )
 from brotli_binary_metadata import MAX_SYMBOL_TABLES, MAX_SYMBOLS
+from brotli_evidence_report import (
+    ReproducibilityEnvelope,
+    envelope_sha256,
+    verify_report_envelope,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -43,7 +48,9 @@ DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 DEFAULT_MAX_RANGE_BYTES = 64 * 1024
 DEFAULT_TIMEOUT_SECONDS = 15
 DEFAULT_MAX_SYMBOLS = 12
+DEFAULT_MAX_REPORT_RANGES = 32
 CHUNK_BYTES = 64 * 1024
+MAX_ANALYSIS_REPORT_BYTES = 64 * 1024 * 1024
 PT_LOAD = 1
 PF_X = 1
 SHT_STRTAB = 3
@@ -66,6 +73,11 @@ EF_MIPS_MACH = 0x00FF0000
 STO_MIPS_ISA = 0xC0
 STO_MIPS16 = 0xF0
 STO_MICROMIPS = 0x80
+REPORT_FUNCTION_METHODS = frozenset({"flirt_function"})
+REPORT_ARTIFACT_KINDS = frozenset({"exact_code_region"})
+REPORT_REFERENCE_KINDS = frozenset(
+    {"relocation_reference", "pc_relative_reference", "absolute_reference"}
+)
 
 
 class TriageError(ValueError):
@@ -212,14 +224,14 @@ def checked_range(data: Buffer, offset: int, size: int) -> tuple[int, int]:
 
 
 def function_offset(data: Buffer, header: tuple, address: int, size: int) -> int | None:
-    for kind, flags, start, virtual, _, file_size, _, _ in program_headers(data, header):
-        if (
-            kind == PT_LOAD
-            and flags & PF_X
-            and virtual <= address < address + size <= virtual + file_size
-        ):
-            return start + address - virtual
-    return None
+    candidates = {
+        start + address - virtual
+        for kind, flags, start, virtual, _, file_size, _, _ in program_headers(data, header)
+        if kind == PT_LOAD
+        and flags & PF_X
+        and virtual <= address < address + size <= virtual + file_size
+    }
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def require_supported_instruction_mode(  # noqa: C901 -- MIPS flags and bounded symbol modes.
@@ -398,18 +410,29 @@ def symbol_priority(symbol: dict) -> tuple[int, int, int, str]:
     return 0 if symbol["defined"] else 1, priority, symbol["address"], symbol["name"]
 
 
-def file_offset_address(data: Buffer, file_offset: int, length: int) -> int:
+def mapped_file_offset_address(
+    data: Buffer, file_offset: int, length: int, *, executable: bool
+) -> int:
     header = elf_header(data)
-    for kind, flags, start, virtual, _, file_size, _, _ in program_headers(data, header):
-        if (
-            kind == PT_LOAD
-            and flags & PF_X
-            and start <= file_offset
-            and file_offset + length <= start + file_size
-        ):
-            return virtual + file_offset - start
-    message = "File-offset range is not inside one file-backed executable PT_LOAD segment"
+    candidates = {
+        virtual + file_offset - start
+        for kind, flags, start, virtual, _, file_size, _, _ in program_headers(data, header)
+        if kind == PT_LOAD
+        and (not executable or flags & PF_X)
+        and start <= file_offset
+        and file_offset + length <= start + file_size
+    }
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    scope = "executable PT_LOAD" if executable else "PT_LOAD"
+    message = f"File-offset range is not inside one file-backed {scope} segment"
+    if len(candidates) > 1:
+        message = f"File-offset range has ambiguous {scope} mappings"
     raise TriageError(message)
+
+
+def file_offset_address(data: Buffer, file_offset: int, length: int) -> int:
+    return mapped_file_offset_address(data, file_offset, length, executable=True)
 
 
 def validate_address_range(data: Buffer, start: int, stop: int) -> None:
@@ -419,6 +442,312 @@ def validate_address_range(data: Buffer, start: int, stop: int) -> None:
             return
     message = "Address range is not inside one file-backed executable PT_LOAD segment"
     raise TriageError(message)
+
+
+def _report_location(
+    data: Buffer, value: object, source: str, *, executable: bool
+) -> tuple[int, int, int]:
+    if not isinstance(value, dict):
+        msg = f"Malformed {source} range in analysis report"
+        raise TriageError(msg)
+    offset, size = value.get("file_offset"), value.get("size_bytes", value.get("size"))
+    if type(offset) is not int or type(size) is not int or offset < 0 or size <= 0:
+        msg = f"Malformed {source} range in analysis report"
+        raise TriageError(msg)
+    try:
+        address = mapped_file_offset_address(data, offset, size, executable=executable)
+    except (ValueError, TriageError) as error:
+        msg = f"Analysis report {source} range is not executable: {error}"
+        raise TriageError(msg) from error
+    reported_address = value.get("virtual_address")
+    if reported_address is not None and (
+        type(reported_address) is not int or reported_address != address
+    ):
+        msg = f"Analysis report {source} virtual address disagrees with target bytes"
+        raise TriageError(msg)
+    return offset, size, address
+
+
+def _report_range(data: Buffer, value: object, source: str) -> dict:
+    offset, size, address = _report_location(data, value, source, executable=True)
+    return {
+        "file_offset": offset,
+        "size_bytes": size,
+        "start_address": address,
+        "stop_address": address + size,
+        "evidence_sources": [source],
+    }
+
+
+def _merge_report_range(ranges: dict[tuple[int, int], dict], selected: dict) -> None:
+    key = selected["file_offset"], selected["size_bytes"]
+    current = ranges.get(key)
+    if current is None:
+        ranges[key] = selected
+        return
+    current["evidence_sources"] = sorted(
+        {*current["evidence_sources"], *selected["evidence_sources"]}
+    )
+
+
+def _graph_artifacts(data: Buffer, values: list) -> tuple[dict[str, dict], dict]:
+    artifacts = {}
+    ranges: dict[tuple[int, int], dict] = {}
+    for artifact in values:
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("identifier"), str):
+            msg = "Malformed function graph artifact"
+            raise TriageError(msg)
+        identifier = artifact["identifier"]
+        if identifier in artifacts:
+            msg = "Duplicate function graph artifact identifier"
+            raise TriageError(msg)
+        artifacts[identifier] = artifact
+        if artifact.get("kind") in REPORT_ARTIFACT_KINDS:
+            _merge_report_range(ranges, _report_range(data, artifact, "graph_exact_code"))
+        elif artifact.get("kind") == "decoder_table":
+            _report_location(data, artifact, "graph_decoder_table", executable=False)
+    return artifacts, ranges
+
+
+def _graph_referenced_functions(edges: list, table_ids: set[str]) -> dict[str, list[int]]:
+    referenced_functions: dict[str, list[int]] = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            msg = "Malformed function graph edge"
+            raise TriageError(msg)
+        if (
+            edge.get("qualified") is True
+            and edge.get("kind") in REPORT_REFERENCE_KINDS
+            and edge.get("target") in table_ids
+            and isinstance(edge.get("source"), str)
+        ):
+            instruction = edge.get("instruction_file_offset")
+            if type(instruction) is not int:
+                msg = "Malformed function graph instruction offset"
+                raise TriageError(msg)
+            referenced_functions.setdefault(edge["source"], []).append(instruction)
+    return referenced_functions
+
+
+def _graph_functions(
+    data: Buffer,
+    functions: list,
+    referenced_functions: dict[str, list[int]],
+    ranges: dict[tuple[int, int], dict],
+) -> None:
+    function_ids = set()
+    for function in functions:
+        if not isinstance(function, dict) or not isinstance(function.get("identifier"), str):
+            msg = "Malformed function graph function"
+            raise TriageError(msg)
+        identifier = function["identifier"]
+        methods = function.get("boundary_methods")
+        if (
+            identifier in function_ids
+            or not isinstance(methods, list)
+            or not all(isinstance(item, str) for item in methods)
+        ):
+            msg = "Malformed or duplicate function graph function"
+            raise TriageError(msg)
+        function_ids.add(identifier)
+        file_offset, size = function.get("file_offset"), function.get("size")
+        if identifier in referenced_functions and (
+            type(file_offset) is not int
+            or type(size) is not int
+            or not all(
+                file_offset <= instruction < file_offset + size
+                for instruction in referenced_functions[identifier]
+            )
+        ):
+            msg = "Function graph reference site is outside its source function"
+            raise TriageError(msg)
+        sources = _graph_function_sources(identifier, methods, referenced_functions)
+        for source in sources:
+            _merge_report_range(ranges, _report_range(data, function, source))
+    if set(referenced_functions) - function_ids:
+        msg = "Function graph table reference has no bounded source function"
+        raise TriageError(msg)
+
+
+def _graph_function_sources(
+    identifier: str, methods: list[str], referenced_functions: dict[str, list[int]]
+) -> list[str]:
+    sources = []
+    if REPORT_FUNCTION_METHODS.intersection(methods):
+        sources.append("graph_flirt_function")
+    if identifier in referenced_functions:
+        sources.append("graph_table_reference")
+    return sources
+
+
+def _graph_report_ranges(data: Buffer, graph: object) -> tuple[list[dict], list[str]]:
+    if not isinstance(graph, dict):
+        msg = "Malformed function graph in analysis report"
+        raise TriageError(msg)
+    for field in ("artifacts", "functions", "edges", "gaps"):
+        if not isinstance(graph.get(field), list):
+            msg = f"Malformed function graph {field} population"
+            raise TriageError(msg)
+    if graph.get("patch_status") != "unknown" or not isinstance(graph.get("limited"), bool):
+        msg = "Malformed function graph classification"
+        raise TriageError(msg)
+    artifacts, ranges = _graph_artifacts(data, graph["artifacts"])
+    table_ids = {
+        identifier
+        for identifier, artifact in artifacts.items()
+        if artifact.get("kind") == "decoder_table"
+    }
+    referenced_functions = _graph_referenced_functions(graph["edges"], table_ids)
+    _graph_functions(data, graph["functions"], referenced_functions, ranges)
+    reasons = []
+    if graph["limited"] or graph["gaps"]:
+        reasons.append("Analysis report function graph is incomplete; retained ranges are partial")
+    return list(ranges.values()), reasons
+
+
+def _finding_evidence_ranges(
+    data: Buffer, evidence: dict, ranges: dict[tuple[int, int], dict]
+) -> str | None:
+    code_matches = evidence.get("code_matches", [])
+    if not isinstance(code_matches, list):
+        msg = "Malformed exact-code match population in analysis report"
+        raise TriageError(msg)
+    for match in code_matches:
+        _merge_report_range(ranges, _report_range(data, match, "finding_exact_code"))
+    flirt = evidence.get("flirt")
+    if not isinstance(flirt, dict):
+        return None
+    matches = flirt.get("matches", [])
+    if not isinstance(matches, list):
+        msg = "Malformed FLIRT match population in analysis report"
+        raise TriageError(msg)
+    for match in matches:
+        _merge_report_range(ranges, _report_range(data, match, "finding_flirt_match"))
+    if flirt.get("status") == "limited" or flirt.get("gaps"):
+        return "Analysis report FLIRT matching is incomplete; retained ranges are partial"
+    return None
+
+
+def _finding_report_ranges(
+    data: Buffer, findings: object, digest: str
+) -> tuple[list[dict], list[str]]:
+    if not isinstance(findings, list):
+        msg = "Malformed finding population in analysis report"
+        raise TriageError(msg)
+    ranges: dict[tuple[int, int], dict] = {}
+    reasons = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            msg = "Malformed finding in analysis report"
+            raise TriageError(msg)
+        evidence = finding.get("evidence", finding)
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("sha256", finding.get("sha256")) != digest
+        ):
+            continue
+        if reason := _finding_evidence_ranges(data, evidence, ranges):
+            reasons.append(reason)
+    return list(ranges.values()), reasons
+
+
+def _read_verified_analysis_report(
+    report_path: Path,
+) -> tuple[bytes, dict, ReproducibilityEnvelope]:
+    with read_target(report_path.expanduser().absolute(), MAX_ANALYSIS_REPORT_BYTES) as report_data:
+        raw = report_data[:]
+    try:
+        stored = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as error:
+        msg = "Analysis report is not valid bounded JSON"
+        raise TriageError(msg) from error
+    if not isinstance(stored, dict):
+        msg = "Analysis report root must be an object"
+        raise TriageError(msg)
+    try:
+        report, envelope = verify_report_envelope(stored)
+    except ValueError as error:
+        msg = f"Analysis report envelope is invalid: {error}"
+        raise TriageError(msg) from error
+    if envelope.scanner.name != "brotli-checker":
+        msg = "Analysis report was not produced by brotli-checker"
+        raise TriageError(msg)
+    return raw, report, envelope
+
+
+def _matching_function_graphs(report: dict, digest: str) -> list:
+    graphs = []
+    artifacts = report.get("artifacts")
+    if not isinstance(artifacts, list):
+        msg = "Analysis report lacks an artifact registry"
+        raise TriageError(msg)
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            msg = "Malformed artifact registry entry"
+            raise TriageError(msg)
+        if artifact.get("sha256") != digest:
+            continue
+        analysis = artifact.get("analysis")
+        if isinstance(analysis, dict) and "function_graph" in analysis:
+            graphs.append(analysis["function_graph"])
+    if graphs:
+        canonical = {json.dumps(item, sort_keys=True, separators=(",", ":")) for item in graphs}
+        if len(canonical) != 1:
+            msg = "Hash-matched artifacts contain conflicting function graphs"
+            raise TriageError(msg)
+    return graphs
+
+
+def _bounded_report_ranges(
+    selected: dict[tuple[int, int], dict], reasons: list[str], max_ranges: int, max_range_bytes: int
+) -> list[dict]:
+    ordered = sorted(selected.values(), key=lambda item: (item["file_offset"], item["size_bytes"]))
+    if any(item["size_bytes"] > max_range_bytes for item in ordered):
+        reasons.append("Analysis report ranges exceeded --max-range-bytes and were omitted")
+    ordered = [item for item in ordered if item["size_bytes"] <= max_range_bytes]
+    if len(ordered) > max_ranges:
+        reasons.append("Analysis report range count exceeded --max-report-ranges")
+        ordered = ordered[:max_ranges]
+    if not ordered:
+        reasons.append("Analysis report contains no hash-bound executable triage ranges")
+    return ordered
+
+
+def analysis_report_ranges(
+    data: Buffer,
+    report_path: Path,
+    max_ranges: int,
+    max_range_bytes: int,
+) -> tuple[list[dict], list[str], dict]:
+    """Select only hash-bound executable windows from one finalized inventory report."""
+    raw, report, envelope = _read_verified_analysis_report(report_path)
+    digest = sha256_data(data)
+    graphs = _matching_function_graphs(report, digest)
+    selected: dict[tuple[int, int], dict] = {}
+    reasons = []
+    if report.get("analysis_inputs_changed") is True:
+        reasons.append(
+            "Analysis report inputs changed during its scan; retained ranges are partial"
+        )
+    if graphs:
+        graph_ranges, graph_reasons = _graph_report_ranges(data, graphs[0])
+        reasons.extend(graph_reasons)
+        for item in graph_ranges:
+            _merge_report_range(selected, item)
+    finding_ranges, finding_reasons = _finding_report_ranges(data, report.get("findings"), digest)
+    reasons.extend(finding_reasons)
+    for item in finding_ranges:
+        _merge_report_range(selected, item)
+    ordered = _bounded_report_ranges(selected, reasons, max_ranges, max_range_bytes)
+    metadata = {
+        "path": str(report_path.expanduser().absolute()),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "report_sha256": envelope.report_sha256,
+        "envelope_sha256": envelope_sha256(envelope),
+        "target_sha256": digest,
+        "selected_ranges": len(ordered),
+    }
+    return ordered, list(dict.fromkeys(reasons)), metadata
 
 
 def base_report(path: Path, args: argparse.Namespace) -> dict:
@@ -433,6 +762,7 @@ def base_report(path: Path, args: argparse.Namespace) -> dict:
             "max_range_bytes": args.max_range_bytes,
             "timeout_seconds": args.timeout_seconds,
             "max_symbols": args.max_symbols,
+            "max_report_ranges": args.max_report_ranges,
         },
         "collection": {"status": "incomplete", "incomplete": True, "reasons": []},
         "classification": {
@@ -441,7 +771,7 @@ def base_report(path: Path, args: argparse.Namespace) -> dict:
                 "Disassembly requires model comparison with reviewed source; no automatic verdict"
             ),
         },
-        "evidence": {"symbols": [], "disassembly": []},
+        "evidence": {"symbols": [], "analysis_report": None, "disassembly": []},
         "limitations": [
             "SHA-256 requires one streamed full-file pass; ELF analysis uses bounded offset reads.",
             (
@@ -483,16 +813,19 @@ def command_evidence(
 def validate_scope(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
     address_range = args.start_address is not None or args.stop_address is not None
     offset_range = args.file_offset is not None or args.length is not None
+    report_range = args.analysis_report is not None
     if (args.start_address is None) != (args.stop_address is None):
         parser.error("--start-address and --stop-address must be supplied together")
     if (args.file_offset is None) != (args.length is None):
         parser.error("--file-offset and --length must be supplied together")
-    if address_range and offset_range:
-        parser.error("address and file-offset ranges are mutually exclusive")
+    if sum((address_range, offset_range, report_range)) > 1:
+        parser.error("analysis-report, address, and file-offset scopes are mutually exclusive")
     if args.section is not None and not address_range:
         parser.error("--section requires an explicit address range")
     if args.thumb and not (address_range or offset_range):
         parser.error("--thumb requires an explicit ARM range")
+    if report_range:
+        return "analysis_report"
     return "address_range" if address_range else "file_offset_range" if offset_range else "symbols"
 
 
@@ -592,7 +925,41 @@ def collect_ranges(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 -- Bounded
     deadline: float,
 ) -> tuple[int, dict]:
     output_left = args.max_output_bytes
-    if mode != "symbols":
+    if mode == "analysis_report":
+        try:
+            ranges, reasons, metadata = analysis_report_ranges(
+                data, args.analysis_report, args.max_report_ranges, args.max_range_bytes
+            )
+        except TriageError as error:
+            report["collection"]["reasons"].append(str(error))
+            return 3, report
+        report["evidence"]["analysis_report"] = metadata
+        report["collection"]["reasons"].extend(reasons)
+        report["scope"]["selected_ranges"] = len(ranges)
+        for index, selected in enumerate(ranges):
+            if output_left <= 0 or time.monotonic() >= deadline:
+                report["collection"]["reasons"].append(
+                    "Global objdump time/output budget exhausted; report ranges omitted"
+                )
+                report["collection"]["omitted_report_ranges"] = len(ranges) - index
+                break
+            command = fragment_command(
+                report,
+                data,
+                directory,
+                objdump,
+                selected["start_address"],
+                selected["stop_address"],
+            )
+            used = command_evidence(
+                report,
+                command,
+                {"mode": "analysis_report", **selected},
+                deadline,
+                output_left,
+            )
+            output_left -= used
+    elif mode != "symbols":
         try:
             start, stop = explicit_range(data, args, mode)
         except TriageError as error:
@@ -746,6 +1113,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file-offset", type=nonnegative)
     parser.add_argument("--length", type=positive)
     parser.add_argument(
+        "--analysis-report",
+        type=Path,
+        help="finalized scanner JSON whose SHA-bound executable windows should be triaged",
+    )
+    parser.add_argument(
         "--max-file-bytes",
         type=positive,
         default=DEFAULT_MAX_FILE_BYTES,
@@ -755,6 +1127,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-range-bytes", type=positive, default=DEFAULT_MAX_RANGE_BYTES)
     parser.add_argument("--timeout-seconds", type=positive, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--max-symbols", type=positive, default=DEFAULT_MAX_SYMBOLS)
+    parser.add_argument("--max-report-ranges", type=positive, default=DEFAULT_MAX_REPORT_RANGES)
     parser.add_argument(
         "--thumb", action="store_true", help="decode an explicit ARM range as Thumb code"
     )
@@ -778,7 +1151,11 @@ def main(argv: list[str] | None = None) -> int:
             write_new_output(
                 args.output,
                 rendered,
-                [report["target"]["path"], report["tool"]["path"]],
+                [
+                    report["target"]["path"],
+                    report["tool"]["path"],
+                    str(args.analysis_report) if args.analysis_report is not None else None,
+                ],
             )
         except TriageError as error:
             parser.error(str(error))

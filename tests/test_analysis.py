@@ -8,13 +8,16 @@ from typing import Any, cast
 import brotli_analysis as analysis
 import pytest
 from brotli_analysis import MAX_ANALYSIS_GAPS, AnalysisSession, scan_with_analysis
+from brotli_attestations import CapturedDocument
 from brotli_binary_data import sha256_data
 from brotli_debug_companions import SuppliedCompanion
 from brotli_inventory import Inventory
 from brotli_package_provenance import load_vendor_snapshot
+from test_binary_layout import pe_fixture
 from test_binary_match import elf, reference, write_catalog
 from test_debug_companions import elf_note, elf_section_note, pdb, pe_rsds
 from test_flirt_integration import run_main
+from test_pdb_symbol_export import packet as pdb_symbol_packet
 
 
 def record(session, data, path, depth=0):
@@ -442,3 +445,97 @@ def test_supplied_debug_evidence_is_routed_for_both_native_layouts(kind):
     assert result["debug_companions"]["status"] == "verified"
     assert result["debug_companions"]["matches"][0]["patch_status"] == "unknown"
     assert "function_graph" not in result
+
+
+def test_hash_bound_pdb_symbol_packet_enriches_only_matching_pe_and_pdb():
+    pe = pe_fixture()
+    companion_data = pdb(bytes(range(16)), 3)
+    raw = json.dumps(pdb_symbol_packet(pe, companion_data)).encode()
+    session = AnalysisSession(
+        [Path("/supplied")],
+        xrefs=False,
+        companions=(SuppliedCompanion("fixture.pdb", companion_data),),
+        debug_symbol_exports=(CapturedDocument("symbols.json", raw),),
+    )
+    record(session, pe, "/supplied/app.exe")
+    result = session.enrich(pe, "/supplied/app.exe", {"detection_status": "not_detected"})
+    export = result["pdb_symbol_exports"][0]
+    assert export["status"] == "verified"
+    assert export["patch_status"] == "unknown"
+    assert export["companion"] == "fixture.pdb"
+    assert export["function_hints"][0] == {
+        "name": "DecodeCommands",
+        "virtual_address": 0x1000,
+        "size": 16,
+        "file_offset": 0x400,
+        "source_file": None,
+        "source_line": None,
+    }
+    assert session.finish()["gap_details_omitted"] == 0
+
+
+def test_pdb_symbol_packet_requires_one_supplied_hash_matched_companion():
+    pe = pe_fixture()
+    companion_data = pdb(bytes(range(16)), 3)
+    raw = json.dumps(pdb_symbol_packet(pe, companion_data)).encode()
+    session = AnalysisSession(
+        [Path("/supplied")],
+        xrefs=False,
+        debug_symbol_exports=(CapturedDocument("symbols.json", raw),),
+    )
+    record(session, pe, "/supplied/app.exe")
+    result = session.enrich(pe, "/supplied/app.exe", {"detection_status": "not_detected"})
+    assert "pdb_symbol_exports" not in result
+    assert any("exactly one hash-matched" in gap["reason"] for gap in session.gaps)
+
+
+def test_multiple_pdb_symbol_packets_cannot_compete_for_one_pe():
+    pe = pe_fixture()
+    companion_data = pdb(bytes(range(16)), 3)
+    raw = json.dumps(pdb_symbol_packet(pe, companion_data)).encode()
+    session = AnalysisSession(
+        [Path("/supplied")],
+        xrefs=False,
+        companions=(SuppliedCompanion("fixture.pdb", companion_data),),
+        debug_symbol_exports=(
+            CapturedDocument("first.json", raw),
+            CapturedDocument("second.json", raw),
+        ),
+    )
+    record(session, pe, "/supplied/app.exe")
+    result = session.enrich(pe, "/supplied/app.exe", {"detection_status": "not_detected"})
+    assert "pdb_symbol_exports" not in result
+    assert any("Multiple debug-symbol packets" in gap["reason"] for gap in session.gaps)
+
+
+def test_cli_captures_and_identity_binds_explicit_pdb_symbol_packet(tmp_path):
+    pe = pe_fixture()
+    companion_data = pdb(bytes(range(16)), 3)
+    target, companion, symbols = (
+        tmp_path / "app.exe",
+        tmp_path / "fixture.pdb",
+        tmp_path / "symbols.json",
+    )
+    target.write_bytes(pe)
+    companion.write_bytes(companion_data)
+    symbols.write_text(json.dumps(pdb_symbol_packet(pe, companion_data)))
+    references = write_catalog(tmp_path, [reference(salt=b"unused")])
+    _, output, error = run_main(
+        target,
+        "--debug-file",
+        companion,
+        "--debug-symbols",
+        symbols,
+        "--no-flirt",
+        "--no-xrefs",
+        "--code-references",
+        references,
+        "--json",
+    )
+    assert error == ""
+    report = json.loads(output)
+    export = report["artifacts"][0]["analysis"]["pdb_symbol_exports"][0]
+    assert export["status"] == "verified"
+    identities = report["evidence_envelope"]["feeds"]
+    assert any(item["category"] == "debug-symbol-export" for item in identities)
+    assert report["analysis_configuration"]["debug_symbols"] == [str(symbols)]

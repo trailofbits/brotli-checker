@@ -20,11 +20,18 @@ Unsupported tokens and escaping paths remain unresolved.
 
 Recognized ELF code/data seeds, symbol bounds, unwind starts, relocations and
 bounded instruction decoding feed `analysis.function_graph` on each artifact.
-AArch64 has a built-in decoder for supported reference/branch forms; x86-64 uses
-pinned Capstone. Direct edges are local evidence, not reachability or fix proofs.
+AArch64 and RISC-V have built-in decoders for bounded reference/branch forms;
+x86-64 uses pinned Capstone. RISC-V supports base `AUIPC`/`LUI` address pairs,
+`JAL`/bounded `JALR`, and compressed direct jumps only when `EF_RISCV_RVC` is
+present. Direct edges are local evidence, not reachability or fix proofs.
 Unknown indirect calls, unsupported relocations/ISAs and exhausted budgets are
 gaps. `--no-xrefs` explicitly skips decoding and is recorded in configuration.
 Use graph function windows and FLIRT windows for bounded triage/model inspection.
+Pass finalized inventory JSON to `brotli_binary_triage.py --analysis-report` to
+select only target-SHA-bound graph/FLIRT/exact-code windows. The helper verifies
+the report envelope, revalidates executable mappings and graph reference sites,
+and preserves `patch_status: unknown`; names and source-profile states never
+select bytes or become a verdict.
 
 Repeat `--debug-file /trusted/companion` to supply debug artifacts. ELF build IDs
 or debuglink CRC, Mach-O UUID, and PE/PDB GUID-age must agree before enrichment.
@@ -32,6 +39,15 @@ Verified ELF DWARF lines use pinned pyelftools; embedded source paths are not
 opened. Duplicate/mismatched identities and unavailable symbol streams remain
 unresolved. PDB identity and PE exception bounds do not imply full PDB symbol
 support. Names or line mappings alone never establish patched code.
+
+For a supplied PE/PDB pair, an analyst may run the explicit
+`scripts/export_pdb_symbols.py` adapter with an absolute trusted
+`llvm-pdbutil` path. The adapter gives the tool a private streamed PDB snapshot
+and emits a bounded packet containing PE/PDB hashes, GUID/age, tool hash/version,
+and procedure records. Supply that packet with `--debug-symbols`. The scanner
+accepts names/bounds only after rechecking all identities and unique executable
+PE ownership. It never invokes `llvm-pdbutil` automatically, and verified names
+remain triage evidence rather than patch proof.
 
 ## SBOM and package provenance
 
@@ -90,6 +106,13 @@ patch-code corpus. Those binaries remain patch-unresolved without stronger
 independent evidence. The maintained native fixture verifier downloads only
 when explicitly requested; normal scans never download samples.
 
+Explicitly format-bound FLIRT catalogs may also recognize PE and Mach-O functions
+inside validated executable ranges; universal slices remain separate. Native
+groups must name their format and ABI, so ELF-generated patterns never imply
+native coverage. Even a complete patch-role population retains
+`target_patch_status: unknown` unless a reviewed exact post-link artifact or a
+single-copy association independently establishes patch state.
+
 ## Reproducible reports and CI
 
 Canonical JSON includes `evidence_envelope`: scanner source digest, effective
@@ -110,3 +133,10 @@ and returns 1 when that policy fails, 0 otherwise. The default `none` preserves
 the original CLI exit semantics. `new_affected` requires a complete comparable
 baseline; failure to establish comparability fails the policy. A policy pass is
 not an application-safety verdict. Output and baseline handling never upload data.
+
+## Authenticated local attestations
+
+`--attestation bundle.json --attestation-policy trust.json` verifies the bounded
+DSSE/Ed25519/in-toto profile using explicitly trusted local keys and binds subjects
+only by exact scanned SHA-256. Read [attestations](attestations.md) for the policy
+schema and trust limits. A verified signature never promotes patch status.

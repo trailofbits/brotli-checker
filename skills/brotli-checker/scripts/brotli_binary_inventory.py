@@ -282,7 +282,13 @@ def main(argv: list[str] | None = None) -> int:
         root.expanduser().absolute() for root in [*args.roots, *args.deployment_root, *args.sbom]
     ]
     try:
-        analysis_report = scan_with_analysis(inventory, roots, args)
+        analysis_report = scan_with_analysis(
+            inventory,
+            roots,
+            args,
+            attestation_inputs=evidence.attestation_inputs,
+            debug_symbol_inputs=evidence.debug_symbol_inputs,
+        )
         identities = evidence.check_inputs(inventory)
     except (OSError, ValueError) as error:
         parser.error(str(error))

@@ -60,8 +60,15 @@ def pattern(code, identifier, wildcards=()):
     return f"{rendered[:64]} 00 0000 {len(code):04X} :0000 {identifier} {rendered[64:]}"
 
 
-def group(functions, *, identifier="profile", machine=183, state="fixed"):
-    return {
+def group(
+    functions,
+    *,
+    identifier="profile",
+    machine=183,
+    state="fixed",
+    native=None,
+):
+    result = {
         "id": identifier,
         "machine": machine,
         "elf_class": 64,
@@ -76,6 +83,10 @@ def group(functions, *, identifier="profile", machine=183, state="fixed"):
         "build_note": "reviewed pristine fixture headers",
         "functions": functions,
     }
+    if native is not None:
+        format_name, abi = native
+        result.update(format=format_name, abi=abi)
+    return result
 
 
 def write_bundle(tmp_path, lines, groups):
@@ -586,7 +597,7 @@ def test_backend_matcher_panic_becomes_an_explicit_gap(tmp_path):
         [pattern(function, "fixture")],
         [group({"Function": ["fixture"]})],
     )
-    catalog.matchers[(183, 64, "little"), "fixture"] = PanicMatcher()
+    catalog.matchers[("elf", 183, 64, "little", "sysv"), "fixture"] = PanicMatcher()
 
     assessment = subject.match_flirt(elf(function), catalog)
 
