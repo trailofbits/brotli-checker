@@ -229,7 +229,7 @@ def sha256_buffer(data: Buffer) -> str:
     return digest.hexdigest()
 
 
-def pe_sections(data: Buffer) -> list[tuple[int, int, int, int]]:
+def pe_sections(data: Buffer) -> list[tuple[int, int, int, int, int, str]]:
     if len(data) < 0x40 or data[:2] != b"MZ":
         raise ValueError("Invalid PE input")
     pe = int.from_bytes(data[0x3C:0x40], "little")
@@ -243,19 +243,19 @@ def pe_sections(data: Buffer) -> list[tuple[int, int, int, int]]:
     result = []
     for index in range(count):
         offset = table + index * 40
+        name = data[offset : offset + 8].split(b"\0", 1)[0].decode("ascii", "replace")
         virtual_size = int.from_bytes(data[offset + 8 : offset + 12], "little")
         rva = int.from_bytes(data[offset + 12 : offset + 16], "little")
         raw_size = int.from_bytes(data[offset + 16 : offset + 20], "little")
         raw_offset = int.from_bytes(data[offset + 20 : offset + 24], "little")
         flags = int.from_bytes(data[offset + 36 : offset + 40], "little")
-        size = min(virtual_size, raw_size)
         if raw_offset + raw_size > len(data):
             raise ValueError("PE section exceeds supplied bytes")
-        result.append((rva, raw_offset, size, flags))
+        result.append((rva, raw_offset, virtual_size, raw_size, flags, name))
     return result
 
 
-def parse_symbols(text: str, sections: list[tuple[int, int, int, int]]) -> list[dict]:
+def parse_symbols(text: str, sections: list[tuple[int, int, int, int, int, str]]) -> list[dict]:
     functions = []
     name = None
     for line in text.splitlines():
@@ -266,10 +266,23 @@ def parse_symbols(text: str, sections: list[tuple[int, int, int, int]]) -> list[
             continue
         section, offset, size = int(match[1], 16), int(match[2], 16), int(match[3], 10)
         if not 0 < section <= len(sections) or size <= 0:
-            raise ValueError("llvm-pdbutil function has invalid section/size")
-        rva, _, section_size, flags = sections[section - 1]
-        if not flags & IMAGE_SCN_MEM_EXECUTE or offset + size > section_size:
-            raise ValueError("llvm-pdbutil function is outside executable PE bytes")
+            message = (
+                "llvm-pdbutil function has invalid section/size: "
+                f"name={name!r}, section=0x{section:x}, offset=0x{offset:x}, "
+                f"code_size={size}, section_count={len(sections)}"
+            )
+            raise ValueError(message)
+        rva, _, virtual_size, raw_size, flags, section_name = sections[section - 1]
+        file_backed_size = min(virtual_size, raw_size)
+        if not flags & IMAGE_SCN_MEM_EXECUTE or offset + size > file_backed_size:
+            message = (
+                "llvm-pdbutil function is outside executable PE bytes: "
+                f"name={name!r}, section=0x{section:x} ({section_name!r}), "
+                f"offset=0x{offset:x}, code_size={size}, rva=0x{rva:x}, "
+                f"virtual_size=0x{virtual_size:x}, raw_size=0x{raw_size:x}, "
+                f"flags=0x{flags:08x}"
+            )
+            raise ValueError(message)
         functions.append({"name": name, "rva": rva + offset, "size": size})
         if len(functions) > MAX_FUNCTIONS:
             raise ValueError("llvm-pdbutil function limit reached")
@@ -279,11 +292,27 @@ def parse_symbols(text: str, sections: list[tuple[int, int, int, int]]) -> list[
     return functions
 
 
-def tool_output(command: list[str], timeout_seconds: int, max_bytes: int) -> str:
+def tool_output(
+    command: list[str],
+    timeout_seconds: int,
+    max_bytes: int,
+    diagnostic_output: Path | None = None,
+) -> str:
     result = run_bounded(command, timeout_seconds, max_bytes)
+    if diagnostic_output is not None:
+        write_text_new(diagnostic_output, result["output"])
     if result["limited"] or result["returncode"] != 0:
         raise ValueError(result["reason"] or f"llvm-pdbutil exited {result['returncode']}")
     return result["output"]
+
+
+def write_text_new(path: Path, text: str) -> None:
+    descriptor = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        for offset in range(0, len(text), 1024 * 1024):
+            stream.write(text[offset : offset + 1024 * 1024])
 
 
 def write_new(path: Path, packet: dict) -> None:
@@ -301,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("pdb", type=Path)
     parser.add_argument("--llvm-pdbutil", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--diagnostic-output", type=Path)
     parser.add_argument("--timeout-seconds", type=positive, default=30)
     parser.add_argument("--max-output-bytes", type=positive, default=MAX_TOOL_OUTPUT_BYTES)
     args = parser.parse_args(argv)
@@ -333,6 +363,9 @@ def main(argv: list[str] | None = None) -> int:
                 [str(tool), "dump", "--symbols", str(pdb_snapshot)],
                 args.timeout_seconds,
                 args.max_output_bytes,
+                None
+                if args.diagnostic_output is None
+                else args.diagnostic_output.expanduser().absolute(),
             )
             pe_sha256 = sha256_buffer(pe_buffer)
             pdb_sha256 = sha256_buffer(pdb_buffer)

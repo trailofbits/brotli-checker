@@ -89,9 +89,12 @@ jobs:
                   --source-tree "native-candidates/brotli-$($item.Version)" `
                   --compiler-version-file $versionFile --flags "$toolchain $profile x86_64 /OPT:REF /OPT:ICF" `
                   --object $object.FullName --output $output
+                Copy-Item $binary.FullName "native-candidates/$($item.Version)-$toolchain-$profile.dll"
+                Copy-Item $object.FullName "native-candidates/$($item.Version)-$toolchain-$profile.obj"
                 if ($profile -eq 'normal') {
                   $pdb = Get-ChildItem $build -Recurse -Filter brotlidec.pdb | Select-Object -First 1
                   if (-not $pdb) { throw "Native build PDB is missing" }
+                  Copy-Item $pdb.FullName "native-candidates/$($item.Version)-$toolchain.pdb"
                   $compiler = (Get-Content -Raw $versionFile).Trim()
                   uv run --no-project --python 3.12 python scripts/build_native_flirt_references.py `
                     --object $object.FullName --source-tree "native-candidates/brotli-$($item.Version)" `
@@ -102,11 +105,9 @@ jobs:
                   uv run --no-project --python 3.12 python scripts/export_pdb_symbols.py `
                     $binary.FullName $pdb.FullName `
                     --llvm-pdbutil "$env:ProgramFiles/LLVM/bin/llvm-pdbutil.exe" `
+                    --diagnostic-output "native-candidates/$($item.Version)-$toolchain-pdb-symbols.txt" `
                     --output "native-candidates/$($item.Version)-$toolchain-pdb-symbols.json"
-                  Copy-Item $pdb.FullName "native-candidates/$($item.Version)-$toolchain.pdb"
                 }
-                Copy-Item $binary.FullName "native-candidates/$($item.Version)-$toolchain-$profile.dll"
-                Copy-Item $object.FullName "native-candidates/$($item.Version)-$toolchain-$profile.obj"
               }
             }
           }
@@ -119,7 +120,8 @@ jobs:
               --fixed-bundle "native-candidates/1.2.1-$toolchain-flirt.json" `
               --output "native-candidates/$toolchain-pair-verification.json"
           }
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-reference-candidates-windows
           path: |
@@ -128,10 +130,12 @@ jobs:
             native-candidates/*.pdb
             native-candidates/*.json
             native-candidates/*.pat
+            native-candidates/*-pdb-symbols.txt
           if-no-files-found: error
           retention-days: 14
 
   macos:
+    if: success() || failure()
     name: Apple clang universal candidates
     needs: windows
     runs-on: macos-15
@@ -211,7 +215,8 @@ jobs:
             --fixed-binary native-candidates/1.2.1-apple-normal.dylib \
             --fixed-bundle native-candidates/1.2.1-apple-flirt.json \
             --output native-candidates/apple-pair-verification.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-reference-candidates-macos
           path: |

@@ -116,11 +116,14 @@ def test_llvm_dump_parser_uses_hex_section_offsets_and_executable_sections():
         {"name": "DecodeOne", "rva": 0x1010, "size": 16},
         {"name": "DecodeTwo", "rva": 0x1020, "size": 8},
     ]
-    with pytest.raises(ValueError, match="executable"):
+    with pytest.raises(ValueError, match="executable") as error:
         exporter.parse_symbols(
             " | 10 | S_GPROC32 [size = 60] `Data`\n | addr = 0002:0000, code size = 1",
             sections,
         )
+    assert "section=0x2 ('.rdata')" in str(error.value)
+    assert "offset=0x0, code_size=1" in str(error.value)
+    assert "virtual_size=0x600, raw_size=0x600" in str(error.value)
 
 
 def test_explicit_generator_records_exact_commands_and_self_verifies(tmp_path, monkeypatch):
@@ -130,7 +133,7 @@ def test_explicit_generator_records_exact_commands_and_self_verifies(tmp_path, m
     pdb_path.write_bytes(pdb(bytes(range(16)), 3))
     commands = []
 
-    def fake_output(command, _timeout, _limit):
+    def fake_output(command, _timeout, _limit, _diagnostic=None):
         commands.append(command)
         if "--version" in command:
             return "LLVM PDB Utilities version 21.0.0\n"
@@ -176,6 +179,46 @@ def test_explicit_generator_records_exact_commands_and_self_verifies(tmp_path, m
             ]
         )
     assert error.value.code == 2
+
+
+def test_generator_retains_bounded_dump_before_parse_failure(tmp_path, monkeypatch):
+    pe_path, pdb_path = tmp_path / "app.exe", tmp_path / "fixture.pdb"
+    output = tmp_path / "symbols.json"
+    diagnostic = tmp_path / "symbols.txt"
+    pe_path.write_bytes(pe_fixture())
+    pdb_path.write_bytes(pdb(bytes(range(16)), 3))
+    dump = (
+        " | 10 | S_GPROC32 [size = 60] `UnexpectedDataProc`\n"
+        " | parent = 0, end = 70, addr = 0002:0010, code size = 16\n"
+    )
+
+    def fake_run(command, _timeout, _limit):
+        text = "LLVM PDB Utilities version 21.0.0\n" if "--version" in command else dump
+        return {
+            "returncode": 0,
+            "output": text,
+            "limited": False,
+            "reason": None,
+            "elapsed_seconds": 0.01,
+        }
+
+    monkeypatch.setattr(exporter, "run_bounded", fake_run)
+    with pytest.raises(SystemExit) as error:
+        exporter.main(
+            [
+                str(pe_path),
+                str(pdb_path),
+                "--llvm-pdbutil",
+                sys.executable,
+                "--output",
+                str(output),
+                "--diagnostic-output",
+                str(diagnostic),
+            ]
+        )
+    assert error.value.code == 2
+    assert diagnostic.read_text() == dump
+    assert not output.exists()
 
 
 def test_stable_mapped_input_uses_open_handle_identity_and_detects_mutation(tmp_path, monkeypatch):
