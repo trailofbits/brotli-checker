@@ -1,6 +1,8 @@
 name: WebAssembly reference candidates
 
 on:
+  push:
+    branches: [codex/native-postlink-qualification]
   pull_request:
     paths:
       - .github/workflows/wasm-reference-candidates.yml
@@ -75,6 +77,14 @@ jobs:
           mkdir -p wasm-candidates/builders
           tar -xzf wasm-candidates/builder-0.1.0.tgz -C wasm-candidates/builders
           tar -xzf wasm-candidates/builder-0.1.1.tgz -C wasm-candidates/builders
+          for dockerfile in wasm-candidates/builders/wasm-zoo-*/builders/brotli/docker/Dockerfile; do
+            grep -Fx 'FROM emscripten/emsdk:${EMSDK_VERSION} AS toolchain' "$dockerfile"
+            sed -i \
+              's#FROM emscripten/emsdk:${EMSDK_VERSION} AS toolchain#FROM emscripten/emsdk:6.0.8@sha256:f174124ff798a3ead1abef247d9a849c270b642d552fea500a42565ff210f765 AS toolchain#' \
+              "$dockerfile"
+            grep -F '@sha256:f174124ff798a3ead1abef247d9a849c270b642d552fea500a42565ff210f765' \
+              "$dockerfile"
+          done
           docker pull emscripten/emsdk:6.0.8
           docker image inspect --format '{{join .RepoDigests "\n"}}' emscripten/emsdk:6.0.8 | \
             grep -F '@sha256:f174124ff798a3ead1abef247d9a849c270b642d552fea500a42565ff210f765'
