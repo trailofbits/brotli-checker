@@ -1,0 +1,145 @@
+name: WebAssembly reference candidates
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/wasm-reference-candidates.yml
+      - scripts/import_wasm_profiles.py
+      - skills/brotli-checker/scripts/brotli_binary_layout.py
+      - skills/brotli-checker/scripts/brotli_wasm_profiles.py
+      - skills/brotli-checker/references/wasm-function-profiles.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+      - name: Replay paired reviewed npm artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wasm-candidates/affected wasm-candidates/fixed
+          curl --fail --location --retry 3 --output wasm-candidates/brotli-0.1.0.tgz \
+            https://registry.npmjs.org/@wasm-zoo/brotli/-/brotli-0.1.0.tgz
+          curl --fail --location --retry 3 --output wasm-candidates/brotli-0.1.1.tgz \
+            https://registry.npmjs.org/@wasm-zoo/brotli/-/brotli-0.1.1.tgz
+          curl --fail --location --retry 3 --output wasm-candidates/builder-0.1.0.tgz \
+            https://codeload.github.com/ttomohisa/wasm-zoo/tar.gz/b4ab1c1671bf49b37dd1757bf832b9da0f91085b
+          curl --fail --location --retry 3 --output wasm-candidates/builder-0.1.1.tgz \
+            https://codeload.github.com/ttomohisa/wasm-zoo/tar.gz/d3e9fe2251fea08b2765312efcfdc1191c91cddf
+          printf '%s  %s\n' \
+            ea496d45c5120e77ae762e2a8d9313c69c5ae0500a84fd43e3b3248f8448ae7410accb3d9057c67417b0ff8951d116f8d72b9603858c5b23d56d5f315ae4ab56 \
+            wasm-candidates/brotli-0.1.0.tgz > wasm-candidates/SHA512SUMS
+          printf '%s  %s\n' \
+            84725018504926084ad1b810e003cac6f2a536c07a34b9cd8ec6dffa5ff2fab7ddf2b97b4e32f1aa12ea0ef75fe5ad0fd09fa0de80d515d8afcb71fd1d816315 \
+            wasm-candidates/brotli-0.1.1.tgz >> wasm-candidates/SHA512SUMS
+          sha512sum --check wasm-candidates/SHA512SUMS
+          printf '%s  %s\n' \
+            a62ed903fe3fed6f79d9b65f5c597bd869047ff83e38c11df38803fbece7a908 \
+            wasm-candidates/builder-0.1.0.tgz > wasm-candidates/BUILDER-SHA256SUMS
+          printf '%s  %s\n' \
+            74a5a30972af83a0190e6ddb6dbdb3307b73cbc6209888155f8d4abc9bf5879b \
+            wasm-candidates/builder-0.1.1.tgz >> wasm-candidates/BUILDER-SHA256SUMS
+          sha256sum --check wasm-candidates/BUILDER-SHA256SUMS
+          tar -xzf wasm-candidates/brotli-0.1.0.tgz -C wasm-candidates/affected \
+            package/brotli-core.wasm package/manifest.json package/provenance.json
+          tar -xzf wasm-candidates/brotli-0.1.1.tgz -C wasm-candidates/fixed \
+            package/brotli-core.wasm package/manifest.json package/provenance.json
+          printf '%s  %s\n' \
+            2e9217b8573da4ab27e0725fcd8d48a45cfd8805ba94d0eda2137c4958d19367 \
+            wasm-candidates/affected/package/manifest.json | sha256sum --check
+          printf '%s  %s\n' \
+            9ee0d7ec978075c3a80da5bc0854a6e338cba8c12269faf11b3ff40b38e6b719 \
+            wasm-candidates/affected/package/provenance.json | sha256sum --check
+          printf '%s  %s\n' \
+            90eecf7f2150af49c645321d2be2d13d703bd2baf8f296d5bd664b1782003bcc \
+            wasm-candidates/fixed/package/manifest.json | sha256sum --check
+          printf '%s  %s\n' \
+            3c327239f1d018afaa252347229c147cf3cdbf8931a582b1c3356733a997f459 \
+            wasm-candidates/fixed/package/provenance.json | sha256sum --check
+          mkdir -p wasm-candidates/builders
+          tar -xzf wasm-candidates/builder-0.1.0.tgz -C wasm-candidates/builders
+          tar -xzf wasm-candidates/builder-0.1.1.tgz -C wasm-candidates/builders
+          docker pull emscripten/emsdk:6.0.8
+          docker image inspect --format '{{join .RepoDigests "\n"}}' emscripten/emsdk:6.0.8 | \
+            grep -F '@sha256:f174124ff798a3ead1abef247d9a849c270b642d552fea500a42565ff210f765'
+          build_wasm() {
+            local context="$1" builder_version="$2" source_version="$3"
+            local source_ref="$4" source_commit="$5" output="$6"
+            docker buildx build --file "$context/docker/Dockerfile" --target export \
+              --build-arg "BUILDER_VERSION=$builder_version" \
+              --build-arg EMSDK_VERSION=6.0.8 \
+              --build-arg EMSCRIPTEN_COMMIT=aeb67926e7de656da38bc807d83050af93578758 \
+              --build-arg BROTLI_REPOSITORY=https://github.com/google/brotli.git \
+              --build-arg "BROTLI_VERSION=$source_version" \
+              --build-arg "BROTLI_REF=$source_ref" \
+              --build-arg "BROTLI_COMMIT=$source_commit" \
+              --build-arg PROFILE=browser-full \
+              --output "type=local,dest=$output" "$context"
+          }
+          build_wasm \
+            wasm-candidates/builders/wasm-zoo-b4ab1c1671bf49b37dd1757bf832b9da0f91085b/builders/brotli \
+            0.1.0 1.2.0 v1.2.0 028fb5a23661f123017c060daa546b55cf4bde29 \
+            wasm-candidates/rebuilt-affected
+          build_wasm \
+            wasm-candidates/builders/wasm-zoo-d3e9fe2251fea08b2765312efcfdc1191c91cddf/builders/brotli \
+            0.1.1 1.2.1 v1.2.1 db24a98aed38a16de78cc05ca15cdd8dc2a0d92d \
+            wasm-candidates/rebuilt-fixed
+          cmp wasm-candidates/affected/package/brotli-core.wasm \
+            wasm-candidates/rebuilt-affected/brotli-core.wasm
+          cmp wasm-candidates/fixed/package/brotli-core.wasm \
+            wasm-candidates/rebuilt-fixed/brotli-core.wasm
+          uv run --no-project --python 3.12 python scripts/import_wasm_profiles.py \
+            --affected-wasm wasm-candidates/affected/package/brotli-core.wasm \
+            --fixed-wasm wasm-candidates/fixed/package/brotli-core.wasm \
+            --affected-package-version 0.1.0 --fixed-package-version 0.1.1 \
+            --affected-source-version 1.2.0 --fixed-source-version 1.2.1 \
+            --affected-tarball-url https://registry.npmjs.org/@wasm-zoo/brotli/-/brotli-0.1.0.tgz \
+            --fixed-tarball-url https://registry.npmjs.org/@wasm-zoo/brotli/-/brotli-0.1.1.tgz \
+            --affected-tarball-sha512 ea496d45c5120e77ae762e2a8d9313c69c5ae0500a84fd43e3b3248f8448ae7410accb3d9057c67417b0ff8951d116f8d72b9603858c5b23d56d5f315ae4ab56 \
+            --fixed-tarball-sha512 84725018504926084ad1b810e003cac6f2a536c07a34b9cd8ec6dffa5ff2fab7ddf2b97b4e32f1aa12ea0ef75fe5ad0fd09fa0de80d515d8afcb71fd1d816315 \
+            --package @wasm-zoo/brotli \
+            --implementation-family google-brotli-c-emscripten \
+            --affected-source-commit 028fb5a23661f123017c060daa546b55cf4bde29 \
+            --fixed-source-commit db24a98aed38a16de78cc05ca15cdd8dc2a0d92d \
+            --affected-builder-commit b4ab1c1671bf49b37dd1757bf832b9da0f91085b \
+            --fixed-builder-commit d3e9fe2251fea08b2765312efcfdc1191c91cddf \
+            --affected-manifest-sha256 2e9217b8573da4ab27e0725fcd8d48a45cfd8805ba94d0eda2137c4958d19367 \
+            --fixed-manifest-sha256 90eecf7f2150af49c645321d2be2d13d703bd2baf8f296d5bd664b1782003bcc \
+            --affected-provenance-sha256 9ee0d7ec978075c3a80da5bc0854a6e338cba8c12269faf11b3ff40b38e6b719 \
+            --fixed-provenance-sha256 3c327239f1d018afaa252347229c147cf3cdbf8931a582b1c3356733a997f459 \
+            --affected-builder-archive-sha256 a62ed903fe3fed6f79d9b65f5c597bd869047ff83e38c11df38803fbece7a908 \
+            --fixed-builder-archive-sha256 74a5a30972af83a0190e6ddb6dbdb3307b73cbc6209888155f8d4abc9bf5879b \
+            --affected-rebuilt-wasm wasm-candidates/rebuilt-affected/brotli-core.wasm \
+            --fixed-rebuilt-wasm wasm-candidates/rebuilt-fixed/brotli-core.wasm \
+            --output wasm-candidates/wasm-function-profiles.json
+          if grep -q '"qualification_status": "source_rebuild_verified"' \
+            skills/brotli-checker/references/wasm-function-profiles.json; then
+            cmp skills/brotli-checker/references/wasm-function-profiles.json \
+              wasm-candidates/wasm-function-profiles.json
+          fi
+      - if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wasm-reference-candidates
+          path: |
+            wasm-candidates/SHA512SUMS
+            wasm-candidates/BUILDER-SHA256SUMS
+            wasm-candidates/wasm-function-profiles.json
+          if-no-files-found: error
+          retention-days: 14
