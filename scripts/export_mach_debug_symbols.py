@@ -63,12 +63,17 @@ def sha256_range(data: Buffer, offset: int, size: int) -> str:
     return digest.hexdigest()
 
 
-def run_tool(command: list[str], timeout: float, maximum: int) -> bytes:
+def run_tool(command: list[str], timeout: float, maximum: int) -> str:
     result = run_bounded(command, timeout, maximum)
     if result["reason"] is not None or result["returncode"] != 0:
         reason = result["reason"] or f"llvm-dwarfdump exited {result['returncode']}"
         raise ValueError(reason)
-    return result["output"]
+    output = result["output"]
+    if not isinstance(output, str):
+        raise ValueError(  # noqa: TRY004 -- One malformed bounded-runner result type.
+            "llvm-dwarfdump returned a non-text result"
+        )
+    return output
 
 
 def _attribute_value(value: str, pattern: re.Pattern[str]) -> str | None:
@@ -234,7 +239,7 @@ def main() -> int:
                 copied_dsym = Path(directory) / "companion.dwarf"
                 copy_buffer(dsym, copied_dsym)
                 version_raw = run_tool([str(tool), "--version"], args.timeout, MAX_VERSION_BYTES)
-                version = version_raw.decode("utf-8", "strict").splitlines()[0].strip()
+                version = version_raw.splitlines()[0].strip()
                 if not version:
                     raise ValueError("llvm-dwarfdump returned no version")
                 raw = run_tool(
@@ -248,7 +253,7 @@ def main() -> int:
                     args.timeout,
                     MAX_TOOL_OUTPUT_BYTES,
                 )
-                diagnostic_text = raw.decode("utf-8", "strict")
+                diagnostic_text = raw
                 functions = parse_subprograms(diagnostic_text)
                 if not functions:
                     raise ValueError("llvm-dwarfdump returned no complete subprogram records")
