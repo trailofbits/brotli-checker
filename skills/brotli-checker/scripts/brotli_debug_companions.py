@@ -922,6 +922,7 @@ def mach_companion_slices(data: Buffer) -> tuple[dict[str, Any], ...]:
     table_end = 8 + count * entry_size
     result = []
     ranges = []
+    architectures = set()
     for index in range(count):
         cursor = 8 + index * entry_size
         cpu = int.from_bytes(data[cursor : cursor + 4], byteorder)
@@ -933,6 +934,8 @@ def mach_companion_slices(data: Buffer) -> tuple[dict[str, Any], ...]:
             offset = int.from_bytes(data[cursor + 8 : cursor + 12], byteorder)
             size = int.from_bytes(data[cursor + 12 : cursor + 16], byteorder)
         checked_range(data, offset, size)
+        if (cpu, subtype) in architectures:
+            raise ValueError("Duplicate Mach debug companion architecture")
         if (
             offset < table_end
             or not size
@@ -942,6 +945,7 @@ def mach_companion_slices(data: Buffer) -> tuple[dict[str, Any], ...]:
             )
         ):
             raise ValueError("Invalid or overlapping Mach debug companion slices")
+        architectures.add((cpu, subtype))
         ranges.append((offset, offset + size))
         result.append(_mach_companion_slice(data, offset, size, cpu, subtype))
     return tuple(result)
