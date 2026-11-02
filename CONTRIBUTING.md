@@ -68,6 +68,13 @@ succeeds. The aggregate score threshold and complete-population validation do no
 change. Static typing installs all analysis/assurance extras so developer-only
 oracle imports are checked in an explicitly complete environment.
 
+Each pytest invocation owns a fresh temporary root through `conftest.py` and
+releases it with the configuration's cleanup stack. Mutation subprocesses do not
+share pytest's numbered-directory retention allocator. No harness CLI flags or
+environment settings are forwarded to application subprocesses. Explicit
+`--basetemp` and `PYTEST_DEBUG_TEMPROOT` requests are honored; the former remains
+caller-owned for retention. Warnings and mutation errors remain failures.
+
 ### Parser fuzzing
 
 The development fuzz entry points import parser functions directly; they never
