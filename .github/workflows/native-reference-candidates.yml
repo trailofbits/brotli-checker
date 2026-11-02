@@ -215,39 +215,42 @@ jobs:
               else
                 mkdir -p "$build"
                 thin_binaries=()
-                lto_objects=()
+                lto_object_dirs=()
                 dsym_binaries=()
                 for arch in x86_64 arm64; do
                   arch_build="$build-$arch"
-                  lto_object="$PWD/native-candidates/$version-apple-lto-$arch-link.o"
+                  lto_object_dir="$PWD/native-candidates/$version-apple-lto-$arch-objects"
+                  mkdir "$lto_object_dir"
                   args=(-S "native-candidates/brotli-$version" -B "$arch_build" -G Ninja
                     -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
                     "-DCMAKE_OSX_ARCHITECTURES=$arch"
                     '-DCMAKE_C_FLAGS_RELEASE=-O2 -g -ffunction-sections -DNDEBUG'
-                    "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-no_fixup_chains,-dead_strip,-object_path_lto,$lto_object"
+                    "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-no_fixup_chains,-dead_strip,-object_path_lto,$lto_object_dir"
                     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)
                   cmake "${args[@]}"
                   cmake --build "$arch_build" --target brotlidec --parallel 2
                   link_commands="native-candidates/$version-apple-lto-$arch-link-commands.txt"
                   ninja -C "$arch_build" -t commands brotlidec > "$link_commands"
                   grep -F -- '-object_path_lto' "$link_commands"
-                  find "$(dirname "$lto_object")" -maxdepth 1 \
-                    -name "$(basename "$lto_object")*" -print
+                  find "$lto_object_dir" -maxdepth 1 -type f -name '*.o' -print
+                  lto_object_count="$(find "$lto_object_dir" -maxdepth 1 -type f -name '*.o' | wc -l | tr -d ' ')"
+                  test "$lto_object_count" -gt 0
                   thin_binary="$(find "$arch_build" -name 'libbrotlidec*.dylib' -type f | head -1)"
                   test -n "$thin_binary"
-                  test -f "$lto_object"
                   thin_dsym_bundle="native-candidates/$version-apple-lto-$arch.dSYM"
                   xcrun dsymutil "$thin_binary" -o "$thin_dsym_bundle"
                   thin_dsym="$(find "$thin_dsym_bundle/Contents/Resources/DWARF" -type f | head -1)"
                   test -n "$thin_dsym"
                   thin_binaries+=("$thin_binary")
-                  lto_objects+=("$lto_object")
+                  lto_object_dirs+=("$lto_object_dir")
                   dsym_binaries+=("$thin_dsym")
                 done
                 binary="$build/libbrotlidec.$version.dylib"
                 xcrun lipo -create "${thin_binaries[@]}" -output "$binary"
-                cmake_object="native-candidates/$version-apple-lto.o"
-                xcrun lipo -create "${lto_objects[@]}" -output "$cmake_object"
+                cmake_object="native-candidates/$version-apple-lto-objects.tar"
+                tar -cf "$cmake_object" -C native-candidates \
+                  "$(basename "${lto_object_dirs[0]}")" \
+                  "$(basename "${lto_object_dirs[1]}")"
                 dsym_copy="native-candidates/$version-apple-lto.dwarf"
                 xcrun lipo -create "${dsym_binaries[@]}" -output "$dsym_copy"
               fi
@@ -255,6 +258,10 @@ jobs:
               codesign --sign - --force "$binary"
               version_file="$build/compiler.txt"
               xcrun clang --version > "$version_file"
+              profile_label="$profile"
+              if [[ "$profile" == lto ]]; then
+                profile_label=thinlto
+              fi
               record_args=(--output "native-candidates/$version-apple-$profile.json")
               if [[ "$profile" == normal ]]; then
                 cmake_object="$(find "$build" -name 'decode.c.o' -type f | head -1)"
@@ -279,7 +286,7 @@ jobs:
               uv run --no-project --python 3.12 python scripts/record_native_candidate.py --binary "$binary" \
                 --source-tree "native-candidates/brotli-$version" \
                 --compiler-version-file "$version_file" \
-                --flags "apple-clang $profile universal2 dead_strip no_fixup_chains" \
+                --flags "apple-clang $profile_label universal2 dead_strip no_fixup_chains" \
                 "${record_args[@]}"
               cp "$binary" "native-candidates/$version-apple-$profile.dylib"
               if [[ "$profile" == lto ]]; then
@@ -299,9 +306,9 @@ jobs:
                   --mach-symbol-export "native-candidates/$version-apple-lto-x86_64-dwarf.json" \
                   --source-tree "native-candidates/brotli-$version" \
                   --compiler "$(head -1 "$version_file")" \
-                  --flags 'apple-clang LTO universal2 -O2 -g -dead_strip -no_fixup_chains' \
-                  --transformation 'LTO dead_strip universal2' \
-                  --build-note 'Native hosted post-link profile; hash-bound per-slice dSYM function bounds' \
+                  --flags 'apple-clang ThinLTO universal2 -O2 -g -dead_strip -no_fixup_chains' \
+                  --transformation 'ThinLTO dead_strip universal2' \
+                  --build-note 'Native hosted post-link profile; retained ThinLTO object archive and hash-bound per-slice dSYM bounds' \
                   --output "native-candidates/$version-apple-lto-flirt.json" \
                   --pat-output "native-candidates/$version-apple-lto-flirt.pat"
               fi
@@ -335,6 +342,7 @@ jobs:
             native-candidates/*.dylib
             native-candidates/*.dwarf
             native-candidates/*.o
+            native-candidates/*-objects.tar
             native-candidates/*.json
             native-candidates/*.pat
             native-candidates/*-dwarf.txt
