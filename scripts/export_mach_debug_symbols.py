@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from brotli_binary_layout import inspect_layout  # noqa: E402
 from brotli_binary_triage import run_bounded  # noqa: E402
-from brotli_debug_companions import verify_mach_debug_export  # noqa: E402
+from brotli_debug_companions import mach_companion_slices, verify_mach_debug_export  # noqa: E402
 from export_pdb_symbols import (  # noqa: E402
     copy_buffer,
     sha256_buffer,
@@ -111,18 +111,17 @@ def parse_subprograms(text: str, maximum: int = MAX_FUNCTIONS) -> list[dict[str,
                 line = cast("str", line)
                 address = int(low, 16)
                 high_value = int(high, 16)
-                stop = high_value if high_value > address else address + high_value
                 source_name = str(source).replace("\\", "/").rsplit("/", 1)[-1]
                 if (
                     str(name)
                     and source_name not in ("", ".", "..")
-                    and stop > address
+                    and high_value > address
                     and int(line) > 0
                 ):
                     item = {
                         "name": str(name),
                         "address": address,
-                        "size": stop - address,
+                        "size": high_value - address,
                         "source_file": source_name,
                         "source_line": int(line),
                     }
@@ -169,6 +168,13 @@ def selected_slice(data: Buffer, machine: str) -> dict[str, Any]:
     }
 
 
+def selected_companion_slice(data: Buffer, machine: str) -> dict[str, Any]:
+    selected = [value for value in mach_companion_slices(data) if value["machine"] == machine]
+    if len(selected) != 1:
+        raise ValueError("Mach debug companion architecture is unavailable or ambiguous")
+    return selected[0]
+
+
 def packet(
     artifact: Buffer,
     dsym: Buffer,
@@ -178,7 +184,7 @@ def packet(
     functions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     artifact_slice = selected_slice(artifact, machine)
-    dsym_slice = selected_slice(dsym, machine)
+    dsym_slice = selected_companion_slice(dsym, machine)
     if (artifact_slice["uuid"], artifact_slice.get("cpu_subtype")) != (
         dsym_slice["uuid"],
         dsym_slice.get("cpu_subtype"),
@@ -254,6 +260,8 @@ def main() -> int:
                     MAX_TOOL_OUTPUT_BYTES,
                 )
                 diagnostic_text = raw
+                if args.diagnostic_output is not None:
+                    write_text_new(args.diagnostic_output, diagnostic_text)
                 functions = parse_subprograms(diagnostic_text)
                 if not functions:
                     raise ValueError("llvm-dwarfdump returned no complete subprogram records")
@@ -264,8 +272,6 @@ def main() -> int:
                     reason = verified.gaps[0].reason if verified.gaps else "verification failed"
                     raise ValueError(reason)
                 write_text_new(args.output, encoded.decode("utf-8"))
-                if args.diagnostic_output is not None:
-                    write_text_new(args.diagnostic_output, diagnostic_text)
     except (OSError, UnicodeError, ValueError) as error:
         parser.error(str(error))
     return 0

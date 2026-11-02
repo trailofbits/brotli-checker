@@ -846,6 +846,101 @@ def _sha256_range(data: Buffer, offset: int, size: int) -> str:
     return digest.hexdigest()
 
 
+def _mach_companion_slice(
+    data: Buffer,
+    offset: int,
+    size: int,
+    expected_cpu: int | None = None,
+    expected_subtype: int | None = None,
+) -> dict[str, Any]:
+    magic = data[offset : offset + 4]
+    formats: dict[bytes, tuple[Literal["little", "big"], int]] = {
+        b"\xce\xfa\xed\xfe": ("little", 28),
+        b"\xfe\xed\xfa\xce": ("big", 28),
+        b"\xcf\xfa\xed\xfe": ("little", 32),
+        b"\xfe\xed\xfa\xcf": ("big", 32),
+    }
+    if magic not in formats:
+        raise ValueError("Unsupported Mach debug companion slice magic")
+    byteorder, header_size = formats[magic]
+    checked_range(data, offset, header_size)
+    cpu = int.from_bytes(data[offset + 4 : offset + 8], byteorder)
+    subtype = int.from_bytes(data[offset + 8 : offset + 12], byteorder)
+    commands = int.from_bytes(data[offset + 16 : offset + 20], byteorder)
+    command_bytes = int.from_bytes(data[offset + 20 : offset + 24], byteorder)
+    if (
+        (expected_cpu is not None and cpu != expected_cpu)
+        or (expected_subtype is not None and subtype != expected_subtype)
+        or commands > DEFAULT_DEBUG_LIMITS.max_commands
+        or command_bytes > DEFAULT_DEBUG_LIMITS.max_identity_bytes
+        or header_size + command_bytes > size
+    ):
+        raise ValueError("Invalid Mach debug companion slice identity or commands")
+    cursor = offset + header_size
+    command_end = cursor + command_bytes
+    uuids = []
+    for _ in range(commands):
+        if cursor + 8 > command_end:
+            raise ValueError("Truncated Mach debug companion load command")
+        command = int.from_bytes(data[cursor : cursor + 4], byteorder)
+        command_size = int.from_bytes(data[cursor + 4 : cursor + 8], byteorder)
+        if command_size < 8 or cursor + command_size > command_end:
+            raise ValueError("Invalid Mach debug companion load command")
+        if command == LC_UUID:
+            if command_size != 24:
+                raise ValueError("Invalid Mach debug companion LC_UUID")
+            uuids.append(data[cursor + 8 : cursor + 24].hex())
+        cursor += command_size
+    if cursor != command_end or len(uuids) != 1:
+        raise ValueError("Mach debug companion slice lacks one UUID")
+    return {
+        "uuid": uuids[0],
+        "machine": {0x01000007: "x86_64", 0x0100000C: "aarch64"}.get(cpu, f"mach_cpu_0x{cpu:x}"),
+        "cpu_subtype": subtype,
+        "slice_offset": offset,
+        "slice_size": size,
+    }
+
+
+def mach_companion_slices(data: Buffer) -> tuple[dict[str, Any], ...]:
+    """Read only fat bounds, architecture, and UUID identity from a Mach debug companion."""
+    magic = data[:4]
+    fat_formats: dict[bytes, tuple[Literal["little", "big"], bool]] = {
+        b"\xca\xfe\xba\xbe": ("big", False),
+        b"\xbe\xba\xfe\xca": ("little", False),
+        b"\xca\xfe\xba\xbf": ("big", True),
+        b"\xbf\xba\xfe\xca": ("little", True),
+    }
+    if magic not in fat_formats:
+        return (_mach_companion_slice(data, 0, len(data)),)
+    byteorder, is_64 = fat_formats[magic]
+    count = int.from_bytes(data[4:8], byteorder)
+    entry_size = 32 if is_64 else 20
+    if not 0 < count <= DEFAULT_DEBUG_LIMITS.max_companions:
+        raise ValueError("Invalid Mach debug companion slice population")
+    checked_range(data, 8, count * entry_size)
+    result = []
+    ranges = []
+    for index in range(count):
+        cursor = 8 + index * entry_size
+        cpu = int.from_bytes(data[cursor : cursor + 4], byteorder)
+        subtype = int.from_bytes(data[cursor + 4 : cursor + 8], byteorder)
+        if is_64:
+            offset = int.from_bytes(data[cursor + 8 : cursor + 16], byteorder)
+            size = int.from_bytes(data[cursor + 16 : cursor + 24], byteorder)
+        else:
+            offset = int.from_bytes(data[cursor + 8 : cursor + 12], byteorder)
+            size = int.from_bytes(data[cursor + 12 : cursor + 16], byteorder)
+        checked_range(data, offset, size)
+        if not size or any(
+            offset < other_end and other_start < offset + size for other_start, other_end in ranges
+        ):
+            raise ValueError("Invalid or overlapping Mach debug companion slices")
+        ranges.append((offset, offset + size))
+        result.append(_mach_companion_slice(data, offset, size, cpu, subtype))
+    return tuple(result)
+
+
 def _mach_slices(data: Buffer) -> list[dict[str, Any]]:
     layout = inspect_layout(data)
     if layout.get("kind") == "mach_o":
@@ -999,7 +1094,7 @@ def _mach_export_slice(
     ]
     dsym_slices = [
         value
-        for value in _mach_slices(dsym_data)
+        for value in mach_companion_slices(dsym_data)
         if (value["uuid"], value["machine"], value.get("cpu_subtype"))
         == (identity["uuid"], identity["machine"], identity["cpu_subtype"])
     ]

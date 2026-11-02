@@ -1,5 +1,6 @@
 import importlib
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -26,6 +27,15 @@ DWARF = """
                 DW_AT_high_pc (0x0000000000100040)
 """
 
+DWARF_UNRESOLVED_HIGH_PC = """
+0x00000002: DW_TAG_subprogram
+                DW_AT_name ("DecodeLiteralBlockSwitch")
+                DW_AT_decl_file ("decode.c")
+                DW_AT_decl_line (42)
+                DW_AT_low_pc (0x0000000000000100)
+                DW_AT_high_pc (0x0000000000000010)
+"""
+
 
 def test_dwarfdump_parser_retains_only_complete_bounded_subprograms():
     assert exporter.parse_subprograms(DWARF) == [
@@ -39,6 +49,7 @@ def test_dwarfdump_parser_retains_only_complete_bounded_subprograms():
     ]
     with pytest.raises(ValueError, match="population exceeds"):
         exporter.parse_subprograms(DWARF, maximum=0)
+    assert exporter.parse_subprograms(DWARF_UNRESOLVED_HIGH_PC) == []
 
 
 def test_exporter_packet_self_verifies_against_selected_universal_slice(tmp_path):
@@ -71,3 +82,36 @@ def test_exporter_uses_bounded_runner_text_contract(monkeypatch):
     )
     with pytest.raises(ValueError, match="non-text"):
         exporter.run_tool(["tool", "--version"], 1, 100)
+
+
+def test_dsym_identity_does_not_require_executable_segment_layout(tmp_path):
+    artifact, first_size, _, _ = universal_mach_fixture()
+    companion = bytearray(artifact)
+    base = 0x100
+    command_count = int.from_bytes(companion[base + 16 : base + 20], "little")
+    cursor = base + 32
+    for _ in range(command_count):
+        command, size = struct.unpack_from("<II", companion, cursor)
+        if command == 2:
+            struct.pack_into("<I", companion, cursor + 8, len(companion) + 1)
+            break
+        cursor += size
+    corrupted = bytes(companion)
+    assert debug.inspect_layout(corrupted)["gaps"]
+
+    tool = tmp_path / "llvm-dwarfdump"
+    tool.write_bytes(b"trusted fixture tool")
+    document = exporter.packet(
+        artifact,
+        corrupted,
+        "aarch64",
+        tool,
+        "version 17",
+        exporter.parse_subprograms(DWARF),
+    )
+    verified = debug.verify_mach_debug_export(
+        artifact, corrupted, (json.dumps(document, sort_keys=True) + "\n").encode()
+    )
+
+    assert verified.status == "verified"
+    assert document["slice"]["dsym_size"] == first_size
