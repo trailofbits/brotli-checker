@@ -10,6 +10,9 @@ import pytest
 def test_lief_agrees_with_scanner_on_host_elf_when_available():
     pytest.importorskip("lief")
     target = Path(sys.executable).resolve()
+    with target.open("rb") as stream:
+        if stream.read(4) != b"\x7fELF":
+            pytest.skip("This oracle field comparison requires an ELF host executable")
     scanner = subject.scanner_observation(target)
     lief = subject.lief_observation(target)
     assert scanner["status"] == lief["status"] == "parsed"

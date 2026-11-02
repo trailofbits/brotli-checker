@@ -60,6 +60,14 @@ Do not replace scanner imports with direct `exec_module` or `runpy.run_path`.
 Keep the ordinary suite offline. Document optional downloads and trusted
 compiler inputs separately.
 
+CI retains only each mutation shard's `gremlins.json` and source/population-bound
+`shard.json`. Those are the aggregate gate's complete inputs; generated HTML stays
+local rather than multiplying artifact transfer volume. Artifact downloads retry
+three times into distinct directories and remain failures if no complete download
+succeeds. The aggregate score threshold and complete-population validation do not
+change. Static typing installs all analysis/assurance extras so developer-only
+oracle imports are checked in an explicitly complete environment.
+
 ### Parser fuzzing
 
 The development fuzz entry points import parser functions directly; they never
