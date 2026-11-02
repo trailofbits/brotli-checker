@@ -2,6 +2,8 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import brotli_binary_match as matcher
 import brotli_binary_triage as triage
@@ -405,3 +407,50 @@ def test_symbol_disassembly_handles_zero_minimum_and_exact_range_limit(tmp_path,
     else:
         assert report["evidence"]["disassembly"] == []
         assert any("no bounded size" in reason for reason in report["collection"]["reasons"])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group ownership")
+@pytest.mark.parametrize("missing", [False, True])
+def test_process_group_termination_is_idempotent_after_dispatch_or_absence(monkeypatch, missing):
+    signals = []
+
+    def signal_group(pid, signal):
+        signals.append((pid, signal))
+        if len(signals) > 1:
+            message = "group identity no longer owned after cleanup"
+            raise PermissionError(message)
+        if missing:
+            message = "group already absent"
+            raise ProcessLookupError(message)
+
+    monkeypatch.setattr(triage.os, "killpg", signal_group)
+    process = cast("Any", SimpleNamespace(pid=123, poll=lambda: -9))
+    tree = triage._ProcessTree()  # noqa: SLF001 -- Test the containment lifecycle contract.
+    try:
+        tree.terminate(process)
+        tree.terminate(process)
+    finally:
+        tree.close()
+    assert len(signals) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group ownership")
+def test_process_group_live_permission_failure_is_not_silently_satisfied(monkeypatch):
+    signals = []
+
+    def signal_group(pid, signal):
+        signals.append((pid, signal))
+        if len(signals) == 1:
+            message = "live group cannot be signalled"
+            raise PermissionError(message)
+
+    monkeypatch.setattr(triage.os, "killpg", signal_group)
+    process = cast("Any", SimpleNamespace(pid=123, poll=lambda: -9))
+    tree = triage._ProcessTree()  # noqa: SLF001 -- Test failed cleanup remains retryable.
+    try:
+        with pytest.raises(PermissionError, match="live group"):
+            tree.terminate(process)
+        tree.terminate(process)
+    finally:
+        tree.close()
+    assert len(signals) == 2

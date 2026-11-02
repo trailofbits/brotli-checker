@@ -2,6 +2,9 @@ import base64
 import copy
 import hashlib
 import json
+from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import brotli_jsf as subject
 import pytest
@@ -135,3 +138,134 @@ def test_jsf_policy_fingerprint_tracks_semantics_not_wire_order():
     second = subject.load_jsf_policy(json.dumps(policy, sort_keys=True, indent=2).encode())
     assert first.semantic_sha256 == second.semantic_sha256
     assert len(first.semantic_sha256) == hashlib.sha256().digest_size * 2
+
+
+def test_jsf_policy_is_immutable_and_accepts_exact_boundaries():
+    evaluated = datetime(2026, 11, 2, 12, tzinfo=UTC)
+    keys = tuple(bytes([index]) * 32 for index in range(subject.MAX_KEYS))
+    value = subject.JsfPolicy(
+        keys,
+        evaluated,
+        evaluated,
+        subject.MAX_FRESHNESS_SECONDS,
+        24 * 60 * 60,
+    )
+    with pytest.raises(FrozenInstanceError):
+        cast("Any", value).keys = ()
+    document = {
+        "metadata": {
+            "timestamp": (evaluated - timedelta(seconds=subject.MAX_FRESHNESS_SECONDS)).isoformat()
+        }
+    }
+    first = subject._document_time(document, value)  # noqa: SLF001
+    assert first["status"] == "verified_within_local_policy_window"
+    document["metadata"]["timestamp"] = (evaluated + timedelta(seconds=24 * 60 * 60)).isoformat()
+    second = subject._document_time(document, value)  # noqa: SLF001
+    assert second["status"] == "verified_within_local_policy_window"
+
+    with pytest.raises(ValueError, match="key population"):
+        subject.JsfPolicy((), evaluated, evaluated, 0, 0)
+    with pytest.raises(ValueError, match="key population"):
+        subject.JsfPolicy((*keys, b"x" * 32), evaluated, evaluated, 0, 0)
+    with pytest.raises(ValueError, match="unique Ed25519"):
+        subject.JsfPolicy((b"x" * 31,), evaluated, evaluated, 0, 0)
+    with pytest.raises(ValueError, match="maximum document age"):
+        subject.JsfPolicy(
+            (b"x" * 32,),
+            evaluated,
+            evaluated,
+            subject.MAX_FRESHNESS_SECONDS + 1,
+            0,
+        )
+    with pytest.raises(ValueError, match="future skew"):
+        subject.JsfPolicy((b"x" * 32,), evaluated, evaluated, 0, 24 * 60 * 60 + 1)
+
+
+@pytest.mark.parametrize("field", ["evaluation_time", "trust_expires_at"])
+def test_jsf_programmatic_policy_rejects_each_naive_time(field):
+    values = {
+        "keys": (b"x" * 32,),
+        "evaluation_time": datetime(2026, 11, 2, tzinfo=UTC),
+        "trust_expires_at": datetime(2026, 11, 3, tzinfo=UTC),
+        "max_document_age_seconds": 0,
+        "max_future_skew_seconds": 0,
+    }
+    values[field] = values[field].replace(tzinfo=None)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        subject.JsfPolicy(**values)
+
+
+def test_jsf_component_hashes_cover_metadata_and_nested_components(monkeypatch):
+    document = {
+        "metadata": {
+            "component": {
+                "hashes": [{"alg": "SHA-256", "content": "A" * 64}],
+                "components": [{"hashes": [{"alg": "SHA-256", "content": "b" * 64}]}],
+            }
+        }
+    }
+    monkeypatch.setattr(subject, "MAX_COMPONENTS", 2)
+    assert subject._component_hashes(document) == ["a" * 64, "b" * 64]  # noqa: SLF001
+    document["metadata"]["component"]["components"][0]["components"] = [{}]
+    with pytest.raises(ValueError, match="population exceeds"):
+        subject._component_hashes(document)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "component",
+    [
+        "not-an-object",
+        {"components": {}},
+        {"hashes": {}},
+        {"hashes": [[]]},
+        {"hashes": [{"alg": "SHA-256", "content": "g" * 64}]},
+    ],
+)
+def test_jsf_component_shapes_fail_independently(component):
+    with pytest.raises(ValueError, match="CycloneDX"):
+        subject._component_hashes({"components": [component]})  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda signature: signature.update(algorithm="ES256"),
+        lambda signature: signature.update(keyId=7),
+        lambda signature: signature.update(value=b64url(b"x" * 63)),
+        lambda signature: signature["publicKey"].update(extra=True),
+        lambda signature: signature["publicKey"].update(kty="EC"),
+    ],
+)
+def test_jsf_signature_fields_fail_independently(mutation):
+    document, policy, _ = fixture()
+    mutation(document["signature"])
+    with pytest.raises(ValueError, match=r"JSF|Ed25519"):
+        verify(document, policy)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda document: document.update(bomFormat="SPDX"),
+        lambda document: document.update(specVersion="2.0"),
+        lambda document: document.update(specVersion=1.6),
+        lambda document: document.pop("specVersion"),
+    ],
+)
+def test_jsf_requires_an_explicit_cyclonedx_1x_document(mutation):
+    document, policy, _ = fixture()
+    mutation(document)
+    with pytest.raises(ValueError, match=r"CycloneDX 1\.x"):
+        verify(document, policy)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"components": {}},
+        {"metadata": {"component": []}},
+    ],
+)
+def test_jsf_top_level_component_populations_are_not_silently_ignored(document):
+    with pytest.raises(ValueError, match="CycloneDX"):
+        subject._component_hashes(document)  # noqa: SLF001

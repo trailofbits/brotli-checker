@@ -96,7 +96,9 @@ def lief_observation(path: Path) -> dict:
             "executable_ranges": sorted(
                 [segment.file_offset, segment.physical_size]
                 for segment in parsed.segments
-                if int(segment.flags) & int(lief.ELF.Segment.FLAGS.X) and segment.physical_size
+                if segment.type == lief.ELF.Segment.TYPE.LOAD
+                and int(segment.flags) & int(lief.ELF.Segment.FLAGS.X)
+                and segment.physical_size
             ),
         }
     if isinstance(parsed, lief.PE.Binary):

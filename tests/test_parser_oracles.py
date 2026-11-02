@@ -1,10 +1,42 @@
 import hashlib
 import json
+import struct
 import sys
 from pathlib import Path
 
 import brotli_parser_oracles as subject
 import pytest
+
+
+def elf_with_executable_nonload_segment() -> bytes:
+    header = struct.Struct("<16sHHIQQQIHHHHHH")
+    program = struct.Struct("<IIQQQQQQ")
+    data_offset = header.size + 2 * program.size
+    ident = b"\x7fELF\x02\x01\x01" + bytes(9)
+    return b"".join(
+        (
+            header.pack(
+                ident,
+                3,
+                183,
+                1,
+                0x401000,
+                header.size,
+                0,
+                0,
+                header.size,
+                program.size,
+                2,
+                0,
+                0,
+                0,
+            ),
+            program.pack(1, 5, data_offset, 0x401000, 0x401000, 4, 4, 4),
+            program.pack(4, 1, data_offset + 4, 0x402000, 0x402000, 16, 16, 4),
+            b"\x1f\x20\x03\xd5",
+            bytes(16),
+        )
+    )
 
 
 def test_lief_agrees_with_scanner_on_host_elf_when_available():
@@ -19,6 +51,18 @@ def test_lief_agrees_with_scanner_on_host_elf_when_available():
     assert scanner["kind"] == lief["kind"] == "elf"
     assert scanner["machine"] == lief["machine"]
     assert scanner["executable_ranges"] == lief["executable_ranges"]
+    assert subject.compare_observations(scanner, lief) == []
+
+
+def test_lief_executable_ranges_exclude_nonload_pf_x_segments(tmp_path):
+    pytest.importorskip("lief")
+    target = tmp_path / "executable-note.elf"
+    target.write_bytes(elf_with_executable_nonload_segment())
+    scanner = subject.scanner_observation(target)
+    lief = subject.lief_observation(target)
+    assert scanner["status"] == lief["status"] == "parsed"
+    assert scanner["executable_ranges"] == [[176, 4]]
+    assert lief["executable_ranges"] == scanner["executable_ranges"]
     assert subject.compare_observations(scanner, lief) == []
 
 

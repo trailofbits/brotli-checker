@@ -18,6 +18,7 @@ MAX_COMPONENTS = 100_000
 MAX_FRESHNESS_SECONDS = 10 * 365 * 24 * 60 * 60
 SHA256_HEX = re.compile(r"[0-9A-Fa-f]{64}")
 RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})")
+CYCLONEDX_1_VERSION = re.compile(r"1\.\d+")
 
 
 @dataclass(frozen=True)
@@ -153,10 +154,13 @@ def _trusted_candidates(signature: dict, policy: JsfPolicy) -> tuple[bytes, ...]
 def _component_hashes(document: dict) -> list[str]:
     pending = []
     components = document.get("components", [])
-    if isinstance(components, list):
-        pending.extend(components)
+    if not isinstance(components, list):
+        raise ValueError("Invalid top-level CycloneDX components")
+    pending.extend(components)
     metadata = document.get("metadata")
-    if isinstance(metadata, dict) and isinstance(metadata.get("component"), dict):
+    if isinstance(metadata, dict) and "component" in metadata:
+        if not isinstance(metadata["component"], dict):
+            raise ValueError("Invalid CycloneDX metadata component")
         pending.append(metadata["component"])
     hashes, visited = set(), 0
     while pending:
@@ -184,6 +188,16 @@ def _component_hashes(document: dict) -> list[str]:
     return sorted(hashes)
 
 
+def _validate_cyclonedx_document(document: dict) -> None:
+    version = document.get("specVersion")
+    if (
+        document.get("bomFormat") != "CycloneDX"
+        or not isinstance(version, str)
+        or CYCLONEDX_1_VERSION.fullmatch(version) is None
+    ):
+        raise ValueError("JSF document is not a CycloneDX 1.x BOM")
+
+
 def verify_jsf_document(raw: bytes, policy_raw: bytes) -> dict:
     """Verify one single-signature CycloneDX JSF document and its freshness."""
     import rfc8785  # noqa: PLC0415 -- Optional backend.
@@ -193,6 +207,7 @@ def verify_jsf_document(raw: bytes, policy_raw: bytes) -> dict:
     )
 
     document = parse_evidence_document(raw)
+    _validate_cyclonedx_document(document)
     policy = load_jsf_policy(policy_raw)
     signature = document.get("signature")
     allowed = {"algorithm", "value", "keyId", "publicKey"}

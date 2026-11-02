@@ -1,6 +1,7 @@
 import argparse
 import base64
 import json
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import brotli_trust_inputs as subject
@@ -156,3 +157,101 @@ def test_jsf_authenticated_subjects_join_exact_artifacts(monkeypatch):
     assert records[0]["bound_artifacts"] == ["target"]
     assert records[0]["subject_binding"] == "exact_scanned_sha256"
     assert records[0]["patch_status"] == "unknown"
+
+
+def test_trust_inputs_are_immutable_and_identity_documents_cover_every_feed():
+    inputs = empty_inputs(
+        sigstore_bundles=(CapturedDocument("bundle", b"bundle"),),
+        sigstore_trust_config=CapturedDocument("trust", b"trust"),
+        sigstore_policy=CapturedDocument("sig-policy", b"sig-policy"),
+        sigstore_verifier=Path("/verifier"),
+        jsf_documents=(CapturedDocument("jsf", b"jsf"),),
+        jsf_policy=CapturedDocument("jsf-policy", b"jsf-policy"),
+    )
+    with pytest.raises(FrozenInstanceError):
+        inputs.jsf_documents = ()
+    assert inputs.identity_documents() == (
+        ("sigstore_bundle", "bundle", b"bundle"),
+        ("jsf_document", "jsf", b"jsf"),
+        ("sigstore_trust_config", "trust", b"trust"),
+        ("sigstore_policy", "sig-policy", b"sig-policy"),
+        ("jsf_policy", "jsf-policy", b"jsf-policy"),
+    )
+
+
+def test_trust_capture_population_limit_is_inclusive_and_duplicates_fail(tmp_path, monkeypatch):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.write_text("{}")
+    second.write_text("{}")
+    monkeypatch.setattr(subject, "MAX_ATTESTATIONS", 1)
+    assert len(subject._capture_many([first], "feed")) == 1  # noqa: SLF001
+    with pytest.raises(ValueError, match="count exceeds"):
+        subject._capture_many([first, second], "feed")  # noqa: SLF001
+    monkeypatch.setattr(subject, "MAX_ATTESTATIONS", 2)
+    with pytest.raises(ValueError, match="Duplicate"):
+        subject._capture_many([first, first], "feed")  # noqa: SLF001
+
+
+def test_absolute_missing_verifier_is_captured_without_implicit_resolution(tmp_path):
+    bundle, policy, trust = tmp_path / "bundle", tmp_path / "policy", tmp_path / "trust"
+    for path in (bundle, policy, trust):
+        path.write_text("{}")
+    missing = (tmp_path / "missing-verifier").absolute()
+    inputs = subject.capture_trust_inputs(
+        sigstore_bundles=[bundle],
+        sigstore_trust_config=trust,
+        sigstore_policy=policy,
+        sigstore_verifier=missing,
+    )
+    assert inputs.sigstore_verifier == missing
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, 7, "not-base64!", base64.b64encode(b"short").decode()],
+)
+def test_sigstore_candidate_digest_requires_canonical_sha256(value):
+    with pytest.raises(ValueError, match=r"base64|SHA-256"):
+        subject._sha256_digest(value)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"messageSignature": {"messageDigest": []}},
+        {"messageSignature": {"messageDigest": {"algorithm": "SHA256", "digest": ""}}},
+        {"dsseEnvelope": {"payloadType": "wrong", "payload": ""}},
+        {"dsseEnvelope": {"payloadType": PAYLOAD_TYPE, "payload": 7}},
+        {"dsseEnvelope": {"payloadType": PAYLOAD_TYPE, "payload": "not-base64!"}},
+    ],
+)
+def test_sigstore_candidate_bundle_shapes_fail_independently(document):
+    with pytest.raises(ValueError, match="Sigstore"):
+        subject.sigstore_claimed_subjects(json.dumps(document).encode())
+
+
+def test_artifact_index_requires_both_string_digest_and_identifier():
+    assert subject._artifact_index(  # noqa: SLF001
+        [
+            {"id": "missing-digest"},
+            {"sha256": DIGEST},
+            {"id": 7, "sha256": DIGEST},
+            {"id": "valid", "sha256": DIGEST},
+        ]
+    ) == {DIGEST: ["valid"]}
+
+
+def test_jsf_without_scanned_subject_stays_explicitly_unbound(monkeypatch):
+    monkeypatch.setattr(
+        subject,
+        "verify_jsf_document",
+        lambda *_: {"subject_sha256": [DIGEST], "patch_status": "unknown"},
+    )
+    inputs = empty_inputs(
+        jsf_documents=(CapturedDocument("bom", b"bom"),),
+        jsf_policy=CapturedDocument("policy", b"policy"),
+    )
+    records, gaps = subject.inspect_trust_inputs(inputs, [])
+    assert gaps == []
+    assert records[0]["bound_artifacts"] == []
+    assert records[0]["subject_binding"] == "no_scanned_subject"

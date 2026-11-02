@@ -1,7 +1,10 @@
 import hashlib
 import json
 import sys
+from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import brotli_sigstore as subject
 import pytest
@@ -210,3 +213,120 @@ def test_sigstore_rejects_unqualified_verifier_version(monkeypatch):
             artifact_sha256=DIGEST,
             verifier_path=Path(sys.executable),
         )
+
+
+def test_sigstore_policy_is_immutable_and_accepts_exact_time_boundaries():
+    evaluated = datetime(2026, 11, 2, 12, tzinfo=UTC)
+    value = subject.SigstorePolicy(
+        IDENTITY,
+        ISSUER,
+        evaluated,
+        evaluated,
+        subject.MAX_FRESHNESS_SECONDS,
+        24 * 60 * 60,
+    )
+    with pytest.raises(FrozenInstanceError):
+        cast("Any", value).certificate_identity = "changed"
+    assert (
+        subject._check_freshness(  # noqa: SLF001
+            [int((evaluated - timedelta(seconds=subject.MAX_FRESHNESS_SECONDS)).timestamp())],
+            value,
+        )["status"]
+        == "verified_within_local_policy_window"
+    )
+    assert (
+        subject._check_freshness(  # noqa: SLF001
+            [int((evaluated + timedelta(seconds=24 * 60 * 60)).timestamp())],
+            value,
+        )["status"]
+        == "verified_within_local_policy_window"
+    )
+
+    with pytest.raises(ValueError, match="maximum signature age"):
+        subject.SigstorePolicy(
+            IDENTITY,
+            ISSUER,
+            evaluated,
+            evaluated,
+            subject.MAX_FRESHNESS_SECONDS + 1,
+            0,
+        )
+    with pytest.raises(ValueError, match="future skew"):
+        subject.SigstorePolicy(
+            IDENTITY,
+            ISSUER,
+            evaluated,
+            evaluated,
+            0,
+            24 * 60 * 60 + 1,
+        )
+
+
+@pytest.mark.parametrize("field", ["evaluation_time", "trust_config_expires_at"])
+def test_sigstore_programmatic_policy_rejects_each_naive_time(field):
+    values = {
+        "certificate_identity": IDENTITY,
+        "certificate_oidc_issuer": ISSUER,
+        "evaluation_time": datetime(2026, 11, 2, tzinfo=UTC),
+        "trust_config_expires_at": datetime(2026, 11, 3, tzinfo=UTC),
+        "max_signature_age_seconds": 0,
+        "max_future_skew_seconds": 0,
+    }
+    values[field] = values[field].replace(tzinfo=None)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        subject.SigstorePolicy(**values)
+
+
+def test_integrated_time_shape_and_canonical_forms_are_independent():
+    assert subject._integrated_times(  # noqa: SLF001
+        {"verificationMaterial": {"tlogEntries": [{"integratedTime": 0}, {"integratedTime": "1"}]}}
+    ) == (0, 1)
+    for entry in (None, {"integratedTime": True}, {"integratedTime": "\uff11\uff12"}):
+        with pytest.raises(ValueError, match="integrated time"):
+            subject._integrated_times(  # noqa: SLF001
+                {"verificationMaterial": {"tlogEntries": [entry]}}
+            )
+
+
+def test_sigstore_verifier_identity_failures_are_distinct(monkeypatch):
+    monkeypatch.setattr(
+        subject,
+        "run_bounded",
+        lambda *_: {"returncode": None, "output": "", "limited": True, "reason": "timeout"},
+    )
+    with pytest.raises(ValueError, match="Cannot identify"):
+        subject.verify_sigstore_bundle(
+            bundle(), b"{}", policy(), artifact_sha256=DIGEST, verifier_path=Path(sys.executable)
+        )
+    monkeypatch.setattr(
+        subject,
+        "run_bounded",
+        lambda *_: {"returncode": 1, "output": "bad", "limited": False, "reason": None},
+    )
+    with pytest.raises(ValueError, match="Cannot identify"):
+        subject.verify_sigstore_bundle(
+            bundle(), b"{}", policy(), artifact_sha256=DIGEST, verifier_path=Path(sys.executable)
+        )
+
+
+def test_sigstore_verifier_must_remain_identical(monkeypatch):
+    monkeypatch.setattr(subject, "run_bounded", success)
+    identities = iter(("a" * 64, "b" * 64))
+    monkeypatch.setattr(subject, "_file_sha256", lambda _: next(identities))
+    with pytest.raises(ValueError, match="changed during verification"):
+        subject.verify_sigstore_bundle(
+            bundle(),
+            b'{"trusted":true}',
+            policy(),
+            artifact_sha256=DIGEST,
+            verifier_path=Path(sys.executable),
+        )
+
+
+def test_sigstore_verifier_path_requires_executable_regular_file(tmp_path):
+    verifier = tmp_path / "verifier"
+    verifier.write_text("not executable")
+    with pytest.raises(ValueError, match="executable regular"):
+        subject._trusted_executable(verifier)  # noqa: SLF001
+    with pytest.raises(ValueError, match="executable regular"):
+        subject._trusted_executable(tmp_path)  # noqa: SLF001

@@ -163,6 +163,7 @@ class _ProcessTree:
 
     def __init__(self) -> None:
         self.job = _create_windows_job() if os.name == "nt" else None
+        self._terminated = False
 
     def attach(self, process: subprocess.Popen[bytes]) -> None:
         if self.job is None:
@@ -190,6 +191,8 @@ class _ProcessTree:
             raise error
 
     def terminate(self, process: subprocess.Popen[bytes]) -> None:
+        if self._terminated:
+            return
         if self.job is not None:
             from ctypes import wintypes  # noqa: PLC0415 -- Windows-only ABI types.
 
@@ -198,13 +201,15 @@ class _ProcessTree:
             terminate_job.argtypes = [wintypes.HANDLE, wintypes.UINT]
             terminate_job.restype = wintypes.BOOL
             if terminate_job(self.job, 1):
+                self._terminated = True
                 return
         else:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
-                pass
+                self._terminated = True
             else:
+                self._terminated = True
                 return
         if process.poll() is None:
             process.kill()
