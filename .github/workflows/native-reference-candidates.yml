@@ -16,6 +16,12 @@ on:
       - skills/brotli-checker/scripts/brotli_binary_signatures.py
       - skills/brotli-checker/references/fingerprints.json
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Hosted platform to qualify
+        type: choice
+        options: [both, windows, macos]
+        default: both
 
 permissions:
   contents: read
@@ -30,6 +36,7 @@ env:
 
 jobs:
   windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'macos'
     name: MSVC and clang-cl candidates
     runs-on: windows-2022
     timeout-minutes: 30
@@ -164,7 +171,10 @@ jobs:
           retention-days: 14
 
   macos:
-    if: success() || failure()
+    if: >-
+      always() &&
+      (github.event_name != 'workflow_dispatch' || inputs.platform != 'windows') &&
+      (needs.windows.result == 'success' || needs.windows.result == 'skipped')
     name: Apple clang universal candidates
     needs: windows
     runs-on: macos-15
@@ -218,6 +228,11 @@ jobs:
                     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)
                   cmake "${args[@]}"
                   cmake --build "$arch_build" --target brotlidec --parallel 2
+                  link_commands="native-candidates/$version-apple-lto-$arch-link-commands.txt"
+                  ninja -C "$arch_build" -t commands brotlidec > "$link_commands"
+                  grep -F -- '-object_path_lto' "$link_commands"
+                  find "$(dirname "$lto_object")" -maxdepth 1 \
+                    -name "$(basename "$lto_object")*" -print
                   thin_binary="$(find "$arch_build" -name 'libbrotlidec*.dylib' -type f | head -1)"
                   test -n "$thin_binary"
                   test -f "$lto_object"
@@ -323,5 +338,6 @@ jobs:
             native-candidates/*.json
             native-candidates/*.pat
             native-candidates/*-dwarf.txt
+            native-candidates/*-link-commands.txt
           if-no-files-found: error
           retention-days: 14

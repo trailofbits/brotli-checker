@@ -27,6 +27,8 @@
       "noncustom_sha256": "1b914a25c3a12536bb23c1e4a672b5988a71bc51bb650bb3673bf5431357d643",
       "patch_status": "vulnerable_code_match",
       "qualification": {
+        "build_commit": "",
+        "build_run_url": "",
         "builder_archive_sha256": "a62ed903fe3fed6f79d9b65f5c597bd869047ff83e38c11df38803fbece7a908",
         "builder_commit": "b4ab1c1671bf49b37dd1757bf832b9da0f91085b",
         "independent_rebuild_sha256": "",
@@ -114,6 +116,8 @@
       "noncustom_sha256": "2c148d8f5078b24c2fd50d3295f1ecfe6fe800e569285ddac833ce904369b430",
       "patch_status": "fixed_code_match",
       "qualification": {
+        "build_commit": "",
+        "build_run_url": "",
         "builder_archive_sha256": "74a5a30972af83a0190e6ddb6dbdb3307b73cbc6209888155f8d4abc9bf5879b",
         "builder_commit": "d3e9fe2251fea08b2765312efcfdc1191c91cddf",
         "independent_rebuild_sha256": "",

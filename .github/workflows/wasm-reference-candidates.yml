@@ -3,6 +3,12 @@ name: WebAssembly reference candidates
 on:
   push:
     branches: [codex/native-postlink-qualification]
+    paths:
+      - .github/workflows/wasm-reference-candidates.yml
+      - scripts/import_wasm_profiles.py
+      - skills/brotli-checker/scripts/brotli_binary_layout.py
+      - skills/brotli-checker/scripts/brotli_wasm_profiles.py
+      - skills/brotli-checker/references/wasm-function-profiles.json
   pull_request:
     paths:
       - .github/workflows/wasm-reference-candidates.yml
@@ -21,6 +27,7 @@ concurrency:
 
 jobs:
   qualify:
+    name: Source-bound Wasm qualification
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -77,6 +84,25 @@ jobs:
           mkdir -p wasm-candidates/builders
           tar -xzf wasm-candidates/builder-0.1.0.tgz -C wasm-candidates/builders
           tar -xzf wasm-candidates/builder-0.1.1.tgz -C wasm-candidates/builders
+          for fetcher in wasm-candidates/builders/wasm-zoo-*/builders/brotli/scripts/fetch-brotli.sh; do
+            grep -F 'git -C /src/brotli describe --tags --exact-match HEAD' "$fetcher"
+            sed -i \
+              's#git -C /src/brotli describe --tags --exact-match HEAD#git -C /src/brotli rev-parse "refs/tags/$BROTLI_REF^{commit}"#' \
+              "$fetcher"
+            sed -i \
+              's#\[\[ "$described" == "$BROTLI_REF" \]\]#\[\[ "$described" == "$BROTLI_COMMIT" \]\]#' \
+              "$fetcher"
+            grep -F 'git -C /src/brotli rev-parse "refs/tags/$BROTLI_REF^{commit}"' "$fetcher"
+            grep -F '[[ "$described" == "$BROTLI_COMMIT" ]]' "$fetcher"
+          done
+          for build_script in wasm-candidates/builders/wasm-zoo-*/builders/brotli/scripts/build-full.sh; do
+            grep -F 'cmake --build /src/brotli-build --target brotli -j"$(nproc)" --verbose' \
+              "$build_script"
+            sed -i \
+              's#-j"$(nproc)" --verbose#-j"${BROTLI_BUILD_JOBS:-2}" --verbose#' \
+              "$build_script"
+            grep -F 'BROTLI_BUILD_JOBS:-2' "$build_script"
+          done
           for dockerfile in wasm-candidates/builders/wasm-zoo-*/builders/brotli/docker/Dockerfile; do
             grep -Fx 'FROM emscripten/emsdk:${EMSDK_VERSION} AS toolchain' "$dockerfile"
             sed -i \
@@ -88,6 +114,11 @@ jobs:
           docker pull emscripten/emsdk:6.0.8
           docker image inspect --format '{{join .RepoDigests "\n"}}' emscripten/emsdk:6.0.8 | \
             grep -F '@sha256:f174124ff798a3ead1abef247d9a849c270b642d552fea500a42565ff210f765'
+          docker buildx create --name brotli-wasm-bounded --driver docker-container \
+            --driver-opt memory=5g --driver-opt memory-swap=5g \
+            --driver-opt cpu-period=100000 --driver-opt cpu-quota=200000 \
+            --use --bootstrap
+          trap 'docker buildx rm --force brotli-wasm-bounded >/dev/null 2>&1 || true' EXIT
           build_wasm() {
             local context="$1" builder_version="$2" source_version="$3"
             local source_ref="$4" source_commit="$5" output="$6"
@@ -137,6 +168,9 @@ jobs:
             --fixed-builder-archive-sha256 74a5a30972af83a0190e6ddb6dbdb3307b73cbc6209888155f8d4abc9bf5879b \
             --affected-rebuilt-wasm wasm-candidates/rebuilt-affected/brotli-core.wasm \
             --fixed-rebuilt-wasm wasm-candidates/rebuilt-fixed/brotli-core.wasm \
+            --qualification-run-url \
+              "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --qualification-commit "$GITHUB_SHA" \
             --output wasm-candidates/wasm-function-profiles.json
           if grep -q '"qualification_status": "source_rebuild_verified"' \
             skills/brotli-checker/references/wasm-function-profiles.json; then

@@ -23,6 +23,27 @@ def module(state):
     return module_with_states((state,))
 
 
+def state_only_module(state):
+    types = wasm_section(1, b"\x01\x60\0\0")
+    functions = wasm_section(3, b"\x01\0")
+    body = b"\0\x41" + bytes((state,)) + b"\x1a\x0b"
+    code = wasm_section(10, b"\x01" + uleb(len(body)) + body)
+    return b"\0asm\x01\0\0\0" + types + functions + code
+
+
+def graph_module(states):
+    types = wasm_section(1, b"\x01\x60\0\0")
+    count = 1 + 2 * len(states)
+    functions = wasm_section(3, uleb(count) + b"\0" * count)
+    bodies = [b"\0\x01\x0b"]
+    for state in states:
+        helper_index = len(bodies)
+        bodies.append(b"\0\x41" + bytes((state,)) + b"\x1a\x0b")
+        bodies.append(b"\0\x10" + uleb(helper_index) + b"\x0b")
+    code = wasm_section(10, uleb(count) + b"".join(uleb(len(body)) + body for body in bodies))
+    return b"\0asm\x01\0\0\0" + types + functions + code
+
+
 def catalog(affected, fixed):
     affected_layout = layout.inspect_layout(affected)
     fixed_layout = layout.inspect_layout(fixed)
@@ -89,6 +110,67 @@ def test_wasm_profile_population_union_never_becomes_a_fixed_component():
     assert {match["patch_status"] for match in result.matches} == {"unknown"}
 
 
+def test_wasm_full_call_graph_union_never_combines_affected_and_fixed_components():
+    affected, fixed = graph_module((0,)), graph_module((1,))
+    mixed = profiles.match_wasm_profiles(graph_module((0, 1)), catalog(affected, fixed))
+
+    assert mixed.patch_status == "unknown"
+    assert len(mixed.matches) == 2
+    assert {match["method"] for match in mixed.matches} == {"reviewed_wasm_function_population"}
+    assert {match["patch_status"] for match in mixed.matches} == {"unknown"}
+
+
+def test_partial_discriminating_wasm_fingerprint_is_reported_without_patch_verdict():
+    affected, fixed = module(0), module(1)
+    result = profiles.match_wasm_profiles(state_only_module(0), catalog(affected, fixed))
+
+    assert result.matches == ()
+    assert result.patch_status == "unknown"
+    assert result.candidates == (
+        {
+            "id": "affected",
+            "implementation_family": "google-brotli-c-emscripten",
+            "source_version": "test",
+            "patch_status": "unknown",
+            "claimed_source_status": "vulnerable_code_match",
+            "method": "partial_wasm_function_population",
+            "family_anchor_hits": 0,
+            "family_anchor_total": 1,
+            "required_profile_hits": 1,
+            "required_profile_total": 1,
+        },
+    )
+    assert "remain unqualified" in result.gaps[0]
+
+
+def test_wasm_noncustom_identity_ignores_only_well_formed_custom_sections():
+    header = b"\0asm\x01\0\0\0"
+    types = wasm_section(1, b"\x01\x60\0\0")
+    functions = wasm_section(3, b"\x01\0")
+    body = b"\0\x01\x0b"
+    code = wasm_section(10, b"\x01" + uleb(len(body)) + body)
+    first = wasm_section(0, wasm_name("first") + b"one")
+    second = wasm_section(0, wasm_name("second") + b"two")
+    variants = (
+        header + first + types + functions + code,
+        header + types + first + functions + second + code,
+        header + types + functions + code + second,
+    )
+
+    layouts = [layout.inspect_layout(value) for value in variants]
+    assert {item["wasm_noncustom_sha256"] for item in layouts} == {
+        layouts[0]["wasm_noncustom_sha256"]
+    }
+    assert {item["functions"][0]["function_identity"]["profile_sha256"] for item in layouts} == {
+        layouts[0]["functions"][0]["function_identity"]["profile_sha256"]
+    }
+
+    malformed = variants[0] + b"\0\x05x"
+    malformed_layout = layout.inspect_layout(malformed)
+    assert "wasm_noncustom_sha256" not in malformed_layout
+    assert malformed_layout["gaps"]
+
+
 def test_packaged_wasm_catalog_is_family_specific_and_paired():
     catalog_entries = profiles.load_wasm_profile_catalog()
     assert {entry["patch_status"] for entry in catalog_entries} == {
@@ -107,6 +189,55 @@ def test_packaged_wasm_catalog_is_family_specific_and_paired():
 def test_wasm_catalog_rejects_nonhashable_profile_values_as_value_error(tmp_path):
     entry = dict(profiles.load_wasm_profile_catalog()[0])
     entry["family_anchors"] = [{}]
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps({"schema_version": 1, "profiles": [entry]}))
+
+    with pytest.raises(ValueError, match="profile population"):
+        profiles.load_wasm_profile_catalog(path)
+
+
+@pytest.mark.parametrize("mutation", ["extra-field", "wasm-hash", "self-verified"])
+def test_wasm_catalog_qualification_schema_cannot_self_assert_trust(tmp_path, mutation):
+    entry = json.loads(json.dumps(profiles.load_wasm_profile_catalog()[0]))
+    if mutation == "extra-field":
+        entry["qualification"]["unreviewed"] = "claim"
+    elif mutation == "wasm-hash":
+        entry["qualification"]["wasm_sha256"] = "00" * 32
+    else:
+        entry["qualification_status"] = "source_rebuild_verified"
+        entry["qualification"]["independent_rebuild_sha256"] = entry["artifact_sha256"]
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps({"schema_version": 1, "profiles": [entry]}))
+
+    with pytest.raises(ValueError, match="qualification"):
+        profiles.load_wasm_profile_catalog(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("artifact_size", True),
+        ("artifact_size", 0),
+        ("function_count", -1),
+        ("verified_identity_count", -1),
+        ("verified_identity_count", 10**6),
+    ],
+)
+def test_wasm_catalog_rejects_invalid_sizes_and_counts(tmp_path, field, value):
+    entry = dict(profiles.load_wasm_profile_catalog()[0])
+    entry[field] = value
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps({"schema_version": 1, "profiles": [entry]}))
+
+    with pytest.raises(ValueError, match="catalog entry"):
+        profiles.load_wasm_profile_catalog(path)
+
+
+def test_wasm_catalog_profile_population_budget_is_enforced_before_hash_parsing(tmp_path):
+    entry = dict(profiles.load_wasm_profile_catalog()[0])
+    entry["required_profiles"] = [
+        f"{index:064x}" for index in range(profiles.MAX_PROFILE_HASHES + 1)
+    ]
     path = tmp_path / "catalog.json"
     path.write_text(json.dumps({"schema_version": 1, "profiles": [entry]}))
 

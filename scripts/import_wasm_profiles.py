@@ -55,6 +55,8 @@ def qualification(
     provenance_sha256: str,
     builder_archive_sha256: str,
     rebuild_wasm_sha256: str,
+    build_run_url: str,
+    build_commit: str,
 ) -> dict[str, str]:
     if len(tarball_sha512) != SHA512_HEX_LENGTH or any(
         value not in "0123456789abcdef" for value in tarball_sha512
@@ -82,6 +84,8 @@ def qualification(
         "provenance_sha256": provenance_sha256,
         "builder_archive_sha256": builder_archive_sha256,
         "independent_rebuild_sha256": rebuild_wasm_sha256,
+        "build_run_url": build_run_url,
+        "build_commit": build_commit,
         "review": "paired affected/fixed package artifacts with opposite-state controls",
     }
 
@@ -100,6 +104,8 @@ def main() -> int:
     parser.add_argument("--fixed-tarball-sha512", required=True)
     parser.add_argument("--package", required=True)
     parser.add_argument("--implementation-family", required=True)
+    parser.add_argument("--qualification-run-url", default="")
+    parser.add_argument("--qualification-commit", default="")
     for state in ("affected", "fixed"):
         parser.add_argument(f"--{state}-source-commit", required=True)
         parser.add_argument(f"--{state}-builder-commit", required=True)
@@ -123,6 +129,10 @@ def main() -> int:
             parser.error(
                 "Independent source rebuilds do not reproduce the reviewed package modules"
             )
+        if not args.qualification_run_url or not args.qualification_commit:
+            parser.error("Verified source rebuilds require a hosted run URL and build commit")
+    elif args.qualification_run_url or args.qualification_commit:
+        parser.error("Hosted qualification identity requires paired rebuilt Wasm inputs")
     qualification_status = (
         "source_rebuild_verified" if rebuilt is not None else "pending_source_rebuild"
     )
@@ -183,6 +193,8 @@ def main() -> int:
                 provenance_sha256,
                 builder_archive_sha256,
                 rebuild_wasm_sha256,
+                args.qualification_run_url,
+                args.qualification_commit,
             ),
             "qualification_status": qualification_status,
         }
@@ -232,9 +244,11 @@ def main() -> int:
     catalog = load_wasm_profile_catalog(args.output)
     affected_result = match_wasm_profiles(affected, catalog, layout=affected_layout)
     fixed_result = match_wasm_profiles(fixed, catalog, layout=fixed_layout)
+    expected_affected = "vulnerable_code_match" if rebuilt is not None else "unknown"
+    expected_fixed = "fixed_code_match" if rebuilt is not None else "unknown"
     if (
-        affected_result.patch_status != "unknown"
-        or fixed_result.patch_status != "unknown"
+        affected_result.patch_status != expected_affected
+        or fixed_result.patch_status != expected_fixed
         or not affected_result.matches
         or not fixed_result.matches
         or affected_result.matches[0]["qualified_source_status"] != "vulnerable_code_match"
