@@ -300,7 +300,7 @@ jobs:
                     --output "native-candidates/$version-apple-lto-$arch-dwarf.json"
                 done
                 uv run --no-project --python 3.12 python scripts/build_native_flirt_references.py \
-                  --object "native-candidates/$version-apple-lto.o" \
+                  --object "native-candidates/$version-apple-lto-objects.tar" \
                   --linked-binary "$binary" --dsym "$dsym_copy" \
                   --mach-symbol-export "native-candidates/$version-apple-lto-arm64-dwarf.json" \
                   --mach-symbol-export "native-candidates/$version-apple-lto-x86_64-dwarf.json" \

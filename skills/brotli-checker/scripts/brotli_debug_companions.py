@@ -919,6 +919,7 @@ def mach_companion_slices(data: Buffer) -> tuple[dict[str, Any], ...]:
     if not 0 < count <= DEFAULT_DEBUG_LIMITS.max_companions:
         raise ValueError("Invalid Mach debug companion slice population")
     checked_range(data, 8, count * entry_size)
+    table_end = 8 + count * entry_size
     result = []
     ranges = []
     for index in range(count):
@@ -932,8 +933,13 @@ def mach_companion_slices(data: Buffer) -> tuple[dict[str, Any], ...]:
             offset = int.from_bytes(data[cursor + 8 : cursor + 12], byteorder)
             size = int.from_bytes(data[cursor + 12 : cursor + 16], byteorder)
         checked_range(data, offset, size)
-        if not size or any(
-            offset < other_end and other_start < offset + size for other_start, other_end in ranges
+        if (
+            offset < table_end
+            or not size
+            or any(
+                offset < other_end and other_start < offset + size
+                for other_start, other_end in ranges
+            )
         ):
             raise ValueError("Invalid or overlapping Mach debug companion slices")
         ranges.append((offset, offset + size))
@@ -965,6 +971,43 @@ def _mach_slices(data: Buffer) -> list[dict[str, Any]]:
             raise ValueError("Mach-O slice lacks one UUID")
         result.append({**value, "uuid": identities[0]})
     return result
+
+
+def mach_export_scope(
+    uuid: object,
+    machine: object,
+    cpu_subtype: object,
+    artifact_offset: object,
+) -> str:
+    """Return one validated stable routing scope for a Mach target slice."""
+    if (
+        not isinstance(uuid, str)
+        or len(uuid) != 32
+        or uuid.lower() != uuid
+        or any(character not in "0123456789abcdef" for character in uuid)
+        or not isinstance(machine, str)
+        or not machine
+        or type(cpu_subtype) is not int
+        or type(artifact_offset) is not int
+        or artifact_offset < 0
+    ):
+        raise ValueError("Invalid Mach debug export routing slice identity")
+    return f"{uuid}:{machine}:{cpu_subtype}:{artifact_offset}"
+
+
+def expected_mach_export_scopes(data: Buffer) -> tuple[str, ...]:
+    """Return exact scopes for every validated executable slice in one Mach target."""
+    return tuple(
+        sorted(
+            mach_export_scope(
+                value["uuid"],
+                value["machine"],
+                value.get("cpu_subtype"),
+                value["slice_offset"],
+            )
+            for value in _mach_slices(data)
+        )
+    )
 
 
 def _mach_export_sha256(value: object, field: str) -> str:
@@ -1036,22 +1079,13 @@ def debug_symbol_export_identity(
     if packet.get("format") == "llvm-dwarfdump-symbols-v1":
         target, companion = mach_debug_export_targets(raw, limits)
         identity = packet.get("slice")
-        if (
-            not isinstance(identity, dict)
-            or not isinstance(identity.get("uuid"), str)
-            or len(identity["uuid"]) != 32
-            or identity["uuid"].lower() != identity["uuid"]
-            or any(character not in "0123456789abcdef" for character in identity["uuid"])
-            or not isinstance(identity.get("machine"), str)
-            or not identity["machine"]
-            or type(identity.get("cpu_subtype")) is not int
-            or type(identity.get("artifact_offset")) is not int
-            or identity["artifact_offset"] < 0
-        ):
+        if not isinstance(identity, dict):
             raise ValueError("Invalid Mach debug export routing slice identity")
-        scope = (
-            f"{identity['uuid']}:{identity['machine']}:"
-            f"{identity['cpu_subtype']}:{identity['artifact_offset']}"
+        scope = mach_export_scope(
+            identity.get("uuid"),
+            identity.get("machine"),
+            identity.get("cpu_subtype"),
+            identity.get("artifact_offset"),
         )
         return "mach", target, companion, scope
     raise ValueError("Unsupported debug symbol export format")

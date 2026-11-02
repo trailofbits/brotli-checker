@@ -54,9 +54,18 @@ class MappedBuffer:
     def __getitem__(self, key: int | slice) -> int | bytes:
         return self.data[key]
 
-    def startswith(self, prefix: bytes, start: int = 0, end: int | None = None) -> bool:
-        stop = len(self) if end is None else min(end, len(self))
-        return self.data[start : start + len(prefix)] == prefix and start + len(prefix) <= stop
+    def startswith(
+        self, prefix: bytes | tuple[bytes, ...], start: int = 0, end: int | None = None
+    ) -> bool:
+        if isinstance(prefix, tuple):
+            return any(self.startswith(item, start, end) for item in prefix)
+        if start > len(self):
+            return False
+        normalized_start, normalized_stop, _ = slice(start, end).indices(len(self))
+        return (
+            len(prefix) <= normalized_stop - normalized_start
+            and self.data[normalized_start : normalized_start + len(prefix)] == prefix
+        )
 
     def find(self, sub: bytes, start: int = 0, end: int | None = None) -> int:
         return self.data.find(sub, start, len(self) if end is None else end)

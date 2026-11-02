@@ -67,6 +67,31 @@ def test_exporter_packet_self_verifies_against_selected_universal_slice(tmp_path
     assert packet["slice"]["machine"] == "aarch64"
 
 
+def test_stable_sparse_buffer_preserves_bytes_startswith_contract(tmp_path):
+    artifact, _, _, _ = universal_mach_fixture()
+    path = tmp_path / "universal.dylib"
+    path.write_bytes(artifact)
+
+    with exporter.stable_data(path) as data:
+        cases = (
+            ((), 0, None),
+            ((b"not-magic", b"\xca\xfe\xba\xbe"), 0, 4),
+            ((artifact[-4:],), -4, None),
+            ((artifact[-3:-1],), -3, -1),
+            ((b"",), -1, -1),
+            ((b"",), len(artifact), len(artifact) - 1),
+            ((b"",), len(artifact) + 1, None),
+        )
+        for prefix, start, end in cases:
+            expected = (
+                artifact.startswith(prefix, start)
+                if end is None
+                else artifact.startswith(prefix, start, end)
+            )
+            assert data.startswith(prefix, start, end) is expected
+        assert debug.inspect_layout(data)["kind"] == "mach_o_universal"
+
+
 def test_exporter_uses_bounded_runner_text_contract(monkeypatch):
     monkeypatch.setattr(
         exporter,
