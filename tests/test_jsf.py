@@ -269,3 +269,15 @@ def test_jsf_requires_an_explicit_cyclonedx_1x_document(mutation):
 def test_jsf_top_level_component_populations_are_not_silently_ignored(document):
     with pytest.raises(ValueError, match="CycloneDX"):
         subject._component_hashes(document)  # noqa: SLF001
+
+
+def test_jsf_key_id_is_signed_but_never_a_trust_selector():
+    jcs = pytest.importorskip("rfc8785")
+    document, policy, private = fixture()
+    document["signature"]["keyId"] = "not-a-policy-key-identifier"
+    del document["signature"]["value"]
+    document["signature"]["value"] = b64url(private.sign(jcs.dumps(document)))
+    assert verify(document, policy)["signature_status"] == "verified"
+    document["signature"]["keyId"] = "changed-without-resigning"
+    with pytest.raises(ValueError, match="signature was not made"):
+        verify(document, policy)

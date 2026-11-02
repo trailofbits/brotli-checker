@@ -85,10 +85,12 @@ Ed25519 profile with externally trusted keys. It uses the maintained
 `rfc8785==0.1.4` implementation for JCS canonicalization, deletes only the JSF
 `value` member, and rejects `excludes`, extensions, multisignatures, chains,
 certificate paths, other algorithms, ambiguous JSON, and embedded keys not in
-the local policy. `keyId` remains an unauthenticated hint.
+the local policy. `keyId` is covered by this signature but does not select or
+authorize a trusted key.
 
 The signed CycloneDX `metadata.timestamp` is checked against the explicit local
-evaluation and trust-refresh times. Authenticated component SHA-256 values join
+evaluation and trust-refresh times. It is a signer-authenticated claim, not an
+independent proof of signing time. Authenticated component SHA-256 values join
 scanned artifacts only by exact digest. They remain authenticated BOM claims and
 never promote patch status. Unsupported JSF profiles are gaps rather than
 partially verified successes.
