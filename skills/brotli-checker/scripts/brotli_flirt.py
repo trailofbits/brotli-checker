@@ -84,6 +84,14 @@ LEGACY_GROUP_FIELDS = {
 NATIVE_GROUP_FIELDS = LEGACY_GROUP_FIELDS | {"format", "abi"}
 NATIVE_PATCH_GROUP_FIELDS = NATIVE_GROUP_FIELDS | {"evidence_scope", "patch_functions"}
 PATCH_EVIDENCE_SCOPE = "patch_bearing_population_v1"
+POSTLINK_EVIDENCE_SCOPE = "postlink_patch_component_v1"
+NATIVE_POSTLINK_GROUP_FIELDS = NATIVE_PATCH_GROUP_FIELDS | {
+    "component_offsets",
+    "linked_artifact_sha256",
+    "symbol_evidence_sha256",
+    "symbol_evidence_format",
+    "transformation",
+}
 IDENTITY_LIMITATION = "FLIRT recognition does not determine target patch status"
 TargetIdentity = tuple[str, int, int, str, str]
 NATIVE_MACHINES = {
@@ -382,15 +390,22 @@ def _valid_digest(value: object) -> bool:
     return isinstance(value, str) and SHA256_PATTERN.fullmatch(value) is not None
 
 
-def _parse_group(  # noqa: C901
+def _parse_group(  # noqa: C901, PLR0912 -- Closed native schemas require adjacent checks.
     entry: object, records: dict[str, FlirtRecord]
 ) -> FlirtGroup:
     if not isinstance(entry, dict) or set(entry) not in (
         LEGACY_GROUP_FIELDS,
         NATIVE_GROUP_FIELDS,
         NATIVE_PATCH_GROUP_FIELDS,
+        NATIVE_POSTLINK_GROUP_FIELDS,
     ):
         msg = "Invalid FLIRT reference group fields"
+        raise ValueError(msg)
+    if (
+        entry.get("evidence_scope") == POSTLINK_EVIDENCE_SCOPE
+        and set(entry) != NATIVE_POSTLINK_GROUP_FIELDS
+    ):
+        msg = "Post-link FLIRT evidence requires the complete closed schema"
         raise ValueError(msg)
     native = "format" in entry
     identity = (entry["machine"], entry["elf_class"], entry["byteorder"])
@@ -410,7 +425,7 @@ def _parse_group(  # noqa: C901
         or (
             "evidence_scope" in entry
             and (
-                entry["evidence_scope"] != PATCH_EVIDENCE_SCOPE
+                entry["evidence_scope"] not in (PATCH_EVIDENCE_SCOPE, POSTLINK_EVIDENCE_SCOPE)
                 or not valid_patch_functions(entry["patch_functions"])
             )
         )
@@ -452,6 +467,32 @@ def _parse_group(  # noqa: C901
         name for names in entry["patch_functions"].values() for name in names
     }:
         msg = "Native patch-bearing FLIRT functions do not match their required role population"
+        raise ValueError(msg)
+    if entry.get("evidence_scope") == POSTLINK_EVIDENCE_SCOPE:
+        offsets = entry["component_offsets"]
+        if (
+            not isinstance(offsets, dict)
+            or set(offsets) != set(parsed)
+            or any(type(value) is not int or value < 0 for value in offsets.values())
+            or not offsets
+            or min(offsets.values()) != 0
+            or len(set(offsets.values())) != len(offsets)
+            or not _valid_digest(entry["linked_artifact_sha256"])
+            or not _valid_digest(entry["symbol_evidence_sha256"])
+            or entry["symbol_evidence_format"]
+            not in ("llvm-pdbutil-symbols-v1", "llvm-dwarfdump-symbols-v1")
+            or not isinstance(entry["transformation"], str)
+            or not entry["transformation"].strip()
+            or any(
+                records[identifier].mask != bytes([EXACT_BYTE]) * records[identifier].size
+                for identifiers in parsed.values()
+                for identifier in identifiers
+            )
+        ):
+            msg = "Invalid post-link FLIRT component evidence"
+            raise ValueError(msg)
+    elif "component_offsets" in entry:
+        msg = "Post-link FLIRT component fields require post-link evidence scope"
         raise ValueError(msg)
     metadata = {key: value for key, value in entry.items() if key != "functions"}
     return FlirtGroup(metadata, parsed)
@@ -648,6 +689,58 @@ def _profiles_for_signature(
     return profiles, sorted(names)
 
 
+def _postlink_components(
+    group: FlirtGroup,
+    matches_by_signature: dict[str, set[int]],
+    records: dict[str, FlirtRecord],
+) -> list[dict[str, Any]]:
+    """Associate a complete patch population only at one reviewed linked-code translation."""
+    offsets = group.metadata["component_offsets"]
+    functions = sorted(group.functions)
+    anchor = min(functions, key=lambda name: (offsets[name], name))
+    bases = {
+        position - offsets[anchor]
+        for identifier in group.functions[anchor]
+        for position in matches_by_signature.get(identifier, set())
+    }
+    components = []
+    for base in sorted(bases):
+        selected: dict[str, tuple[str, int]] = {}
+        for name in functions:
+            position = base + offsets[name]
+            identifiers = [
+                identifier
+                for identifier in group.functions[name]
+                if position in matches_by_signature.get(identifier, set())
+            ]
+            if len(identifiers) != 1:
+                break
+            selected[name] = (identifiers[0], position)
+        else:
+            extent = max(
+                position + records[identifier].size for identifier, position in selected.values()
+            )
+            components.append(
+                {
+                    **group.metadata,
+                    "method": "native_flirt_postlink_component",
+                    "source_state_provenance": group.metadata["source_state"],
+                    "source_state": "provenance_only",
+                    "target_patch_status": (
+                        "fixed_code_match"
+                        if group.metadata["source_state"] == "fixed"
+                        else "vulnerable_code_match"
+                    ),
+                    "component_file_offset": base,
+                    "component_size_bytes": extent - base,
+                    "matched_signature_ids": sorted(
+                        identifier for identifier, _position in selected.values()
+                    ),
+                }
+            )
+    return components
+
+
 def _target_contexts(data: Buffer) -> tuple[tuple[_TargetContext, ...], tuple[str, ...]]:
     if data.startswith(b"\x7fELF"):
         header = elf_header(data)
@@ -840,6 +933,12 @@ def _match_flirt_context(  # noqa: C901, PLR0912, PLR0915
             f"{ambiguity_count} FLIRT candidate(s) matched multiple signatures; names unresolved"
         )
     matched_ids = {row["signature_id"] for row in matches}
+    matches_by_signature: dict[str, set[int]] = {}
+    for row in matches:
+        signature_id = row["signature_id"]
+        file_offset = row["file_offset"]
+        if isinstance(signature_id, str) and type(file_offset) is int:
+            matches_by_signature.setdefault(signature_id, set()).add(file_offset)
     patch_profiles = []
     if not limited and not ambiguity_count:
         patch_profiles.extend(
@@ -858,6 +957,12 @@ def _match_flirt_context(  # noqa: C901, PLR0912, PLR0915
                 and group.signature_ids <= matched_ids
             )
         )
+        for group in catalog.groups:
+            if (
+                group.identity == identity
+                and group.metadata.get("evidence_scope") == POSTLINK_EVIDENCE_SCOPE
+            ):
+                patch_profiles.extend(_postlink_components(group, matches_by_signature, records))
     if limited:
         status: Literal["recognized", "partial", "unknown", "limited", "not_applicable"] = "limited"
     elif matches:

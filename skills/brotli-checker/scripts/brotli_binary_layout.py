@@ -7,6 +7,8 @@ loads or executes a target and never resolves embedded paths or dependencies.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import struct
 from contextlib import suppress
 from dataclasses import dataclass
@@ -24,6 +26,7 @@ MAX_WASM_TOTAL_CODE_BYTES = 256 * 1024 * 1024
 MAX_EXPORT_TRIE_NODES = 100_000
 MAX_MACH_SLICES = 256
 MAX_GAPS = 256
+HASH_CHUNK_BYTES = 1024 * 1024
 WASM_NO_IMMEDIATE = frozenset((0x00, 0x01, 0x05, 0x0F, 0x1A, 0x1B, 0xD1, 0xD3)) | frozenset(
     range(0x45, 0xC5)
 )
@@ -93,6 +96,11 @@ def _validate_range(data: Buffer, offset: int, size: int, end: int | None = None
 def _checked(data: Buffer, offset: int, size: int, end: int | None = None) -> bytes:
     _validate_range(data, offset, size, end)
     return data[offset : offset + size]
+
+
+def _update_digest_range(digest: Any, data: Buffer, offset: int, size: int) -> None:
+    for cursor in range(offset, offset + size, HASH_CHUNK_BYTES):
+        digest.update(data[cursor : min(offset + size, cursor + HASH_CHUNK_BYTES)])
 
 
 def _cstring(data: Buffer, offset: int, end: int) -> str:
@@ -879,6 +887,8 @@ def _inspect_wasm(data: Buffer, result: dict[str, Any]) -> None:
     if _checked(data, 0, 8) != b"\0asm\x01\0\0\0":
         raise ValueError("unsupported WebAssembly magic or version")
     result.update(machine="wasm", abi="wasm-core-1", bits=32, byteorder="little")
+    noncustom_digest = hashlib.sha256()
+    _update_digest_range(noncustom_digest, data, 0, 8)
     cursor = 8
     sections: dict[int, tuple[int, int]] = {}
     custom: list[tuple[str, int, int]] = []
@@ -900,6 +910,7 @@ def _inspect_wasm(data: Buffer, result: dict[str, Any]) -> None:
     previous_order = 0
     section_count = 0
     while cursor < len(data):
+        section_start = cursor
         section_count += 1
         if section_count > MAX_SECTIONS:
             raise ValueError("WebAssembly section count exceeds limit")
@@ -921,7 +932,10 @@ def _inspect_wasm(data: Buffer, result: dict[str, Any]) -> None:
                 raise ValueError("WebAssembly sections are out of specification order")
             previous_order = current_order
             sections[section_id] = (start, end)
+        if section_id != 0:
+            _update_digest_range(noncustom_digest, data, section_start, end - section_start)
         cursor = end
+    result["wasm_noncustom_sha256"] = noncustom_digest.hexdigest()
     types = _wasm_types(data, sections.get(1))
     imported_functions = _wasm_imports(data, result, sections.get(2), types)
     function_types = _wasm_function_types(data, sections.get(3))
@@ -954,6 +968,7 @@ def _inspect_wasm(data: Buffer, result: dict[str, Any]) -> None:
         if count_cursor.offset != count_cursor.end or declared != data_count:
             _gap(result, "WebAssembly data-count section does not match parsed data segments")
     _wasm_names(data, result, custom)
+    _wasm_function_identities(data, result, types)
     for name, start, end in custom:
         if name in ("build_id", "external_debug_info", "producers") or name.startswith(".debug_"):
             result["debug_identities"].append(
@@ -1092,17 +1107,27 @@ def _wasm_exports(data: Buffer, result: dict[str, Any], section: tuple[int, int]
         raise ValueError("trailing WebAssembly export bytes")
 
 
-def _sleb(cursor: _Cursor, bits: int) -> None:
+def _sleb(cursor: _Cursor, bits: int) -> int:
+    value = 0
+    shift = 0
+    byte = 0
     for _ in range((bits + 6) // 7):
-        if not cursor.byte() & 0x80:
-            return
+        byte = cursor.byte()
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            value &= (1 << bits) - 1
+            if value & (1 << (bits - 1)):
+                value -= 1 << bits
+            return value
     raise ValueError("invalid signed LEB128")
 
 
-def _wasm_expr(cursor: _Cursor) -> None:
+def _wasm_expr(cursor: _Cursor) -> int | None:
     opcode = cursor.byte()
+    value = None
     if opcode in (0x41, 0x42):
-        _sleb(cursor, 64)
+        value = _sleb(cursor, 32 if opcode == 0x41 else 64)
     elif opcode == 0x23:
         cursor.u32()
     elif opcode in (0x43, 0x44):
@@ -1115,6 +1140,7 @@ def _wasm_expr(cursor: _Cursor) -> None:
         raise ValueError("unsupported WebAssembly initializer expression")
     if cursor.byte() != 0x0B:
         raise ValueError("unterminated WebAssembly initializer expression")
+    return value
 
 
 def _wasm_code(
@@ -1147,7 +1173,7 @@ def _wasm_code(
             body.u32()
             body.byte()
         instruction_start = body.offset
-        direct, indirect, complete = _wasm_calls(body)
+        direct, indirect, complete, call_sites, data_addresses, memory_accesses = _wasm_calls(body)
         item = {
             "index": imported_functions + ordinal,
             "type_index": function_types[ordinal],
@@ -1157,6 +1183,9 @@ def _wasm_code(
             "direct_calls": direct,
             "indirect_calls": indirect,
             "calls_complete": complete,
+            "data_addresses": data_addresses,
+            "_memory_accesses": memory_accesses,
+            "_call_sites": call_sites,
         }
         result["functions"].append(item)
         result["ranges"]["code"].append(
@@ -1176,13 +1205,21 @@ def _wasm_code(
         raise ValueError("trailing WebAssembly code bytes")
 
 
-def _wasm_calls(cursor: _Cursor) -> tuple[list[int], int, bool]:
+def _wasm_calls(
+    cursor: _Cursor,
+) -> tuple[list[int], int, bool, list[tuple[int, int, int]], list[int], int]:
     calls = []
     indirect = 0
+    call_sites = []
+    data_addresses = []
+    memory_accesses = 0
+    pending_i32: int | None = None
     depth = 1
     try:
         while cursor.offset < cursor.end and depth:
             opcode = cursor.byte()
+            if opcode not in (0x01, 0x41) and not 0x28 <= opcode <= 0x3E:
+                pending_i32 = None
             if opcode in (0x02, 0x03, 0x04):
                 block = cursor.byte()
                 if block & 0x80:
@@ -1195,8 +1232,11 @@ def _wasm_calls(cursor: _Cursor) -> tuple[list[int], int, bool]:
                 cursor.u32()
             elif opcode in (0x10, 0x12):
                 if len(calls) >= MAX_ITEMS:
-                    return calls, indirect, False
-                calls.append(cursor.u32())
+                    return calls, indirect, False, call_sites, data_addresses, memory_accesses
+                immediate_start = cursor.offset
+                target = cursor.u32()
+                calls.append(target)
+                call_sites.append((immediate_start, cursor.offset, target))
             elif opcode in (0x11, 0x13):
                 cursor.u32()
                 cursor.u32()
@@ -1207,12 +1247,16 @@ def _wasm_calls(cursor: _Cursor) -> tuple[list[int], int, bool]:
             elif opcode == 0x1C:
                 cursor.take(_wasm_vec_count(cursor))
             elif 0x28 <= opcode <= 0x3E:
+                memory_accesses += 1
                 cursor.u32()
-                cursor.u32()
+                memory_offset = cursor.u32()
+                if pending_i32 is not None and pending_i32 >= 0:
+                    data_addresses.append(pending_i32 + memory_offset)
+                pending_i32 = None
             elif opcode in (0x3F, 0x40):
                 cursor.u32()
             elif opcode == 0x41:
-                _sleb(cursor, 32)
+                pending_i32 = _sleb(cursor, 32)
             elif opcode == 0x42:
                 _sleb(cursor, 64)
             elif opcode == 0x43:
@@ -1222,10 +1266,17 @@ def _wasm_calls(cursor: _Cursor) -> tuple[list[int], int, bool]:
             elif opcode == 0xD0:
                 cursor.byte()
             elif opcode not in WASM_NO_IMMEDIATE:
-                return calls, indirect, False
-        return calls, indirect, depth == 0 and cursor.offset == cursor.end
+                return calls, indirect, False, call_sites, data_addresses, memory_accesses
+        return (
+            calls,
+            indirect,
+            depth == 0 and cursor.offset == cursor.end,
+            call_sites,
+            data_addresses,
+            memory_accesses,
+        )
     except ValueError:
-        return calls, indirect, False
+        return calls, indirect, False, call_sites, data_addresses, memory_accesses
 
 
 def _wasm_data(data: Buffer, result: dict[str, Any], section: tuple[int, int] | None) -> int:
@@ -1238,12 +1289,16 @@ def _wasm_data(data: Buffer, result: dict[str, Any], section: tuple[int, int] | 
         item: dict[str, Any] = {"data_index": index}
         if flags == 0:
             item.update(mode="active", memory_index=0)
-            _wasm_expr(cursor)
+            memory_offset = _wasm_expr(cursor)
+            if memory_offset is not None and memory_offset >= 0:
+                item["memory_offset"] = memory_offset
         elif flags == 1:
             item.update(mode="passive")
         elif flags == 2:
             item.update(mode="active", memory_index=cursor.u32())
-            _wasm_expr(cursor)
+            memory_offset = _wasm_expr(cursor)
+            if memory_offset is not None and memory_offset >= 0:
+                item["memory_offset"] = memory_offset
         else:
             raise ValueError("unsupported WebAssembly data-segment flags")
         size = cursor.u32()
@@ -1261,6 +1316,148 @@ def _wasm_data(data: Buffer, result: dict[str, Any], section: tuple[int, int] | 
     if cursor.offset != cursor.end:
         raise ValueError("trailing WebAssembly data bytes")
     return count
+
+
+def _hash_range(data: Buffer, start: int, size: int) -> str:
+    digest = hashlib.sha256()
+    _update_digest_range(digest, data, start, size)
+    return digest.hexdigest()
+
+
+def _canonical_bytes(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _wasm_canonical_body(
+    data: Buffer,
+    function: dict[str, Any],
+    function_type: dict[str, Any],
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"wasm-function-body-v1\0")
+    digest.update(_canonical_bytes(function_type))
+    cursor = function["file_offset"]
+    end = cursor + function["size"]
+    for immediate_start, immediate_end, _ in function["_call_sites"]:
+        if not cursor <= immediate_start < immediate_end <= end:
+            raise ValueError("WebAssembly call site is outside its function body")
+        for offset in range(cursor, immediate_start, HASH_CHUNK_BYTES):
+            digest.update(data[offset : min(immediate_start, offset + HASH_CHUNK_BYTES)])
+        digest.update(b"\0canonical-function-index\0")
+        cursor = immediate_end
+    for offset in range(cursor, end, HASH_CHUNK_BYTES):
+        digest.update(data[offset : min(end, offset + HASH_CHUNK_BYTES)])
+    return digest.hexdigest()
+
+
+def _wasm_function_identities(
+    data: Buffer, result: dict[str, Any], types: list[dict[str, Any]]
+) -> None:
+    imports = [item for item in result["imports"] if item.get("kind") == 0]
+    import_identities = []
+    for item in imports:
+        identity = {
+            "kind": "import",
+            "module": item["module"],
+            "name": item["name"],
+            "type": item["type"],
+        }
+        import_identities.append(hashlib.sha256(_canonical_bytes(identity)).hexdigest())
+    defined = result["functions"]
+    bases = []
+    for function in defined:
+        if not function["calls_complete"]:
+            function.pop("_call_sites", None)
+            function.pop("data_addresses", None)
+            function.pop("_memory_accesses", None)
+            function["function_identity"] = {
+                "kind": "wasm_function_v1",
+                "status": "unavailable",
+                "implementation_family": "unclassified",
+                "patch_status": "unknown",
+            }
+            bases.append(None)
+            continue
+        canonical = _wasm_canonical_body(data, function, types[function["type_index"]])
+        bases.append(canonical)
+    all_targets: list[str | None] = [*import_identities, *bases]
+    data_ranges = [
+        item
+        for item in result["ranges"]["data"]
+        if item.get("mode") == "active"
+        and item.get("memory_index") == 0
+        and type(item.get("memory_offset")) is int
+    ]
+    for function, canonical in zip(defined, bases, strict=True):
+        if canonical is None:
+            continue
+        if any(all_targets[target] is None for target in function["direct_calls"]):
+            function.pop("_call_sites")
+            function.pop("data_addresses")
+            function.pop("_memory_accesses")
+            function["function_identity"] = {
+                "kind": "wasm_function_v1",
+                "status": "unavailable",
+                "implementation_family": "unclassified",
+                "patch_status": "unknown",
+            }
+            _gap(
+                result,
+                f"WebAssembly function {function['index']} identity has an incomplete call target",
+            )
+            continue
+        call_references = []
+        profile = hashlib.sha256()
+        profile.update(b"wasm-function-profile-v1\0")
+        profile.update(canonical.encode("ascii"))
+        for target in function["direct_calls"]:
+            target_identity = all_targets[target]
+            if target_identity is None:
+                continue
+            reference = {
+                "kind": "import" if target < len(imports) else "defined",
+                "target_identity": target_identity,
+            }
+            call_references.append(reference)
+            profile.update(b"\0call\0")
+            profile.update(_canonical_bytes(reference))
+        data_references = []
+        unresolved_data = 0
+        data_addresses = function.pop("data_addresses")
+        memory_accesses = function.pop("_memory_accesses")
+        for address in data_addresses:
+            owners = [
+                item
+                for item in data_ranges
+                if item["memory_offset"] <= address < item["memory_offset"] + item["size"]
+            ]
+            if len(owners) != 1:
+                unresolved_data += 1
+                continue
+            owner = owners[0]
+            reference = {
+                "data_index": owner["data_index"],
+                "offset": address - owner["memory_offset"],
+                "segment_sha256": _hash_range(data, owner["file_offset"], owner["size"]),
+            }
+            data_references.append(reference)
+            profile.update(b"\0data\0")
+            profile.update(_canonical_bytes(reference))
+        function.pop("_call_sites")
+        function["function_identity"] = {
+            "kind": "wasm_function_v1",
+            "status": "verified_identity",
+            "implementation_family": "unclassified",
+            "exact_body_sha256": _hash_range(data, function["file_offset"], function["size"]),
+            "canonical_body_sha256": canonical,
+            "profile_sha256": profile.hexdigest(),
+            "direct_call_references": call_references,
+            "data_references": data_references,
+            "data_references_complete": (
+                unresolved_data == 0 and len(data_addresses) == memory_accesses
+            ),
+            "patch_status": "unknown",
+        }
 
 
 def _wasm_names(data: Buffer, result: dict[str, Any], custom: list[tuple[str, int, int]]) -> None:

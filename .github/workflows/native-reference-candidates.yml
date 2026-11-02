@@ -8,6 +8,7 @@ on:
       - scripts/build_native_flirt_references.py
       - scripts/verify_native_flirt_pair.py
       - scripts/export_pdb_symbols.py
+      - scripts/export_mach_debug_symbols.py
       - scripts/build_flirt_references.py
       - skills/brotli-checker/scripts/brotli_flirt.py
       - skills/brotli-checker/scripts/brotli_debug_companions.py
@@ -98,22 +99,35 @@ jobs:
                   --object $object.FullName --output $output
                 Copy-Item $binary.FullName "native-candidates/$($item.Version)-$toolchain-$profile.dll"
                 Copy-Item $object.FullName "native-candidates/$($item.Version)-$toolchain-$profile.obj"
+                $pdb = Get-ChildItem $build -Recurse -Filter brotlidec.pdb | Select-Object -First 1
+                if (-not $pdb) { throw "Native build PDB is missing" }
+                $pdbStem = if ($profile -eq 'normal') { "$($item.Version)-$toolchain" } else { "$($item.Version)-$toolchain-$profile" }
+                $pdbCopy = "native-candidates/$pdbStem.pdb"
+                $symbolExport = "native-candidates/$pdbStem-pdb-symbols.json"
+                Copy-Item $pdb.FullName $pdbCopy
+                uv run --no-project --python 3.12 python scripts/export_pdb_symbols.py `
+                  $binary.FullName $pdb.FullName `
+                  --llvm-pdbutil "$env:ProgramFiles/LLVM/bin/llvm-pdbutil.exe" `
+                  --diagnostic-output "native-candidates/$pdbStem-pdb-symbols.txt" `
+                  --output $symbolExport
+                $compiler = (Get-Content -Raw $versionFile).Trim()
                 if ($profile -eq 'normal') {
-                  $pdb = Get-ChildItem $build -Recurse -Filter brotlidec.pdb | Select-Object -First 1
-                  if (-not $pdb) { throw "Native build PDB is missing" }
-                  Copy-Item $pdb.FullName "native-candidates/$($item.Version)-$toolchain.pdb"
-                  $compiler = (Get-Content -Raw $versionFile).Trim()
                   uv run --no-project --python 3.12 python scripts/build_native_flirt_references.py `
                     --object $object.FullName --source-tree "native-candidates/brotli-$($item.Version)" `
                     --compiler $compiler --flags "$toolchain /O2 /Gy x86_64" `
                     --build-note 'Native hosted runner; reviewed source and complete patch-role population' `
                     --output "native-candidates/$($item.Version)-$toolchain-flirt.json" `
                     --pat-output "native-candidates/$($item.Version)-$toolchain-flirt.pat"
-                  uv run --no-project --python 3.12 python scripts/export_pdb_symbols.py `
-                    $binary.FullName $pdb.FullName `
-                    --llvm-pdbutil "$env:ProgramFiles/LLVM/bin/llvm-pdbutil.exe" `
-                    --diagnostic-output "native-candidates/$($item.Version)-$toolchain-pdb-symbols.txt" `
-                    --output "native-candidates/$($item.Version)-$toolchain-pdb-symbols.json"
+                } else {
+                  uv run --no-project --python 3.12 python scripts/build_native_flirt_references.py `
+                    --object $object.FullName --linked-binary $binary.FullName --pdb $pdb.FullName `
+                    --pdb-symbol-export $symbolExport `
+                    --source-tree "native-candidates/brotli-$($item.Version)" `
+                    --compiler $compiler --flags "$toolchain LTCG /O2 /Gy /OPT:REF /OPT:ICF x86_64" `
+                    --transformation 'LTCG /OPT:REF /OPT:ICF' `
+                    --build-note 'Native hosted post-link profile; hash-bound PDB function bounds' `
+                    --output "native-candidates/$($item.Version)-$toolchain-ltcg-flirt.json" `
+                    --pat-output "native-candidates/$($item.Version)-$toolchain-ltcg-flirt.pat"
                 }
               }
             }
@@ -126,6 +140,14 @@ jobs:
               --fixed-binary "native-candidates/1.2.1-$toolchain-normal.dll" `
               --fixed-bundle "native-candidates/1.2.1-$toolchain-flirt.json" `
               --output "native-candidates/$toolchain-pair-verification.json"
+            uv run --no-project --python 3.12 --with 'python-flirt==0.10.2' python `
+              scripts/verify_native_flirt_pair.py `
+              --affected-binary "native-candidates/1.2.0-$toolchain-ltcg.dll" `
+              --affected-bundle "native-candidates/1.2.0-$toolchain-ltcg-flirt.json" `
+              --fixed-binary "native-candidates/1.2.1-$toolchain-ltcg.dll" `
+              --fixed-bundle "native-candidates/1.2.1-$toolchain-ltcg-flirt.json" `
+              --component-bound --mixed-copy-control `
+              --output "native-candidates/$toolchain-ltcg-pair-verification.json"
           }
       - if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -172,7 +194,7 @@ jobs:
               args=(-S "native-candidates/brotli-$version" -B "$build" -G Ninja
                 -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
                 '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64'
-                '-DCMAKE_C_FLAGS_RELEASE=-O2 -ffunction-sections -DNDEBUG'
+                '-DCMAKE_C_FLAGS_RELEASE=-O2 -g -ffunction-sections -DNDEBUG'
                 '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-no_fixup_chains,-dead_strip')
               if [[ "$profile" == lto ]]; then
                 args+=(-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)
@@ -201,6 +223,10 @@ jobs:
                     --output "native-candidates/$version-apple-$arch-flirt.json" \
                     --pat-output "native-candidates/$version-apple-$arch-flirt.pat"
                 done
+              else
+                cmake_object="$(find "$build" -name 'decode.c.o' -type f | head -1)"
+                test -n "$cmake_object"
+                cp "$cmake_object" "native-candidates/$version-apple-lto.o"
               fi
               uv run --no-project --python 3.12 python scripts/record_native_candidate.py --binary "$binary" \
                 --source-tree "native-candidates/brotli-$version" \
@@ -208,6 +234,34 @@ jobs:
                 --flags "apple-clang $profile universal2 dead_strip no_fixup_chains" \
                 "${record_args[@]}"
               cp "$binary" "native-candidates/$version-apple-$profile.dylib"
+              if [[ "$profile" == lto ]]; then
+                dsym_bundle="native-candidates/$version-apple-lto.dSYM"
+                xcrun dsymutil "$binary" -o "$dsym_bundle"
+                dsym_binary="$(find "$dsym_bundle/Contents/Resources/DWARF" -type f | head -1)"
+                test -n "$dsym_binary"
+                dsym_copy="native-candidates/$version-apple-lto.dwarf"
+                cp "$dsym_binary" "$dsym_copy"
+                dwarfdump="$(xcrun --find dwarfdump)"
+                for specification in 'aarch64 arm64' 'x86_64 x86_64'; do
+                  read -r machine arch <<< "$specification"
+                  uv run --no-project --python 3.12 python scripts/export_mach_debug_symbols.py \
+                    "$binary" "$dsym_copy" --machine "$machine" --llvm-dwarfdump "$dwarfdump" \
+                    --diagnostic-output "native-candidates/$version-apple-lto-$arch-dwarf.txt" \
+                    --output "native-candidates/$version-apple-lto-$arch-dwarf.json"
+                done
+                uv run --no-project --python 3.12 python scripts/build_native_flirt_references.py \
+                  --object "native-candidates/$version-apple-lto.o" \
+                  --linked-binary "$binary" --dsym "$dsym_copy" \
+                  --mach-symbol-export "native-candidates/$version-apple-lto-arm64-dwarf.json" \
+                  --mach-symbol-export "native-candidates/$version-apple-lto-x86_64-dwarf.json" \
+                  --source-tree "native-candidates/brotli-$version" \
+                  --compiler "$(head -1 "$version_file")" \
+                  --flags 'apple-clang LTO universal2 -O2 -g -dead_strip -no_fixup_chains' \
+                  --transformation 'LTO dead_strip universal2' \
+                  --build-note 'Native hosted post-link profile; hash-bound per-slice dSYM function bounds' \
+                  --output "native-candidates/$version-apple-lto-flirt.json" \
+                  --pat-output "native-candidates/$version-apple-lto-flirt.pat"
+              fi
             done
             uv run --no-project --python 3.12 python scripts/build_flirt_references.py \
               --merge "native-candidates/$version-apple-x86_64-flirt.json" \
@@ -222,14 +276,24 @@ jobs:
             --fixed-binary native-candidates/1.2.1-apple-normal.dylib \
             --fixed-bundle native-candidates/1.2.1-apple-flirt.json \
             --output native-candidates/apple-pair-verification.json
+          uv run --no-project --python 3.12 --with 'python-flirt==0.10.2' python \
+            scripts/verify_native_flirt_pair.py \
+            --affected-binary native-candidates/1.2.0-apple-lto.dylib \
+            --affected-bundle native-candidates/1.2.0-apple-lto-flirt.json \
+            --fixed-binary native-candidates/1.2.1-apple-lto.dylib \
+            --fixed-bundle native-candidates/1.2.1-apple-lto-flirt.json \
+            --component-bound --mixed-copy-control \
+            --output native-candidates/apple-lto-pair-verification.json
       - if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-reference-candidates-macos
           path: |
             native-candidates/*.dylib
+            native-candidates/*.dwarf
             native-candidates/*.o
             native-candidates/*.json
             native-candidates/*.pat
+            native-candidates/*-dwarf.txt
           if-no-files-found: error
           retention-days: 14

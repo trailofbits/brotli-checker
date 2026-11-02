@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# ruff: noqa: C901, EM101, EM102, PLR2004, TRY003
-"""Build patch-bearing FLIRT references from reviewed COFF or Mach-O objects."""
+# ruff: noqa: C901, EM101, EM102, PERF401, PLR0915, PLR2004, TRY003, TRY301
+"""Build native FLIRT references from objects or verified post-link debug bounds."""
 
 from __future__ import annotations
 
@@ -10,11 +10,14 @@ import json
 import runpy
 import struct
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills/brotli-checker/scripts"))
+from brotli_binary_data import Buffer, file_data, sha256_data  # noqa: E402
+from brotli_binary_layout import inspect_layout  # noqa: E402
 from brotli_binary_match import (  # noqa: E402
     EM_386,
     EM_AARCH64,
@@ -23,13 +26,20 @@ from brotli_binary_match import (  # noqa: E402
     PATCH_ROLE_PATTERNS,
     valid_patch_functions,
 )
+from brotli_debug_companions import (  # noqa: E402
+    FunctionHint,
+    verify_mach_debug_export,
+    verify_pdb_symbol_export,
+)
 
 ELF_BUILDER = runpy.run_path(str(ROOT / "scripts/build_flirt_references.py"))
 FunctionPattern = ELF_BUILDER["FunctionPattern"]
 resolve_ambiguities = ELF_BUILDER["resolve_ambiguities"]
 render_pat = ELF_BUILDER["render_pat"]
+strong_pattern = ELF_BUILDER["strong_pattern"]
 write_catalog = ELF_BUILDER["write_catalog"]
 MAX_OBJECT_BYTES = 512 * 1024 * 1024
+MAX_SYMBOL_EVIDENCE_BYTES = 64 * 1024 * 1024
 MAX_SECTIONS = 65_536
 MAX_SYMBOLS = 1_000_000
 MAX_RELOCATIONS = 1_000_000
@@ -102,11 +112,19 @@ class NativeSymbol:
     size: int
 
 
-def checked(data: bytes, offset: int, size: int) -> bytes:
+@dataclass(frozen=True)
+class PostlinkFunction:
+    name: str
+    virtual_address: int
+    file_offset: int
+    size: int
+
+
+def checked(data: Buffer, offset: int, size: int) -> bytes:
     if offset < 0 or size < 0 or offset > len(data) or size > len(data) - offset:
         msg = "Native object range is outside the supplied bytes"
         raise ValueError(msg)
-    return data[offset : offset + size]
+    return bytes(data[offset : offset + size])
 
 
 def c_string(data: bytes, offset: int, end: int) -> str:
@@ -338,6 +356,245 @@ def patch_population(patterns: list[FunctionPattern]) -> dict[str, list[str]]:
     return result
 
 
+def _postlink_patterns(
+    data: Buffer,
+    functions: tuple[FunctionHint, ...],
+    machine: int,
+    bits: int,
+) -> tuple[list[FunctionPattern], dict[str, int]]:
+    selected = []
+    for function in functions:
+        if (
+            isinstance(function.name, str)
+            and type(function.virtual_address) is int
+            and type(function.file_offset) is int
+            and type(function.size) is int
+            and is_patch_name(function.name)
+        ):
+            selected.append(
+                PostlinkFunction(
+                    function.name,
+                    function.virtual_address,
+                    function.file_offset,
+                    function.size,
+                )
+            )
+    selected.sort(key=lambda function: (function.virtual_address, function.size, function.name))
+    if not selected or len({function.name for function in selected}) != len(selected):
+        raise ValueError("Post-link symbol evidence has missing or duplicate patch functions")
+    previous_end = -1
+    for function in selected:
+        if function.virtual_address < previous_end:
+            raise ValueError("Post-link patch functions overlap or alias after optimization")
+        previous_end = function.virtual_address + function.size
+    anchor = selected[0].virtual_address
+    patterns = []
+    offsets = {}
+    for function in selected:
+        code = bytes(checked(data, function.file_offset, function.size))
+        pattern = FunctionPattern(
+            function.name,
+            machine,
+            bits,
+            "little",
+            code,
+            b"\xff" * len(code),
+        )
+        if strong_pattern(pattern):
+            patterns.append(pattern)
+            offsets[function.name] = function.virtual_address - anchor
+    patterns, ambiguous = resolve_ambiguities(patterns)
+    if ambiguous:
+        raise ValueError("Post-link patch functions have name-ambiguous code patterns")
+    roles = patch_population(patterns)
+    names = {name for values in roles.values() for name in values}
+    patterns = [pattern for pattern in patterns if pattern.name in names]
+    offsets = {name: offsets[name] for name in sorted(names)}
+    if min(offsets.values()) != 0:
+        raise ValueError("Post-link profile lost its component anchor function")
+    return patterns, offsets
+
+
+def postlink_patterns(
+    data: Buffer, functions: tuple[FunctionHint, ...]
+) -> tuple[list[FunctionPattern], dict[str, int], str, int, str]:
+    """Extract exact PE linked-code patterns from independently verified PDB bounds."""
+    layout = inspect_layout(data)
+    if layout["kind"] != "pe" or layout["gaps"] or layout["slices"]:
+        raise ValueError("Post-link PDB profiles require one complete PE image")
+    machine_name = layout["machine"]
+    machine = {"i386": EM_386, "x86_64": EM_X86_64, "aarch64": EM_AARCH64}.get(machine_name)
+    if machine is None or layout["bits"] not in (32, 64) or layout["byteorder"] != "little":
+        raise ValueError("Unsupported post-link PE identity")
+    patterns, offsets = _postlink_patterns(data, functions, machine, layout["bits"])
+    return patterns, offsets, "pe", machine, "windows"
+
+
+def postlink_mach_patterns(
+    data: Buffer, functions: tuple[FunctionHint, ...], slice_uuid: str
+) -> tuple[list[FunctionPattern], dict[str, int], str, int, str]:
+    """Extract exact per-slice linked-code patterns from verified dSYM bounds."""
+    layout = inspect_layout(data)
+    rows = layout["slices"] or [layout]
+    owners = [
+        row
+        for row in rows
+        if any(
+            identity.get("kind") == "mach_uuid" and identity.get("uuid") == slice_uuid
+            for identity in row.get("debug_identities", [])
+        )
+    ]
+    if len(owners) != 1 or owners[0]["gaps"]:
+        raise ValueError("Post-link dSYM profile lacks one complete Mach slice owner")
+    owner = owners[0]
+    machine = {"x86_64": EM_X86_64, "aarch64": EM_AARCH64}.get(owner["machine"])
+    if machine is None or owner["bits"] != 64 or owner["byteorder"] != "little":
+        raise ValueError("Unsupported post-link Mach identity")
+    patterns, offsets = _postlink_patterns(data, functions, machine, owner["bits"])
+    return patterns, offsets, "mach_o", machine, "darwin"
+
+
+def _postlink_group(  # noqa: PLR0913, PLR0917
+    patterns: list[FunctionPattern],
+    offsets: dict[str, int],
+    format_name: str,
+    machine: int,
+    abi: str,
+    binary: Buffer,
+    symbol_evidence: bytes,
+    symbol_evidence_format: str,
+    object_data: bytes,
+    tree: Path,
+    compiler: str,
+    flags: str,
+    build_note: str,
+    transformation: str,
+) -> tuple[list[FunctionPattern], dict]:
+    roles = patch_population(patterns)
+    names = {name for values in roles.values() for name in values}
+    functions = {
+        name: sorted(pattern.signature_id for pattern in patterns if pattern.name == name)
+        for name in sorted(names)
+    }
+    source = tree / "c/dec/decode.c"
+    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    sources = ELF_BUILDER["reviewed_sources"]()
+    if source_sha256 not in sources:
+        raise ValueError(f"Unreviewed decoder source: {source_sha256}")
+    linked_sha256 = sha256_data(binary)
+    symbol_sha256 = hashlib.sha256(symbol_evidence).hexdigest()
+    seed = json.dumps(
+        {
+            "format": format_name,
+            "machine": machine,
+            "compiler": compiler,
+            "flags": flags,
+            "source_sha256": source_sha256,
+            "linked_artifact_sha256": linked_sha256,
+            "symbol_evidence_sha256": symbol_sha256,
+            "transformation": transformation,
+        },
+        sort_keys=True,
+    ).encode()
+    group = {
+        "id": "brotli_postlink_" + hashlib.sha256(seed).hexdigest()[:32],
+        "format": format_name,
+        "abi": abi,
+        "machine": machine,
+        "elf_class": patterns[0].elf_class,
+        "byteorder": "little",
+        "source_sha256": source_sha256,
+        "object_sha256": hashlib.sha256(object_data).hexdigest(),
+        "headers_sha256": ELF_BUILDER["header_digest"](tree),
+        "source": sources[source_sha256]["sources"][0]["url"],
+        "source_state": sources[source_sha256]["state"],
+        "compiler": compiler,
+        "flags": flags,
+        "build_note": build_note,
+        "evidence_scope": "postlink_patch_component_v1",
+        "patch_functions": roles,
+        "component_offsets": offsets,
+        "linked_artifact_sha256": linked_sha256,
+        "symbol_evidence_sha256": symbol_sha256,
+        "symbol_evidence_format": symbol_evidence_format,
+        "transformation": transformation,
+        "functions": functions,
+    }
+    return patterns, group
+
+
+def group_for_postlink_pe(  # noqa: PLR0913, PLR0917
+    binary: Buffer,
+    pdb: Buffer,
+    symbol_evidence: bytes,
+    object_data: bytes,
+    tree: Path,
+    compiler: str,
+    flags: str,
+    build_note: str,
+    transformation: str,
+) -> tuple[list[FunctionPattern], dict]:
+    verified = verify_pdb_symbol_export(binary, pdb, symbol_evidence)
+    if verified.status != "verified":
+        reason = verified.gaps[0].reason if verified.gaps else "unresolved PDB symbol evidence"
+        raise ValueError(reason)
+    patterns, offsets, format_name, machine, abi = postlink_patterns(
+        binary, verified.function_hints
+    )
+    return _postlink_group(
+        patterns,
+        offsets,
+        format_name,
+        machine,
+        abi,
+        binary,
+        symbol_evidence,
+        "llvm-pdbutil-symbols-v1",
+        object_data,
+        tree,
+        compiler,
+        flags,
+        build_note,
+        transformation,
+    )
+
+
+def group_for_postlink_mach(  # noqa: PLR0913, PLR0917
+    binary: Buffer,
+    dsym: Buffer,
+    symbol_evidence: bytes,
+    object_data: bytes,
+    tree: Path,
+    compiler: str,
+    flags: str,
+    build_note: str,
+    transformation: str,
+) -> tuple[list[FunctionPattern], dict]:
+    verified = verify_mach_debug_export(binary, dsym, symbol_evidence)
+    if verified.status != "verified" or verified.slice_uuid is None:
+        reason = verified.gaps[0].reason if verified.gaps else "unresolved dSYM symbol evidence"
+        raise ValueError(reason)
+    patterns, offsets, format_name, machine, abi = postlink_mach_patterns(
+        binary, verified.function_hints, verified.slice_uuid
+    )
+    return _postlink_group(
+        patterns,
+        offsets,
+        format_name,
+        machine,
+        abi,
+        binary,
+        symbol_evidence,
+        "llvm-dwarfdump-symbols-v1",
+        object_data,
+        tree,
+        compiler,
+        flags,
+        build_note,
+        transformation,
+    )
+
+
 def group_for_object(
     data: bytes,
     tree: Path,
@@ -404,9 +661,23 @@ def read_object(path: Path) -> bytes:
     return data
 
 
+def read_bounded(path: Path, limit: int, label: str) -> bytes:
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"{label} exceeds byte limit")
+    return data
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--object", required=True, type=Path)
+    parser.add_argument("--linked-binary", type=Path)
+    parser.add_argument("--pdb", type=Path)
+    parser.add_argument("--pdb-symbol-export", type=Path)
+    parser.add_argument("--dsym", type=Path)
+    parser.add_argument("--mach-symbol-export", action="append", default=[], type=Path)
+    parser.add_argument("--transformation")
     parser.add_argument("--source-tree", required=True, type=Path)
     parser.add_argument("--compiler", required=True)
     parser.add_argument("--flags", required=True)
@@ -415,11 +686,91 @@ def main() -> int:
     parser.add_argument("--pat-output", required=True, type=Path)
     args = parser.parse_args()
     try:
-        data = read_object(args.object)
-        patterns, group = group_for_object(
-            data, args.source_tree.resolve(), args.compiler, args.flags, args.build_note
-        )
-        ELF_BUILDER["write_catalog"](args.output, args.pat_output, render_pat(patterns), [group])
+        object_data = read_object(args.object)
+        windows_postlink = args.pdb is not None or args.pdb_symbol_export is not None
+        mach_postlink = args.dsym is not None or bool(args.mach_symbol_export)
+        if windows_postlink and mach_postlink:
+            raise ValueError("Choose PDB or dSYM post-link evidence, not both")
+        if windows_postlink and (
+            args.linked_binary is None
+            or args.pdb is None
+            or args.pdb_symbol_export is None
+            or args.transformation is None
+        ):
+            raise ValueError(
+                "Post-link profiles require --linked-binary, --pdb, "
+                "--pdb-symbol-export, and --transformation"
+            )
+        if mach_postlink and (
+            args.linked_binary is None
+            or args.dsym is None
+            or not args.mach_symbol_export
+            or args.transformation is None
+        ):
+            raise ValueError(
+                "Mach post-link profiles require --linked-binary, --dsym, "
+                "--mach-symbol-export, and --transformation"
+            )
+        if args.linked_binary is None:
+            patterns, group = group_for_object(
+                object_data,
+                args.source_tree.resolve(),
+                args.compiler,
+                args.flags,
+                args.build_note,
+            )
+            groups = [group]
+        elif windows_postlink:
+            with ExitStack() as stack:
+                linked_stream = stack.enter_context(args.linked_binary.open("rb"))
+                pdb_stream = stack.enter_context(args.pdb.open("rb"))
+                linked_data = stack.enter_context(file_data(linked_stream, None))
+                pdb_data = stack.enter_context(file_data(pdb_stream, None))
+                patterns, group = group_for_postlink_pe(
+                    linked_data,
+                    pdb_data,
+                    read_bounded(
+                        args.pdb_symbol_export,
+                        MAX_SYMBOL_EVIDENCE_BYTES,
+                        "PDB symbol evidence",
+                    ),
+                    object_data,
+                    args.source_tree.resolve(),
+                    args.compiler,
+                    args.flags,
+                    args.build_note,
+                    args.transformation,
+                )
+                groups = [group]
+        elif mach_postlink:
+            with ExitStack() as stack:
+                linked_stream = stack.enter_context(args.linked_binary.open("rb"))
+                dsym_stream = stack.enter_context(args.dsym.open("rb"))
+                linked_data = stack.enter_context(file_data(linked_stream, None))
+                dsym_data = stack.enter_context(file_data(dsym_stream, None))
+                patterns = []
+                groups = []
+                for packet in args.mach_symbol_export:
+                    built_patterns, group = group_for_postlink_mach(
+                        linked_data,
+                        dsym_data,
+                        read_bounded(
+                            packet,
+                            MAX_SYMBOL_EVIDENCE_BYTES,
+                            "Mach debug symbol evidence",
+                        ),
+                        object_data,
+                        args.source_tree.resolve(),
+                        args.compiler,
+                        args.flags,
+                        args.build_note,
+                        args.transformation,
+                    )
+                    patterns.extend(built_patterns)
+                    groups.append(group)
+        else:
+            raise ValueError("--linked-binary requires PDB or dSYM symbol evidence")
+        ELF_BUILDER["write_catalog"](args.output, args.pat_output, render_pat(patterns), groups)
     except (OSError, UnicodeDecodeError, ValueError) as error:
         parser.error(str(error))
     return 0

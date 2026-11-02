@@ -1,10 +1,11 @@
 """Verify identities of explicitly supplied local debug companions."""
 
-# ruff: noqa: ANN401, BLE001, C901, EM101, FBT003, PERF401, PLR0911, PLR0912, PLR0915, PLR2004, TRY003, TRY300, TRY301
+# ruff: noqa: ANN401, BLE001, C901, EM101, EM102, FBT003, PERF401, PLR0911, PLR0912, PLR0915, PLR2004, TRY003, TRY004, TRY300, TRY301
 # Bounded binary-format parsers keep validation branches adjacent to their layouts.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.metadata
 import io
@@ -115,6 +116,19 @@ class PdbSymbolExportAssessment:
     function_hints: tuple[FunctionHint, ...]
     gaps: tuple[DebugGap, ...]
     limited: bool
+    patch_status: Literal["unknown"] = "unknown"
+
+    def as_dict(self) -> dict[str, Any]:
+        return json.loads(json.dumps(asdict(self), sort_keys=True))
+
+
+@dataclass(frozen=True)
+class MachDebugExportAssessment:
+    status: Literal["verified", "unresolved"]
+    function_hints: tuple[FunctionHint, ...]
+    gaps: tuple[DebugGap, ...]
+    limited: bool
+    slice_uuid: str | None = None
     patch_status: Literal["unknown"] = "unknown"
 
     def as_dict(self) -> dict[str, Any]:
@@ -819,10 +833,292 @@ def verify_pdb_symbol_export(
         _pdb_export_identity(artifact, pdb_data, packet)
         _pdb_export_generator(packet)
         hints = _pdb_export_hints(artifact, packet, limits)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
+    except (RecursionError, ValueError) as error:
         gap = DebugGap("invalid_pdb_symbol_export", f"Cannot verify PDB symbol export: {error}")
         return PdbSymbolExportAssessment("unresolved", (), (gap,), False)
     return PdbSymbolExportAssessment("verified", hints, (), False)
+
+
+def _sha256_range(data: Buffer, offset: int, size: int) -> str:
+    digest = hashlib.sha256()
+    for cursor in range(offset, offset + size, COPY_CHUNK_BYTES):
+        digest.update(data[cursor : min(offset + size, cursor + COPY_CHUNK_BYTES)])
+    return digest.hexdigest()
+
+
+def _mach_slices(data: Buffer) -> list[dict[str, Any]]:
+    layout = inspect_layout(data)
+    if layout.get("kind") == "mach_o":
+        slices = [{**layout, "slice_offset": 0, "slice_size": len(data)}]
+    elif layout.get("kind") == "mach_o_universal":
+        slices = layout.get("slices", [])
+    else:
+        raise ValueError("Debug export target is not Mach-O")
+    if layout.get("gaps") or not isinstance(slices, list) or not slices:
+        raise ValueError("Mach-O layout is incomplete for debug export binding")
+    result = []
+    for value in slices:
+        debug_identities = value.get("debug_identities", [])
+        if not isinstance(debug_identities, list):
+            raise ValueError("Mach-O slice debug identities are malformed")
+        identities = [
+            item.get("uuid")
+            for item in debug_identities
+            if isinstance(item, dict) and item.get("kind") == "mach_uuid"
+        ]
+        if len(identities) != 1 or not isinstance(identities[0], str):
+            raise ValueError("Mach-O slice lacks one UUID")
+        result.append({**value, "uuid": identities[0]})
+    return result
+
+
+def _mach_export_sha256(value: object, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or value.lower() != value
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"Invalid Mach debug export SHA-256: {field}")
+    return value
+
+
+def mach_debug_export_targets(
+    raw: bytes, limits: DebugLimits = DEFAULT_DEBUG_LIMITS
+) -> tuple[str, str]:
+    """Return exact artifact/dSYM digests after validating an export's outer schema."""
+    _validate_limits(limits)
+    if len(raw) > limits.max_identity_bytes:
+        raise ValueError("Mach debug export exceeds byte limit")
+    packet = json.loads(raw, object_pairs_hook=_unique_json_object)
+    expected = {
+        "schema_version",
+        "format",
+        "artifact_sha256",
+        "dsym_sha256",
+        "slice",
+        "generator",
+        "functions",
+    }
+    if (
+        not isinstance(packet, dict)
+        or set(packet) != expected
+        or type(packet.get("schema_version")) is not int
+        or packet["schema_version"] != 1
+        or packet.get("format") != "llvm-dwarfdump-symbols-v1"
+    ):
+        raise ValueError("Invalid Mach debug export schema")
+    return (
+        _mach_export_sha256(packet["artifact_sha256"], "artifact"),
+        _mach_export_sha256(packet["dsym_sha256"], "dSYM"),
+    )
+
+
+def debug_symbol_export_identity(
+    raw: bytes, limits: DebugLimits = DEFAULT_DEBUG_LIMITS
+) -> tuple[Literal["pdb", "mach"], str, str, str]:
+    """Return strict routing identity for one supported debug-symbol export packet."""
+    _validate_limits(limits)
+    if len(raw) > limits.max_identity_bytes:
+        raise ValueError("Debug symbol export exceeds byte limit")
+    try:
+        packet = json.loads(raw, object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
+        raise ValueError(f"Invalid debug symbol export JSON: {error}") from error
+    if not isinstance(packet, dict):
+        raise ValueError("Debug symbol export must be a JSON object")
+    if packet.get("format") == "llvm-pdbutil-symbols-v1":
+        target, companion = pdb_symbol_export_targets(raw, limits)
+        identity = packet.get("pdb_identity")
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"guid", "age"}
+            or not isinstance(identity["guid"], str)
+            or type(identity["age"]) is not int
+        ):
+            raise ValueError("Invalid PDB symbol export routing identity")
+        return "pdb", target, companion, "pe"
+    if packet.get("format") == "llvm-dwarfdump-symbols-v1":
+        target, companion = mach_debug_export_targets(raw, limits)
+        identity = packet.get("slice")
+        if (
+            not isinstance(identity, dict)
+            or not isinstance(identity.get("uuid"), str)
+            or len(identity["uuid"]) != 32
+            or identity["uuid"].lower() != identity["uuid"]
+            or any(character not in "0123456789abcdef" for character in identity["uuid"])
+            or not isinstance(identity.get("machine"), str)
+            or not identity["machine"]
+            or type(identity.get("cpu_subtype")) is not int
+            or type(identity.get("artifact_offset")) is not int
+            or identity["artifact_offset"] < 0
+        ):
+            raise ValueError("Invalid Mach debug export routing slice identity")
+        scope = (
+            f"{identity['uuid']}:{identity['machine']}:"
+            f"{identity['cpu_subtype']}:{identity['artifact_offset']}"
+        )
+        return "mach", target, companion, scope
+    raise ValueError("Unsupported debug symbol export format")
+
+
+def _mach_export_slice(
+    artifact: Buffer, dsym_data: Buffer, packet: dict[str, Any]
+) -> tuple[dict[str, Any], str]:
+    if _mach_export_sha256(packet["artifact_sha256"], "artifact") != sha256_data(artifact):
+        raise ValueError("Mach debug export artifact hash does not match supplied bytes")
+    if _mach_export_sha256(packet["dsym_sha256"], "dSYM") != sha256_data(dsym_data):
+        raise ValueError("Mach debug export dSYM hash does not match supplied bytes")
+    identity = packet.get("slice")
+    required = {
+        "uuid",
+        "machine",
+        "cpu_subtype",
+        "artifact_offset",
+        "artifact_size",
+        "artifact_slice_sha256",
+        "dsym_offset",
+        "dsym_size",
+        "dsym_slice_sha256",
+    }
+    if not isinstance(identity, dict) or set(identity) != required:
+        raise ValueError("Invalid Mach debug export slice identity")
+    if (
+        not isinstance(identity["uuid"], str)
+        or len(identity["uuid"]) != 32
+        or not isinstance(identity["machine"], str)
+        or not identity["machine"]
+        or type(identity["cpu_subtype"]) is not int
+    ):
+        raise ValueError("Invalid Mach debug export UUID or architecture")
+    artifact_slices = [
+        value
+        for value in _mach_slices(artifact)
+        if (value["uuid"], value["machine"], value.get("cpu_subtype"))
+        == (identity["uuid"], identity["machine"], identity["cpu_subtype"])
+    ]
+    dsym_slices = [
+        value
+        for value in _mach_slices(dsym_data)
+        if (value["uuid"], value["machine"], value.get("cpu_subtype"))
+        == (identity["uuid"], identity["machine"], identity["cpu_subtype"])
+    ]
+    if len(artifact_slices) != 1 or len(dsym_slices) != 1:
+        raise ValueError("Mach debug export slice UUID/architecture is not uniquely owned")
+    artifact_slice, dsym_slice = artifact_slices[0], dsym_slices[0]
+    for prefix, value, actual in (
+        ("artifact", identity, artifact_slice),
+        ("dsym", identity, dsym_slice),
+    ):
+        if (value[f"{prefix}_offset"], value[f"{prefix}_size"]) != (
+            actual["slice_offset"],
+            actual["slice_size"],
+        ):
+            raise ValueError(f"Mach debug export {prefix} slice bounds do not match")
+        expected_hash = _mach_export_sha256(value[f"{prefix}_slice_sha256"], prefix)
+        if expected_hash != _sha256_range(
+            artifact if prefix == "artifact" else dsym_data,
+            actual["slice_offset"],
+            actual["slice_size"],
+        ):
+            raise ValueError(f"Mach debug export {prefix} slice hash does not match")
+    return artifact_slice, identity["uuid"]
+
+
+def _mach_export_generator(packet: dict[str, Any]) -> None:
+    generator = packet.get("generator")
+    if not isinstance(generator, dict) or set(generator) != {"name", "version", "sha256"}:
+        raise ValueError("Invalid Mach debug export generator")
+    if (
+        generator["name"] != "llvm-dwarfdump"
+        or not isinstance(generator["version"], str)
+        or not generator["version"]
+    ):
+        raise ValueError("Mach debug export requires an identified llvm-dwarfdump")
+    _mach_export_sha256(generator["sha256"], "generator")
+
+
+def _mach_export_hints(
+    artifact_slice: dict[str, Any], packet: dict[str, Any], limits: DebugLimits
+) -> tuple[FunctionHint, ...]:
+    functions = packet.get("functions")
+    if not isinstance(functions, list) or len(functions) > limits.max_function_hints:
+        raise ValueError("Invalid or excessive Mach debug export function population")
+    executable = artifact_slice.get("ranges", {}).get("executable", [])
+    if not isinstance(executable, list) or artifact_slice.get("gaps"):
+        raise ValueError("Mach slice executable layout is incomplete")
+    hints = []
+    seen = set()
+    for function in functions:
+        if not isinstance(function, dict) or set(function) != {
+            "name",
+            "address",
+            "size",
+            "source_file",
+            "source_line",
+        }:
+            raise ValueError("Invalid Mach debug export function")
+        name = function["name"]
+        address = function["address"]
+        size = function["size"]
+        source_file = function["source_file"]
+        source_line = function["source_line"]
+        key = name, address, size, source_file, source_line
+        if (
+            not isinstance(name, str)
+            or not name
+            or len(name.encode("utf-8")) > MAX_NAME_BYTES
+            or type(address) is not int
+            or type(size) is not int
+            or address < 0
+            or size <= 0
+            or not isinstance(source_file, str)
+            or not source_file
+            or _leaf_name(source_file) != source_file
+            or type(source_line) is not int
+            or source_line <= 0
+            or key in seen
+        ):
+            raise ValueError("Invalid or duplicate Mach debug export function")
+        seen.add(key)
+        owners = [
+            item
+            for item in executable
+            if isinstance(item, dict)
+            and type(item.get("vmaddr")) is int
+            and type(item.get("file_offset")) is int
+            and type(item.get("size")) is int
+            and item["vmaddr"] <= address
+            and address + size <= item["vmaddr"] + item["size"]
+        ]
+        offsets = {item["file_offset"] + address - item["vmaddr"] for item in owners}
+        if len(offsets) != 1:
+            raise ValueError("Mach debug export function lacks unique slice executable ownership")
+        hints.append(FunctionHint(name, address, size, offsets.pop(), source_file, source_line))
+    return tuple(hints)
+
+
+def verify_mach_debug_export(
+    artifact: Buffer,
+    dsym_data: Buffer,
+    raw: bytes,
+    limits: DebugLimits = DEFAULT_DEBUG_LIMITS,
+) -> MachDebugExportAssessment:
+    """Verify one hash- and UUID-bound per-slice llvm-dwarfdump export packet."""
+    _validate_limits(limits)
+    if len(raw) > limits.max_identity_bytes:
+        gap = DebugGap("mach_debug_export_limit", "Mach debug export exceeds byte limit")
+        return MachDebugExportAssessment("unresolved", (), (gap,), True)
+    try:
+        mach_debug_export_targets(raw, limits)
+        packet = json.loads(raw, object_pairs_hook=_unique_json_object)
+        artifact_slice, uuid = _mach_export_slice(artifact, dsym_data, packet)
+        _mach_export_generator(packet)
+        hints = _mach_export_hints(artifact_slice, packet, limits)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
+        gap = DebugGap("invalid_mach_debug_export", f"Cannot verify Mach debug export: {error}")
+        return MachDebugExportAssessment("unresolved", (), (gap,), False)
+    return MachDebugExportAssessment("verified", hints, (), False, uuid)
 
 
 @contextmanager
