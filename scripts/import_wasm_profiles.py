@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills/brotli-checker/scripts"))
 
 from brotli_binary_layout import inspect_layout  # noqa: E402
-from brotli_wasm_profiles import load_wasm_profile_catalog, match_wasm_profiles  # noqa: E402
+from brotli_wasm_profiles import (  # noqa: E402
+    load_wasm_profile_catalog,
+    match_wasm_profiles,
+    verify_wasm_profile_catalog_replay,
+)
 
 ANCHOR_COUNT = 16
 SHA512_HEX_LENGTH = 128
@@ -106,6 +111,7 @@ def main() -> int:
     parser.add_argument("--implementation-family", required=True)
     parser.add_argument("--qualification-run-url", default="")
     parser.add_argument("--qualification-commit", default="")
+    parser.add_argument("--verify-against", type=Path)
     for state in ("affected", "fixed"):
         parser.add_argument(f"--{state}-source-commit", required=True)
         parser.add_argument(f"--{state}-builder-commit", required=True)
@@ -131,6 +137,17 @@ def main() -> int:
             )
         if not args.qualification_run_url or not args.qualification_commit:
             parser.error("Verified source rebuilds require a hosted run URL and build commit")
+        expected_run_url = (
+            f"{os.environ.get('GITHUB_SERVER_URL', '')}/"
+            f"{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/"
+            f"{os.environ.get('GITHUB_RUN_ID', '')}"
+        )
+        if (
+            os.environ.get("GITHUB_ACTIONS") != "true"
+            or args.qualification_run_url != expected_run_url
+            or args.qualification_commit != os.environ.get("GITHUB_SHA")
+        ):
+            parser.error("Verified source rebuild identity must match the hosted GitHub run")
     elif args.qualification_run_url or args.qualification_commit:
         parser.error("Hosted qualification identity requires paired rebuilt Wasm inputs")
     qualification_status = (
@@ -263,6 +280,11 @@ def main() -> int:
     ):
         args.output.unlink()
         parser.error("Generated WebAssembly profiles failed paired/opposite-state verification")
+    if args.verify_against is not None:
+        try:
+            verify_wasm_profile_catalog_replay(args.output, args.verify_against)
+        except ValueError as error:
+            parser.error(str(error))
     return 0
 
 

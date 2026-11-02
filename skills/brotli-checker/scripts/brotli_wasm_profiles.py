@@ -72,15 +72,23 @@ def _validate_qualification(entry: dict[str, Any]) -> None:
         not isinstance(value, dict)
         or set(value) != QUALIFICATION_FIELDS
         or any(not isinstance(item, str) for item in value.values())
-        or not value["package"]
+    ):
+        raise ValueError("Invalid WebAssembly profile qualification")
+    package_leaf = value.get("package", "").rsplit("/", 1)[-1]
+    expected_tarball = f"/-/{package_leaf}-{value.get('package_version', '')}.tgz"
+    expected_state = "vulnerable" if entry["patch_status"] == "vulnerable_code_match" else "fixed"
+    if (
+        not value["package"]
         or not value["package_version"]
-        or not value["tarball_url"].startswith("https://")
+        or not value["tarball_url"].startswith("https://registry.npmjs.org/")
+        or not value["tarball_url"].endswith(expected_tarball)
         or HEX128.fullmatch(value["tarball_sha512"]) is None
         or value["wasm_path"] != "package/brotli-core.wasm"
         or value["wasm_sha256"] != entry["artifact_sha256"]
         or HEX40.fullmatch(value["source_commit"]) is None
         or HEX40.fullmatch(value["builder_commit"]) is None
         or not value["review"]
+        or entry["id"] != f"{value['package']}@{value['package_version']}:{expected_state}"
     ):
         raise ValueError("Invalid WebAssembly profile qualification")
     for field in ("manifest_sha256", "provenance_sha256", "builder_archive_sha256"):
@@ -174,6 +182,22 @@ def load_wasm_profile_catalog(path: Path = CATALOG) -> tuple[dict[str, Any], ...
     return tuple(result)
 
 
+def verify_wasm_profile_catalog_replay(candidate: Path, expected: Path) -> None:
+    """Require identical reviewed semantics while allowing new hosted-run provenance."""
+
+    def semantic_rows(path: Path) -> list[dict[str, Any]]:
+        rows = json.loads(json.dumps(load_wasm_profile_catalog(path)))
+        for row in rows:
+            row["qualification"].pop("build_run_url")
+            row["qualification"].pop("build_commit")
+        return sorted(rows, key=lambda row: row["id"])
+
+    if semantic_rows(candidate) != semantic_rows(expected):
+        raise ValueError(
+            "Replayed WebAssembly catalog changed artifact, source, or function semantics"
+        )
+
+
 def match_wasm_profiles(
     data: Buffer,
     catalog: tuple[dict[str, Any], ...] | None = None,
@@ -261,17 +285,5 @@ def match_wasm_profiles(
         patch_status = next(iter(qualified_states))
     else:
         patch_status = "unknown"
-    if not matches and candidates:
-        gaps = (
-            (
-                "Partial reviewed WebAssembly function fingerprints matched, but component and "
-                "patch identity remain unqualified"
-            ),
-        )
-    elif not matches:
-        gaps = ("No reviewed family-specific WebAssembly profile matched",)
-    elif not qualified_states:
-        gaps = ("WebAssembly family matched, but full non-custom module identity is unqualified",)
-    else:
-        gaps = ()
+    gaps = tuple(str(gap) for gap in layout.get("gaps", ())) if not matches else ()
     return WasmProfileAssessment(tuple(matches), gaps, patch_status, tuple(candidates))

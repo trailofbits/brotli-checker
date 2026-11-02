@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: C901, EM101, PLR0915, TRY003
 """Import independently reviewed paired-native assertions into a strict catalog."""
 
 from __future__ import annotations
@@ -13,10 +14,74 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills/brotli-checker/scripts"))
 
-from brotli_native_artifacts import validate_native_artifacts  # noqa: E402
+from brotli_native_artifacts import load_native_artifacts, validate_native_artifacts  # noqa: E402
 
 RUN = re.compile(r"https://github\.com/trailofbits/brotli-checker/actions/runs/[1-9][0-9]*")
 PAIR_ASSERTION_COUNT = 2
+PAIR_FIELDS = {
+    "schema_version",
+    "affected_match_count",
+    "fixed_match_count",
+    "opposite_state_controls",
+    "exact_artifact_assertions",
+}
+
+
+def component_binding(value: object) -> None:
+    if value == "not_requested":
+        return
+    if not isinstance(value, dict) or value.get("status") != "separate_components_verified":
+        raise ValueError("invalid native mixed-copy control")
+    fields = set(value)
+    if fields == {
+        "status",
+        "vulnerable_component_offsets",
+        "fixed_component_offsets",
+    }:
+        vulnerable = value["vulnerable_component_offsets"]
+        fixed = value["fixed_component_offsets"]
+        if (
+            not isinstance(vulnerable, list)
+            or not isinstance(fixed, list)
+            or not vulnerable
+            or not fixed
+            or any(type(offset) is not int or offset < 0 for offset in [*vulnerable, *fixed])
+            or len(vulnerable) != len(set(vulnerable))
+            or len(fixed) != len(set(fixed))
+            or set(vulnerable) & set(fixed)
+        ):
+            raise ValueError("invalid native PE mixed-copy control")
+        return
+    if fields == {"status", "vulnerable_components", "fixed_components"}:
+        vulnerable = value["vulnerable_components"]
+        fixed = value["fixed_components"]
+        if (
+            not isinstance(vulnerable, list)
+            or not isinstance(fixed, list)
+            or not vulnerable
+            or not fixed
+        ):
+            raise ValueError("invalid native Mach mixed-copy control")
+        parsed = []
+        for item in [*vulnerable, *fixed]:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"machine", "file_offset"}
+                or item["machine"] not in {"x86_64", "aarch64"}
+                or type(item["file_offset"]) is not int
+                or item["file_offset"] < 0
+            ):
+                raise ValueError("invalid native Mach mixed-copy control")
+            parsed.append((item["machine"], item["file_offset"]))
+        boundary = len(vulnerable)
+        if (
+            len(set(parsed[:boundary])) != boundary
+            or len(set(parsed[boundary:])) != len(fixed)
+            or set(parsed[:boundary]) & set(parsed[boundary:])
+        ):
+            raise ValueError("invalid native Mach mixed-copy control")
+        return
+    raise ValueError("invalid native mixed-copy control schema")
 
 
 def sha256(path: Path) -> str:
@@ -27,10 +92,11 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def main() -> int:  # noqa: C901, PLR0912 -- One strict import validation boundary.
+def main() -> int:  # noqa: PLR0912 -- One strict import validation boundary.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pair", action="append", required=True, type=Path)
     parser.add_argument("--artifact", action="append", required=True, type=Path)
+    parser.add_argument("--merge", type=Path)
     parser.add_argument("--build-run-url", required=True)
     parser.add_argument("--build-commit", required=True)
     parser.add_argument("--output", required=True, type=Path)
@@ -54,19 +120,16 @@ def main() -> int:  # noqa: C901, PLR0912 -- One strict import validation bounda
         if digest in available:
             parser.error("duplicate linked native artifact digest")
         available[digest] = path
-    records = []
+    records = list(load_native_artifacts(args.merge).values()) if args.merge is not None else []
+    retained_digests = {record["sha256"] for record in records}
+    if retained_digests & available.keys():
+        parser.error("supplied native artifact already exists in merged catalog")
     for pair_path in args.pair:
         value = json.loads(pair_path.read_bytes())
+        fields = set(value) if isinstance(value, dict) else set()
         if (
             not isinstance(value, dict)
-            or set(value)
-            != {
-                "schema_version",
-                "affected_match_count",
-                "fixed_match_count",
-                "opposite_state_controls",
-                "exact_artifact_assertions",
-            }
+            or fields not in (PAIR_FIELDS, PAIR_FIELDS | {"component_binding"})
             or type(value["schema_version"]) is not int
             or value["schema_version"] != 1
             or value["opposite_state_controls"] != "rejected"
@@ -78,6 +141,10 @@ def main() -> int:  # noqa: C901, PLR0912 -- One strict import validation bounda
             or len(value["exact_artifact_assertions"]) != PAIR_ASSERTION_COUNT
         ):
             parser.error(f"invalid paired verification: {pair_path}")
+        try:
+            component_binding(value.get("component_binding", "not_requested"))
+        except ValueError as error:
+            parser.error(f"invalid paired verification {pair_path}: {error}")
         for assertion in value["exact_artifact_assertions"]:
             if not isinstance(assertion, dict):
                 parser.error(f"invalid paired assertion: {pair_path}")

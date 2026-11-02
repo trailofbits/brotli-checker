@@ -2,7 +2,7 @@ name: WebAssembly reference candidates
 
 on:
   push:
-    branches: [codex/native-postlink-qualification]
+    branches: [main]
     paths:
       - .github/workflows/wasm-reference-candidates.yml
       - scripts/import_wasm_profiles.py
@@ -171,12 +171,8 @@ jobs:
             --qualification-run-url \
               "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --qualification-commit "$GITHUB_SHA" \
+            --verify-against skills/brotli-checker/references/wasm-function-profiles.json \
             --output wasm-candidates/wasm-function-profiles.json
-          if grep -q '"qualification_status": "source_rebuild_verified"' \
-            skills/brotli-checker/references/wasm-function-profiles.json; then
-            cmp skills/brotli-checker/references/wasm-function-profiles.json \
-              wasm-candidates/wasm-function-profiles.json
-          fi
       - if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

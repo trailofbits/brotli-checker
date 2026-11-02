@@ -128,20 +128,26 @@ def _check_json_budget(value: object) -> None:
             pending.extend((child, depth + 1) for child in item)
 
 
-def _document(raw: bytes) -> dict:
+def parse_evidence_document(raw: bytes) -> dict:
+    """Parse one bounded JSON evidence object without accepting ambiguous JSON."""
     if len(raw) > MAX_DOCUMENT_BYTES:
-        message = "Attestation document exceeds byte limit"
+        message = "Evidence document exceeds byte limit"
         raise ValueError(message)
     try:
         value = json.loads(raw, object_pairs_hook=_object_pairs, parse_constant=_reject_constant)
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-        message = "Invalid attestation JSON"
+        message = "Invalid evidence JSON"
         raise ValueError(message) from error
     if not isinstance(value, dict):
-        message = "Attestation document must be an object"
+        message = "Evidence document must be an object"
         raise ValueError(message)  # noqa: TRY004 -- Malformed serialized value.
     _check_json_budget(value)
     return value
+
+
+def _document(raw: bytes) -> dict:
+    """Compatibility wrapper for the original attestation parser."""
+    return parse_evidence_document(raw)
 
 
 def _stat_signature(value: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -328,15 +334,18 @@ def _verified_payload(raw: bytes, policy: TrustPolicy) -> tuple[bytes, set[str]]
     return payload, verified
 
 
-def _statement_subjects(payload: bytes, policy: TrustPolicy) -> tuple[dict, set[str]]:
-    statement = _document(payload)
+def parse_statement_subjects(
+    payload: bytes, allowed_predicate_types: tuple[str, ...]
+) -> tuple[dict, set[str]]:
+    """Validate an in-toto Statement/v1 and return its exact SHA-256 subjects."""
+    statement = parse_evidence_document(payload)
     if (
         set(statement) != {"_type", "subject", "predicateType", "predicate"}
         or statement["_type"] != STATEMENT_TYPE
     ):
         message = "Unsupported in-toto statement"
         raise ValueError(message)
-    if statement["predicateType"] not in policy.predicate_types or not isinstance(
+    if statement["predicateType"] not in allowed_predicate_types or not isinstance(
         statement["predicate"], dict
     ):
         message = "Statement predicate is not allowed by local policy"
@@ -368,6 +377,10 @@ def _statement_subjects(payload: bytes, policy: TrustPolicy) -> tuple[dict, set[
             raise ValueError(message)
         hashes.add(sha)
     return statement, hashes
+
+
+def _statement_subjects(payload: bytes, policy: TrustPolicy) -> tuple[dict, set[str]]:
+    return parse_statement_subjects(payload, policy.predicate_types)
 
 
 def verify_attestation(raw: bytes, policy: TrustPolicy) -> dict:

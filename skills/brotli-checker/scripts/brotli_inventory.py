@@ -71,6 +71,7 @@ from brotli_payloads import (
 )
 from brotli_reporting_cli import CliEvidence, add_reporting_arguments, policy_exit
 from brotli_source_leads import MAX_SOURCE_MATCHES, source_references
+from brotli_wasm_profiles import match_wasm_profiles
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -407,7 +408,7 @@ def version_finding(path: str, minimum: str, evidence: dict, *, fixed: bool) -> 
     )
 
 
-def assess_binary(  # noqa: C901, PLR0912 -- Ordered evidence precedence is explicit.
+def assess_binary(  # noqa: C901, PLR0912, PLR0915 -- Ordered evidence precedence is explicit.
     data: Buffer,
     references: list[CodeReference],
     flirt_catalog: FlirtCatalog | FlirtSession | None = None,
@@ -478,12 +479,57 @@ def assess_binary(  # noqa: C901, PLR0912 -- Ordered evidence precedence is expl
             )
         if versions:
             reason += " Reported decoder version is metadata, not proof of a fix."
+    component_statuses = {
+        profile.get("target_patch_status")
+        for profile in flirt.get("patch_profiles", [])
+        if profile.get("method") == "native_flirt_postlink_component"
+    }
+    if "vulnerable_code_match" in component_statuses:
+        fixed_evidence = "fixed_code_match" in component_statuses or status in {
+            "fixed_code_match",
+            "mixed_code_matches",
+        }
+        status = "mixed_code_matches" if fixed_evidence else "vulnerable_code_match"
+        kind, linkage = "decoder_code_match", "embedded_code"
+        reason = (
+            "A reviewed post-link FLIRT profile placed every required affected patch role "
+            "in one linked-code component. Rebuild that copy; other copies and runtime use "
+            "remain separate questions."
+        )
+    elif "fixed_code_match" in component_statuses:
+        if status == "vulnerable_code_match":
+            status = "mixed_code_matches"
+            reason = (
+                "Affected decoder code and a separate fixed post-link component both matched; "
+                "the affected copy still requires an update."
+            )
+        elif not code.matches:
+            kind, linkage = "decoder_function_signature", "embedded_code"
+            reason = (
+                "A reviewed post-link FLIRT profile identified one fixed linked-code component, "
+                "but unmatched copies prevent a whole-binary fixed verdict."
+            )
     if old_version and status not in {"vulnerable_code_match", "mixed_code_matches"}:
         status, kind = "potentially_vulnerable", "binary_version_candidate"
         reason = (
             "Statically read decoder version precedes the upstream fix. Update or verify a "
             "vendor backport; version evidence does not prove the code is vulnerable."
         )
+    wasm = match_wasm_profiles(data).as_dict() if data.startswith(b"\0asm") else {}
+    if wasm.get("candidates") and not wasm.get("matches") and not recognition["matches"]:
+        kind = "binary_candidate"
+        reason = (
+            "Partial WebAssembly reference fingerprints found; implementation and patch "
+            "state remain unconfirmed. Inspect the per-family hit counts and code."
+        )
+    if wasm.get("matches"):
+        kind, linkage = "decoder_function_signature", "embedded_code"
+        reason = (
+            "Reviewed family-specific WebAssembly profiles matched. Function recognition "
+            "and exact reviewed module identity are distinct; runtime use remains unverified."
+        )
+        if wasm["patch_status"] != "unknown":
+            status, kind = wasm["patch_status"], "decoder_code_match"
     native_artifact = native_artifact_match(digest, len(data)) if digest is not None else None
     if native_artifact is not None:
         status = native_artifact["patch_status"]
@@ -502,16 +548,22 @@ def assess_binary(  # noqa: C901, PLR0912 -- Ordered evidence precedence is expl
         "recognition": recognition,
         "flirt": flirt,
         "native_artifact": native_artifact or {},
+        "wasm_profiles": wasm,
         "detection_status": "decoder_code_identified"
-        if code.matches or native_artifact is not None
+        if code.matches
+        or native_artifact is not None
+        or wasm.get("patch_status")
+        in {"fixed_code_match", "vulnerable_code_match", "mixed_code_matches"}
         else "decoder_functions_recognized"
-        if flirt["matches"]
+        if flirt["matches"] or wasm.get("matches")
         else recognition["status"]
         if recognition["matches"]
         else "decoder_symbols_defined"
         if metadata.get("defined_symbols")
         else "decoder_import_detected"
         if metadata.get("imported_symbols")
+        else "function_profile_candidate"
+        if wasm.get("candidates")
         else "name_or_string_only"
         if indicators
         else "not_detected",
@@ -520,7 +572,8 @@ def assess_binary(  # noqa: C901, PLR0912 -- Ordered evidence precedence is expl
         "gaps": ([code.reason] if code.limited else [])
         + ([metadata["reason"]] if metadata.get("limited") else [])
         + ([recognition["reason"]] if recognition["limited"] else [])
-        + flirt["gaps"],
+        + flirt["gaps"]
+        + wasm.get("gaps", []),
     }
 
 
@@ -777,7 +830,7 @@ class Inventory:
             self.gap(label, recognition["reason"])
         return recognition
 
-    def _record_native_flirt(
+    def _record_binary_profiles(
         self, data: Buffer, label: str, digest: str, recognition: dict
     ) -> bool:
         native = data.startswith(
@@ -791,12 +844,16 @@ class Inventory:
                 b"\xbf\xba",
             )
         )
-        if not native or self.flirt_catalog is None:
+        wasm = data.startswith(b"\0asm")
+        if not wasm and (not native or self.flirt_catalog is None):
             return False
         assessment = assess_binary(data, self.code_references or [], self.flirt_catalog)
         for reason in assessment["gaps"]:
             self.gap(label, reason)
-        if not assessment["flirt"]["matches"]:
+        if not assessment["flirt"]["matches"] and not (
+            assessment["wasm_profiles"].get("matches")
+            or assessment["wasm_profiles"].get("candidates")
+        ):
             return False
         self.findings.append(
             finding(
@@ -807,6 +864,7 @@ class Inventory:
                 sha256=digest,
                 recognition=recognition,
                 flirt=assessment["flirt"],
+                wasm_profiles=assessment["wasm_profiles"],
                 detection_status=assessment["detection_status"],
                 linkage=assessment["linkage"],
             )
@@ -815,7 +873,7 @@ class Inventory:
 
     def _inspect_noncontainer(self, data: Buffer, label: str, digest: str) -> None:
         recognition = self._recognize_data(data, label)
-        if self._record_native_flirt(data, label, digest, recognition):
+        if self._record_binary_profiles(data, label, digest, recognition):
             return
         if recognition["matches"]:
             self.findings.append(
@@ -2168,6 +2226,9 @@ def main(argv: list[str] | None = None) -> int:
             args,
             attestation_inputs=evidence.attestation_inputs,
             debug_symbol_inputs=evidence.debug_symbol_inputs,
+            runtime_trace_inputs=evidence.runtime_trace_inputs,
+            trust_inputs=evidence.trust_inputs,
+            graph_triage_inputs=evidence.graph_triage_inputs,
         )
         identities = evidence.check_inputs(inventory)
     except (OSError, ValueError) as error:

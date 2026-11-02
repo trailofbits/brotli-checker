@@ -297,6 +297,9 @@ def main(argv: list[str] | None = None) -> int:
             args,
             attestation_inputs=evidence.attestation_inputs,
             debug_symbol_inputs=evidence.debug_symbol_inputs,
+            runtime_trace_inputs=evidence.runtime_trace_inputs,
+            trust_inputs=evidence.trust_inputs,
+            graph_triage_inputs=evidence.graph_triage_inputs,
         )
         identities = evidence.check_inputs(inventory)
     except (OSError, ValueError) as error:

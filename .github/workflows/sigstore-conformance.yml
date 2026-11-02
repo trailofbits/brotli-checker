@@ -1,0 +1,80 @@
+name: Sigstore conformance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sigstore-conformance.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'skills/brotli-checker/scripts/brotli_sigstore.py'
+      - 'skills/brotli-checker/scripts/brotli_trust_inputs.py'
+      - 'tests/test_sigstore.py'
+      - 'tests/test_sigstore_conformance.py'
+  pull_request:
+    paths:
+      - '.github/workflows/sigstore-conformance.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'skills/brotli-checker/scripts/brotli_sigstore.py'
+      - 'skills/brotli-checker/scripts/brotli_trust_inputs.py'
+      - 'tests/test_sigstore.py'
+      - 'tests/test_sigstore_conformance.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Sigstore 4.2.0 offline fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          python-version: '3.14'
+      - name: Install scanner analysis environment
+        run: uv sync --locked --extra analysis
+      - name: Install isolated maintained verifier
+        run: |
+          uv venv /tmp/brotli-sigstore-env --python 3.14
+          uv pip install --python /tmp/brotli-sigstore-env/bin/python sigstore==4.2.0
+          test "$(/tmp/brotli-sigstore-env/bin/sigstore --version)" = 'sigstore 4.2.0'
+      - name: Fetch immutable conformance fixture
+        env:
+          FIXTURE_COMMIT: 9688d7c97e84e58ca448c4f1dfbe8109adc99a34
+          BUNDLE_SHA256: 5d84161191e6d3f4c0b95ff68296461a62fd180ad0b053da6292bf617ed033b3
+          ARTIFACT_SHA256: a0cfc71271d6e278e57cd332ff957c3f7043fdda354c4cbb190a30d56efa01bf
+        run: |
+          mkdir -p /tmp/brotli-sigstore-fixture
+          curl --fail --show-error --silent --location \
+            "https://raw.githubusercontent.com/sigstore/sigstore-conformance/${FIXTURE_COMMIT}/test/assets/bundle-verify/happy-path-v0.3/bundle.sigstore.json" \
+            --output /tmp/brotli-sigstore-fixture/bundle.json
+          curl --fail --show-error --silent --location \
+            "https://raw.githubusercontent.com/sigstore/sigstore-conformance/${FIXTURE_COMMIT}/test/assets/bundle-verify/a.txt" \
+            --output /tmp/brotli-sigstore-fixture/artifact
+          test "$(sha256sum /tmp/brotli-sigstore-fixture/bundle.json | cut -d' ' -f1)" = "${BUNDLE_SHA256}"
+          test "$(sha256sum /tmp/brotli-sigstore-fixture/artifact | cut -d' ' -f1)" = "${ARTIFACT_SHA256}"
+      - name: Capture verifier's embedded trust configuration
+        run: |
+          STORE=/tmp/brotli-sigstore-env/lib/python3.14/site-packages/sigstore/_store/https%3A%2F%2Ftuf-repo-cdn.sigstore.dev
+          jq -n \
+            --slurpfile trusted "${STORE}/trusted_root.json" \
+            --slurpfile signing "${STORE}/signing_config.v0.2.json" \
+            '{mediaType:"application/vnd.dev.sigstore.clienttrustconfig.v0.1+json",trustedRoot:$trusted[0],signingConfig:$signing[0]}' \
+            > /tmp/brotli-sigstore-fixture/trust.json
+      - name: Verify positive and maliciously modified bundles offline
+        env:
+          BROTLI_SIGSTORE_CONFORMANCE_BUNDLE: /tmp/brotli-sigstore-fixture/bundle.json
+          BROTLI_SIGSTORE_CONFORMANCE_TRUST_CONFIG: /tmp/brotli-sigstore-fixture/trust.json
+          BROTLI_SIGSTORE_CONFORMANCE_VERIFIER: /tmp/brotli-sigstore-env/bin/sigstore
+        run: uv run --locked --extra analysis pytest tests/test_sigstore_conformance.py --no-cov

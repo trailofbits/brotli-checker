@@ -306,6 +306,29 @@ def test_overlapping_patterns_are_reported_as_ambiguity_not_named(tmp_path):
     assert assessment["ambiguous_matches"][0]["signature_ids"] == ["broad", "exact"]
 
 
+def test_overlapping_signatures_with_one_name_preserve_each_profile(tmp_path):
+    function = code(b"same-name-compatible")
+    catalog = load(
+        tmp_path,
+        [pattern(function, "exact"), pattern(function, "masked", wildcards=(40,))],
+        [
+            group({"ProcessCommands": ["exact"]}, identifier="postlink"),
+            group({"ProcessCommands": ["masked"]}, identifier="object"),
+        ],
+    )
+
+    assessment = subject.match_flirt(elf(function), catalog)
+
+    assert assessment["status"] == "recognized"
+    assert assessment["gaps"] == []
+    assert assessment["ambiguous_matches"] == []
+    assert {match["signature_id"] for match in assessment["matches"]} == {
+        "exact",
+        "masked",
+    }
+    assert {match["definitive_name"] for match in assessment["matches"]} == {"ProcessCommands"}
+
+
 def test_one_signature_can_carry_bounded_multi_profile_provenance(tmp_path):
     function = code(b"shared")
     catalog = load(

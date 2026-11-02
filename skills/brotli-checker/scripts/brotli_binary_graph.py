@@ -1,3 +1,4 @@
+# ruff: noqa: PLR2004
 """Bounded ELF function/xref evidence graph; never assigns patch state."""
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from brotli_binary_match import (
     ELF32_BITS,
     ELF64_BITS,
     EM_AARCH64,
+    EM_ARM,
     EM_RISCV,
     EM_X86_64,
     SHT_DYNSYM,
@@ -43,6 +45,7 @@ SHT_NOBITS = 8
 SHT_REL = 9
 SHN_UNDEF = 0
 SHF_ALLOC = 2
+SHF_EXECINSTR = 4
 DW_EH_PE_OMIT = 0xFF
 DW_EH_PE_PCREL = 0x10
 DW_EH_PE_DATAREL = 0x30
@@ -57,6 +60,9 @@ X86_RIP_MNEMONICS = frozenset(
 )
 X86_CALLS = frozenset({"call", "callq"})
 X86_JUMPS = frozenset({"jmp", "jmpq"})
+GENERIC_CALLS = frozenset({"bl", "blx", "call", "callq", "jal"})
+GENERIC_JUMPS = frozenset({"b", "b.w", "bra", "j", "jmp", "jmpq"})
+DIRECT_TARGET = re.compile(r"^(?:0x)?([0-9A-Fa-f]+)(?:\s|$)")
 AARCH64_BR = 0xD61F0000
 AARCH64_BLR = 0xD63F0000
 AARCH64_ADRP = 0x90000000
@@ -201,6 +207,8 @@ class DecodedInstruction:
     operands: str
     pc_relative_targets: tuple[int, ...] = ()
     absolute_targets: tuple[int, ...] = ()
+    direct_call_targets: tuple[int, ...] = ()
+    tail_call_targets: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -208,6 +216,7 @@ class InstructionPacket:
     instructions: tuple[DecodedInstruction, ...]
     gaps: tuple[GraphGap, ...]
     limited: bool
+    machine: int | None = None
 
 
 @dataclass(frozen=True)
@@ -315,6 +324,11 @@ class _GraphBuilder:
         self.edges: set[GraphEdge] = set()
         self.instructions_seen = 0
         self.decode_bytes = 0
+        self.arm_function_modes: dict[int, Literal["arm", "thumb"]] = {}
+        self.arm_function_sections: dict[int, int] = {}
+        self.arm_mapping_markers: list[tuple[int, int, Literal["arm", "thumb", "data"]]] = []
+        self.arm_mapping_conflicts: set[tuple[int, int]] = set()
+        self.arm_mode_conflicts: set[int] = set()
 
     def _unique_mapping(
         self,
@@ -399,6 +413,48 @@ class _GraphBuilder:
         if self.function_bounds_finalized and value.size != previous_size:
             self.finalize_function_bounds()
         return _function_id(offset)
+
+    def add_arm_function_mode(
+        self, offset: int, mode: Literal["arm", "thumb"], method: str
+    ) -> None:
+        previous = self.arm_function_modes.get(offset)
+        if offset in self.arm_mode_conflicts:
+            return
+        if previous is not None and previous != mode:
+            self.arm_function_modes.pop(offset, None)
+            self.arm_mode_conflicts.add(offset)
+            self.gaps.add(
+                "ambiguous_arm_instruction_mode",
+                "Conflicting ARM/Thumb provenance applies to one function",
+                offset,
+            )
+            return
+        self.arm_function_modes[offset] = mode
+        value = self.functions.get(offset)
+        if value is not None:
+            value.methods.add(method)
+
+    def add_arm_mapping_marker(
+        self,
+        offset: int,
+        section: int,
+        mode: Literal["arm", "thumb", "data"],
+    ) -> None:
+        previous = {
+            marker_mode
+            for marker_offset, marker_section, marker_mode in self.arm_mapping_markers
+            if (marker_offset, marker_section) == (offset, section)
+        }
+        if previous and mode not in previous:
+            self.arm_mapping_conflicts.add((offset, section))
+            self.gaps.add(
+                "ambiguous_arm_instruction_mode",
+                "Conflicting ARM mapping symbols share one address",
+                offset,
+            )
+        marker = offset, section, mode
+        if marker not in self.arm_mapping_markers:
+            insort(self.arm_mapping_markers, marker)
 
     def finalize_function_bounds(self) -> None:  # noqa: C901, PLR0912 -- Interval sweep.
         events: dict[int, list[tuple[bool, int]]] = {}
@@ -670,7 +726,7 @@ def _owned_symbol_offset(  # noqa: PLR0913 -- Complete ownership query.
         builder.gaps.add(gap_code, f"{subject} has no valid owning section")
         return None
     owner = sections[section_index]
-    required_flags = SHF_ALLOC | (PF_X if executable else 0)
+    required_flags = SHF_ALLOC | (SHF_EXECINSTR if executable else 0)
     span = max(size, 1)
     if (
         owner[1] == SHT_NOBITS
@@ -697,7 +753,56 @@ def _owned_symbol_offset(  # noqa: PLR0913 -- Complete ownership query.
     return mapped
 
 
-def _read_symbol_functions_checked(builder: _GraphBuilder) -> None:  # noqa: C901
+def _reconcile_arm_function_modes(builder: _GraphBuilder, sections: list[tuple]) -> None:
+    for function in builder.functions.values():
+        section_index = builder.arm_function_sections.get(function.file_offset)
+        if section_index is None:
+            owners = [
+                index
+                for index, section in enumerate(sections)
+                if section[1] != SHT_NOBITS
+                and section[2] & (SHF_ALLOC | SHF_EXECINSTR) == (SHF_ALLOC | SHF_EXECINSTR)
+                and section[4] <= function.file_offset
+                and function.file_offset + function.size <= section[4] + section[5]
+            ]
+            if len(owners) != 1:
+                continue
+            section_index = owners[0]
+            builder.arm_function_sections[function.file_offset] = section_index
+        markers = [
+            (offset, mode)
+            for offset, section, mode in builder.arm_mapping_markers
+            if section == section_index and offset <= function.file_offset
+        ]
+        if not markers:
+            continue
+        marker_offset = max(offset for offset, _ in markers)
+        modes = {mode for offset, mode in markers if offset == marker_offset}
+        if (
+            (marker_offset, section_index) in builder.arm_mapping_conflicts
+            or len(modes) != 1
+            or "data" in modes
+        ):
+            builder.arm_function_modes.pop(function.file_offset, None)
+            builder.arm_mode_conflicts.add(function.file_offset)
+            builder.gaps.add(
+                "ambiguous_arm_instruction_mode",
+                "Function start has conflicting or data-only ARM mapping provenance",
+                function.file_offset,
+            )
+            continue
+        mode = modes.pop()
+        if mode in ("arm", "thumb"):
+            builder.add_arm_function_mode(
+                function.file_offset,
+                mode,
+                f"arm_mode:{mode}_mapping_symbol",
+            )
+
+
+def _read_symbol_functions_checked(  # noqa: C901, PLR0912, PLR0915
+    builder: _GraphBuilder,
+) -> None:
     if not builder.header[12]:
         return
     sections = section_headers(builder.data, builder.header)
@@ -718,11 +823,41 @@ def _read_symbol_functions_checked(builder: _GraphBuilder) -> None:  # noqa: C90
         if symbols_seen > builder.limits.max_functions * 4:
             builder.gaps.add("symbol_limit", "Symbol inspection limit reached")
             return
-        for name_offset, info, _, index, address, size in symbol_rows(
-            builder.data, builder.header, table
-        ):
+        rows = list(symbol_rows(builder.data, builder.header, table))
+        arm_markers: dict[int, list[tuple[int, Literal["arm", "thumb", "data"]]]] = {}
+        if builder.machine == EM_ARM:
+            for name_offset, info, _, index, address, _ in rows:
+                if info & 0xF != 0 or index == SHN_UNDEF:
+                    continue
+                name = _string(builder.data, string_start, string_end, name_offset)
+                if name is None or not re.fullmatch(r"\$(?:a|t|d)(?:\..*)?", name):
+                    continue
+                mode: Literal["arm", "thumb", "data"] = {
+                    "$a": "arm",
+                    "$t": "thumb",
+                    "$d": "data",
+                }[name[:2]]
+                arm_markers.setdefault(index, []).append((address, mode))
+            for markers in arm_markers.values():
+                markers.sort()
+            for section_index, markers in arm_markers.items():
+                for marker_address, marker_mode in markers:
+                    marker_offset = _owned_symbol_offset(
+                        builder,
+                        sections,
+                        section_index,
+                        marker_address,
+                        1,
+                        executable=True,
+                        gap_code="inconsistent_arm_mapping_symbol",
+                        subject="ARM mapping symbol",
+                    )
+                    if marker_offset is not None:
+                        builder.add_arm_mapping_marker(marker_offset, section_index, marker_mode)
+        for name_offset, info, _, index, raw_address, size in rows:
             if info & 0xF != STT_FUNC or index == SHN_UNDEF:
                 continue
+            address = raw_address & ~1 if builder.machine == EM_ARM else raw_address
             offset = _owned_symbol_offset(
                 builder,
                 sections,
@@ -737,6 +872,41 @@ def _read_symbol_functions_checked(builder: _GraphBuilder) -> None:  # noqa: C90
                 continue
             name = _string(builder.data, string_start, string_end, name_offset)
             builder.add_function(offset, address, max(size, 1), name=name, method="elf_symbol")
+            if builder.machine != EM_ARM:
+                continue
+            builder.arm_function_sections[offset] = index
+            marker_mode: Literal["arm", "thumb", "data"] | None = None
+            markers = arm_markers.get(index, [])
+            marker_index = bisect_right([item[0] for item in markers], address) - 1
+            if marker_index >= 0:
+                marker_mode = markers[marker_index][1]
+            if raw_address & 1:
+                builder.add_arm_function_mode(offset, "thumb", "arm_mode:thumb_symbol_lsb")
+            if marker_mode in ("arm", "thumb"):
+                proven_mode = marker_mode
+                builder.add_arm_function_mode(
+                    offset,
+                    proven_mode,
+                    f"arm_mode:{proven_mode}_mapping_symbol",
+                )
+            elif marker_mode == "data":
+                builder.arm_function_modes.pop(offset, None)
+                builder.arm_mode_conflicts.add(offset)
+                builder.gaps.add(
+                    "ambiguous_arm_instruction_mode",
+                    "Function start is covered by an ARM $d data mapping symbol",
+                    offset,
+                )
+            if offset not in builder.arm_function_modes:
+                if offset in builder.arm_mode_conflicts:
+                    continue
+                reason = (
+                    "ARM function has neither a Thumb address bit nor an applicable "
+                    "$a/$t mapping symbol"
+                )
+                builder.gaps.add("arm_instruction_mode_unavailable", reason, offset)
+    if builder.machine == EM_ARM:
+        _reconcile_arm_function_modes(builder, sections)
 
 
 def _read_symbol_functions(builder: _GraphBuilder) -> None:
@@ -856,14 +1026,17 @@ def _encoded_value(  # noqa: PLR0913, PLR0917
     return value, cursor + size
 
 
-def parse_objdump_instructions(  # noqa: C901
-    text: str, limits: GraphLimits = DEFAULT_GRAPH_LIMITS
+def parse_objdump_instructions(  # noqa: C901, PLR0912
+    text: str,
+    limits: GraphLimits = DEFAULT_GRAPH_LIMITS,
+    *,
+    machine: int = EM_X86_64,
 ) -> InstructionPacket:
-    """Parse bounded GNU-style x86 instruction rows from trusted objdump output."""
+    """Parse bounded, architecture-bound GNU-style objdump instruction rows."""
     _validate_limits(limits)
     if len(text.encode("utf-8")) > limits.max_objdump_bytes:
         gap = GraphGap("objdump_output_limit", "Objdump evidence exceeds the byte limit")
-        return InstructionPacket((), (gap,), limited=True)
+        return InstructionPacket((), (gap,), limited=True, machine=machine)
     instructions = []
     gaps = _GapCollector(limits.max_gaps)
     for line in text.splitlines():
@@ -891,9 +1064,28 @@ def parse_objdump_instructions(  # noqa: C901
             gaps.add("malformed_objdump", "Malformed objdump instruction row")
             continue
         if raw:
-            instructions.append(DecodedInstruction(address, raw, mnemonic, operands))
+            calls: tuple[int, ...] = ()
+            jumps: tuple[int, ...] = ()
+            if machine != EM_X86_64:
+                target_match = DIRECT_TARGET.match(operands)
+                if target_match is not None:
+                    target = int(target_match[1], 16)
+                    if mnemonic in GENERIC_CALLS:
+                        calls = (target,)
+                    elif mnemonic in GENERIC_JUMPS:
+                        jumps = (target,)
+            instructions.append(
+                DecodedInstruction(
+                    address,
+                    raw,
+                    mnemonic,
+                    operands,
+                    direct_call_targets=calls,
+                    tail_call_targets=jumps,
+                )
+            )
     return InstructionPacket(
-        tuple(instructions), tuple(gaps.values), gaps.limited or bool(gaps.values)
+        tuple(instructions), tuple(gaps.values), gaps.limited or bool(gaps.values), machine
     )
 
 
@@ -1189,6 +1381,313 @@ def _decode_aarch64(builder: _GraphBuilder) -> None:  # noqa: C901, PLR0912
                         )
                 if pending_adrp is not None and pending_adrp[2] + 4 <= address:
                     pending_adrp = None
+
+
+def _arm_immediate(word: int) -> int:
+    value = word & 0xFF
+    rotate = ((word >> 8) & 0xF) * 2
+    return value if not rotate else (value >> rotate) | (value << (32 - rotate) & 0xFFFFFFFF)
+
+
+def _arm_mov_half(word: int) -> tuple[Literal["movw", "movt"], int, int, int] | None:
+    kind = word & 0x0FF00000
+    if kind not in (0x03000000, 0x03400000) or word >> 28 == 0xF:
+        return None
+    immediate = ((word >> 4) & 0xF000) | (word & 0xFFF)
+    return ("movw" if kind == 0x03000000 else "movt"), word >> 28, (word >> 12) & 0xF, immediate
+
+
+def _thumb_mov_half(
+    first: int, second: int | None
+) -> tuple[Literal["movw", "movt"], int, int] | None:
+    if second is None or second & 0x8000:
+        return None
+    kind = first & 0xFBF0
+    if kind not in (0xF240, 0xF2C0):
+        return None
+    immediate = (
+        (first & 0xF) << 12
+        | ((first >> 10) & 1) << 11
+        | ((second >> 12) & 0x7) << 8
+        | (second & 0xFF)
+    )
+    return ("movw" if kind == 0xF240 else "movt"), (second >> 8) & 0xF, immediate
+
+
+def _decode_arm_word(builder: _GraphBuilder, offset: int, address: int, word: int) -> None:
+    if word & 0x0E000000 == 0x0A000000 and word >> 28 != 0xF:
+        target = address + 8 + (_sign_extend(word & 0xFFFFFF, 24) << 2)
+        _add_direct_branch(builder, offset, 4, target, call=bool(word & 0x01000000))
+    elif word & 0x0FFFFFF0 in (0x012FFF10, 0x012FFF30):
+        if builder.function_at(offset, 4) is not None:
+            builder.gaps.add(
+                "unresolved_indirect_transfer",
+                "ARM register branch/call target is unresolved",
+                offset,
+            )
+    elif word & 0x0E100000 == 0x04100000 and word & 0x000F0000 == 0x000F0000 and word & 0x01000000:
+        displacement = word & 0xFFF
+        target = address + 8 + (displacement if word & 0x00800000 else -displacement)
+        _add_data_reference(builder, offset, address, target, instruction_size=4)
+    elif word & 0x0E000000 == 0x02000000 and word & 0x000F0000 == 0x000F0000:
+        opcode = (word >> 21) & 0xF
+        if opcode in (2, 4):
+            immediate = _arm_immediate(word)
+            target = address + 8 + (immediate if opcode == 4 else -immediate)
+            _add_data_reference(builder, offset, address, target, instruction_size=4)
+
+
+def _thumb_instruction_size(halfword: int) -> int:
+    return 4 if halfword & 0xF800 in (0xE800, 0xF000, 0xF800) else 2
+
+
+def _decode_thumb_instruction(
+    builder: _GraphBuilder, offset: int, address: int, first: int, second: int | None
+) -> None:
+    if second is not None and first & 0xF800 == 0xF000 and second & 0xD000 == 0xD000:
+        sign = (first >> 10) & 1
+        i1 = (~(((second >> 13) & 1) ^ sign)) & 1
+        i2 = (~(((second >> 11) & 1) ^ sign)) & 1
+        immediate = _sign_extend(
+            sign << 24 | i1 << 23 | i2 << 22 | (first & 0x3FF) << 12 | (second & 0x7FF) << 1,
+            25,
+        )
+        _add_direct_branch(builder, offset, 4, address + 4 + immediate, call=True)
+    elif first & 0xF800 == 0xE000:
+        immediate = _sign_extend(first & 0x7FF, 11) << 1
+        _add_direct_branch(builder, offset, 2, address + 4 + immediate, call=False)
+    elif first & 0xF800 in (0x4800, 0xA000):
+        target = ((address + 4) & ~3) + ((first & 0xFF) << 2)
+        _add_data_reference(builder, offset, address, target, instruction_size=2)
+    elif first & 0xFF87 == 0x4700:
+        if builder.function_at(offset, 2) is not None:
+            builder.gaps.add(
+                "unresolved_indirect_transfer",
+                "Thumb register branch/call target is unresolved",
+                offset,
+            )
+
+
+def _record_arm_mov_reference(
+    builder: _GraphBuilder,
+    offset: int,
+    address: int,
+    word: int,
+    pending: tuple[int, int, int, int] | None,
+) -> tuple[int, int, int, int] | None:
+    mov = _arm_mov_half(word)
+    if (
+        mov is not None
+        and mov[0] == "movt"
+        and pending is not None
+        and pending[:3] == (address - 4, mov[1], mov[2])
+    ):
+        _add_data_reference(
+            builder,
+            offset,
+            address,
+            pending[3] | mov[3] << 16,
+            instruction_size=4,
+            kind="absolute_reference",
+        )
+    if mov is not None and mov[0] == "movw":
+        return address, mov[1], mov[2], mov[3]
+    return None
+
+
+def _record_thumb_mov_reference(
+    builder: _GraphBuilder,
+    offset: int,
+    address: int,
+    instruction: tuple[int, int | None],
+    pending: tuple[int, int, int, int] | None,
+) -> tuple[int, int, int, int] | None:
+    first, second = instruction
+    mov = _thumb_mov_half(first, second)
+    if (
+        mov is not None
+        and mov[0] == "movt"
+        and pending is not None
+        and pending[:2] == (address - 4, mov[1])
+    ):
+        _add_data_reference(
+            builder,
+            offset,
+            address,
+            pending[3] | mov[2] << 16,
+            instruction_size=4,
+            kind="absolute_reference",
+        )
+    if mov is not None and mov[0] == "movw":
+        return address, mov[1], 0, mov[2]
+    return None
+
+
+def _decode_arm_interval(  # noqa: C901 -- Bounded variable-width mode decoder.
+    builder: _GraphBuilder,
+    function: _FunctionBuilder,
+    start: int,
+    end: int,
+    mode: Literal["arm", "thumb"],
+) -> bool:
+    alignment = 4 if mode == "arm" else 2
+    address = function.virtual_address + start - function.file_offset
+    if start % alignment or address % alignment:
+        builder.gaps.add(
+            "unsupported_instruction_mode",
+            f"{mode.upper()} mapping interval is not instruction aligned",
+            start,
+        )
+        return False
+    cursor = start
+    pending_mov: tuple[int, int, int, int] | None = None
+    thumb_it_remaining = 0
+    while cursor < end:
+        width = alignment
+        if mode == "thumb" and cursor + 2 <= end:
+            first = int.from_bytes(builder.data[cursor : cursor + 2], builder.layout.byteorder)
+            width = _thumb_instruction_size(first)
+        if cursor + width > end:
+            builder.gaps.add(
+                "truncated_instruction",
+                f"{mode.upper()} instruction crosses a verified mapping boundary",
+                cursor,
+            )
+            return False
+        if builder.decode_bytes + width > builder.limits.max_decode_bytes:
+            builder.gaps.add("decode_byte_limit", "Executable decode-byte limit reached")
+            return True
+        builder.instructions_seen += 1
+        if builder.instructions_seen > builder.limits.max_instructions:
+            builder.gaps.add("instruction_limit", "Decoded-instruction limit reached")
+            return True
+        address = function.virtual_address + cursor - function.file_offset
+        raw = builder.data[cursor : cursor + width]
+        builder.decode_bytes += width
+        if mode == "arm":
+            word = int.from_bytes(raw, builder.layout.byteorder)
+            pending_mov = _record_arm_mov_reference(builder, cursor, address, word, pending_mov)
+            _decode_arm_word(builder, cursor, address, word)
+        else:
+            first = int.from_bytes(raw[:2], builder.layout.byteorder)
+            second = int.from_bytes(raw[2:4], builder.layout.byteorder) if width == 4 else None
+            if width == 2 and first & 0xFF00 == 0xBF00 and first & 0xF:
+                thumb_it_remaining = 4
+                pending_mov = None
+            elif thumb_it_remaining:
+                thumb_it_remaining -= 1
+                pending_mov = None
+            else:
+                pending_mov = _record_thumb_mov_reference(
+                    builder, cursor, address, (first, second), pending_mov
+                )
+            _decode_thumb_instruction(
+                builder,
+                cursor,
+                address,
+                first,
+                second,
+            )
+        cursor += width
+    return False
+
+
+def _decode_arm(builder: _GraphBuilder) -> None:
+    if not builder.functions:
+        builder.gaps.add(
+            "arm_function_boundaries_unavailable",
+            "ARM/Thumb decoding requires symbol, unwind, or supplied function bounds",
+        )
+        return
+    for function in sorted(builder.functions.values(), key=lambda value: value.file_offset):
+        mode = builder.arm_function_modes.get(function.file_offset)
+        if mode is None:
+            builder.gaps.add(
+                "arm_instruction_mode_unavailable",
+                "ARM function bytes were not decoded without proven ARM/Thumb mode",
+                function.file_offset,
+            )
+            continue
+        section = builder.arm_function_sections.get(function.file_offset)
+        raw_markers = [
+            (offset, marker_mode)
+            for offset, marker_section, marker_mode in builder.arm_mapping_markers
+            if marker_section == section
+            and function.file_offset < offset < function.file_offset + function.size
+        ]
+        markers = []
+        for offset in sorted({marker_offset for marker_offset, _ in raw_markers}):
+            modes = {
+                marker_mode for marker_offset, marker_mode in raw_markers if marker_offset == offset
+            }
+            marker_mode = modes.pop() if len(modes) == 1 else "data"
+            markers.append((offset, marker_mode))
+        cursor = function.file_offset
+        current: Literal["arm", "thumb", "data"] = mode
+        for marker_offset, marker_mode in [
+            *markers,
+            (function.file_offset + function.size, current),
+        ]:
+            if current != "data" and _decode_arm_interval(
+                builder, function, cursor, marker_offset, current
+            ):
+                return
+            cursor = marker_offset
+            current = marker_mode
+
+
+def _decode_trusted_packet(  # noqa: C901
+    builder: _GraphBuilder, instructions: Iterable[DecodedInstruction]
+) -> None:
+    supplied = False
+    for instruction in instructions:
+        supplied = True
+        if not instruction.raw:
+            builder.gaps.add("unbound_disassembly", "Decoded instruction has no bound bytes")
+            continue
+        offset = builder.address_to_offset(
+            instruction.address, len(instruction.raw), executable=True
+        )
+        if (
+            offset is None
+            or builder.data[offset : offset + len(instruction.raw)] != instruction.raw
+        ):
+            builder.gaps.add(
+                "unbound_disassembly",
+                "Decoded instruction bytes do not match executable file bytes",
+                offset,
+            )
+            continue
+        builder.instructions_seen += 1
+        builder.decode_bytes += len(instruction.raw)
+        if builder.instructions_seen > builder.limits.max_instructions:
+            builder.gaps.add("instruction_limit", "Decoded-instruction limit reached")
+            return
+        if builder.decode_bytes > builder.limits.max_decode_bytes:
+            builder.gaps.add("decode_byte_limit", "Executable decode-byte limit reached")
+            return
+        for target in instruction.pc_relative_targets:
+            _add_data_reference(
+                builder, offset, instruction.address, target, instruction_size=len(instruction.raw)
+            )
+        for target in instruction.absolute_targets:
+            _add_data_reference(
+                builder,
+                offset,
+                instruction.address,
+                target,
+                instruction_size=len(instruction.raw),
+                kind="absolute_reference",
+            )
+        for target in instruction.direct_call_targets:
+            _add_direct_branch(builder, offset, len(instruction.raw), target, call=True)
+        for target in instruction.tail_call_targets:
+            _add_direct_branch(builder, offset, len(instruction.raw), target, call=False)
+    if not supplied:
+        builder.gaps.add(
+            "disassembly_unavailable",
+            f"ELF machine {builder.machine} requires an architecture-bound trusted objdump packet",
+        )
 
 
 def _riscv_jal_immediate(word: int) -> int:
@@ -1651,7 +2150,7 @@ def _read_relocations(builder: _GraphBuilder) -> None:
         builder.gaps.add("malformed_relocation", f"Cannot parse ELF relocations: {error}")
 
 
-def build_elf_graph(  # noqa: C901, PLR0913
+def build_elf_graph(  # noqa: C901, PLR0912, PLR0913
     data: Buffer,
     seeds: Iterable[GraphSeed] = (),
     instructions: InstructionPacket | Iterable[DecodedInstruction] | None = None,
@@ -1669,8 +2168,17 @@ def build_elf_graph(  # noqa: C901, PLR0913
     builder.finalize_function_bounds()
     _read_relocations(builder)
     supplied: Iterable[DecodedInstruction]
+    packet_machine: int | None = None
     if isinstance(instructions, InstructionPacket):
-        supplied = instructions.instructions
+        packet_machine = instructions.machine
+        if packet_machine is not None and packet_machine != builder.machine:
+            builder.gaps.add(
+                "objdump_machine_mismatch",
+                "Trusted objdump packet architecture does not match the ELF header",
+            )
+            supplied = ()
+        else:
+            supplied = instructions.instructions
         for gap in instructions.gaps:
             builder.gaps.add(gap.code, gap.reason, gap.file_offset)
         if instructions.limited:
@@ -1686,10 +2194,25 @@ def build_elf_graph(  # noqa: C901, PLR0913
         supplied = instructions or ()
     if builder.machine == EM_AARCH64:
         _decode_aarch64(builder)
+    elif builder.machine == EM_ARM:
+        _decode_arm(builder)
+        arm_tables = {
+            artifact.identifier
+            for artifact in builder.artifacts.values()
+            if artifact.kind == "decoder_table"
+        }
+        if arm_tables and not any(edge.target in arm_tables for edge in builder.edges):
+            builder.gaps.add(
+                "arm_table_reference_unresolved",
+                "No supported ARM/Thumb direct, literal, relocation, or supplied trusted "
+                "reference reached a decoder table; PIC/GOT sequences may require triage",
+            )
     elif builder.machine == EM_X86_64:
         _decode_x86(builder, supplied)
     elif builder.machine == EM_RISCV:
         _decode_riscv(builder)
+    elif packet_machine == builder.machine:
+        _decode_trusted_packet(builder, supplied)
     else:
         builder.gaps.add(
             "unsupported_instruction_mode",

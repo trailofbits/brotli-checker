@@ -1,6 +1,7 @@
 import hashlib
 import json
 import runpy
+from collections import Counter
 
 import brotli_binary_inventory as binary_inventory
 import brotli_inventory as inventory
@@ -63,14 +64,21 @@ def matched(*_args):
     return catalog(assertion())["artifacts"][0]
 
 
-def test_packaged_catalog_has_six_reviewed_exact_native_artifacts():
+def test_packaged_catalog_has_twelve_reviewed_exact_native_artifacts():
     actual = subject.load_native_artifacts()
-    assert len(actual) == 6
-    assert {item["patch_status"] for item in actual.values()} == {
-        "fixed_code_match",
-        "vulnerable_code_match",
+    assert Counter(item["patch_status"] for item in actual.values()) == {
+        "fixed_code_match": 6,
+        "vulnerable_code_match": 6,
     }
-    assert {item["provenance"][0]["format"] for item in actual.values()} == {"pe", "mach_o"}
+    assert Counter(item["provenance"][0]["format"] for item in actual.values()) == {
+        "pe": 8,
+        "mach_o": 4,
+    }
+    assert Counter(item["build_run_url"] for item in actual.values()) == {
+        "https://github.com/trailofbits/brotli-checker/actions/runs/41130675715": 6,
+        "https://github.com/trailofbits/brotli-checker/actions/runs/41482274418": 4,
+        "https://github.com/trailofbits/brotli-checker/actions/runs/41493301081": 2,
+    }
     assert all(item["method"] == "paired_native_build_exact_artifact" for item in actual.values())
 
 
@@ -251,3 +259,102 @@ def test_importer_writes_only_a_valid_exact_artifact_catalog(tmp_path, monkeypat
         "fixed.dll",
         "vulnerable.dll",
     }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {
+            "status": "separate_components_verified",
+            "vulnerable_component_offsets": [1],
+            "fixed_component_offsets": [2],
+        },
+        {
+            "status": "separate_components_verified",
+            "vulnerable_components": [{"machine": "aarch64", "file_offset": 1}],
+            "fixed_components": [{"machine": "aarch64", "file_offset": 2}],
+        },
+    ],
+)
+def test_importer_accepts_distinct_mixed_copy_controls(value):
+    assert IMPORTER["component_binding"](value) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"status": "separate_components_verified"},
+        {
+            "status": "separate_components_verified",
+            "vulnerable_component_offsets": [1],
+            "fixed_component_offsets": [1],
+        },
+        {
+            "status": "separate_components_verified",
+            "vulnerable_components": [{"machine": "aarch64", "file_offset": 1}],
+            "fixed_components": [{"machine": "aarch64", "file_offset": 1}],
+        },
+    ],
+)
+def test_importer_rejects_ambiguous_mixed_copy_controls(value):
+    with pytest.raises(ValueError, match="mixed-copy control"):
+        IMPORTER["component_binding"](value)
+
+
+def test_importer_merges_validated_catalog_without_rewriting_retained_evidence(
+    tmp_path, monkeypatch
+):
+    retained = catalog(assertion(b"retained artifact"))
+    retained_path = tmp_path / "retained.json"
+    retained_path.write_text(json.dumps(retained))
+    vulnerable = tmp_path / "vulnerable.dll"
+    fixed = tmp_path / "fixed.dll"
+    vulnerable.write_bytes(b"new vulnerable artifact")
+    fixed.write_bytes(b"new fixed artifact")
+    pair = tmp_path / "pair.json"
+    pair.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "affected_match_count": 1,
+                "fixed_match_count": 1,
+                "opposite_state_controls": "rejected",
+                "component_binding": {
+                    "status": "separate_components_verified",
+                    "vulnerable_component_offsets": [1],
+                    "fixed_component_offsets": [2],
+                },
+                "exact_artifact_assertions": [
+                    assertion(vulnerable.read_bytes(), "vulnerable"),
+                    assertion(fixed.read_bytes(), "fixed"),
+                ],
+            }
+        )
+    )
+    output = tmp_path / "merged.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "import_native_artifacts.py",
+            "--merge",
+            str(retained_path),
+            "--pair",
+            str(pair),
+            "--artifact",
+            str(vulnerable),
+            "--artifact",
+            str(fixed),
+            "--build-run-url",
+            "https://github.com/trailofbits/brotli-checker/actions/runs/2",
+            "--build-commit",
+            "d" * 40,
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert IMPORTER["main"]() == 0
+    actual = subject.load_native_artifacts(output)
+    assert len(actual) == 3
+    retained_digest = retained["artifacts"][0]["sha256"]
+    assert actual[retained_digest] == retained["artifacts"][0]

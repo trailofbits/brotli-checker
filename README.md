@@ -16,7 +16,10 @@ Automatic [FLIRT recognition](skills/brotli-checker/references/flirt.md) identif
 individual decoder functions and code windows for follow-up review, including
 some builds outside the exact-code profiles. It uses our generated Brotli patterns,
 not downloaded proprietary signatures, and does not turn function names into a
-patch verdict. Implemented defensive layers and remaining qualification work are listed in the
+patch verdict. Source-qualified native post-link profiles and independently rebuilt
+WebAssembly modules provide additional, narrowly scoped patch evidence. Supplied
+debug, runtime, and signed-provenance evidence stays separate from code status.
+Implemented defensive layers and support boundaries are listed in the
 [roadmap](docs/defensive-roadmap.md).
 
 For source review, [Trailmark](https://github.com/trailofbits/trailmark) maps calls

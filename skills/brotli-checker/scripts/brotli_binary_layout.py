@@ -1113,12 +1113,23 @@ def _sleb(cursor: _Cursor, bits: int) -> int:
     byte = 0
     for _ in range((bits + 6) // 7):
         byte = cursor.byte()
+        remaining = bits - shift
+        if remaining < 7:
+            payload = byte & 0x7F
+            value_mask = (1 << remaining) - 1
+            unused = payload & ~value_mask
+            negative = bool(payload & (1 << (remaining - 1)))
+            if unused != (~value_mask & 0x7F if negative else 0):
+                raise ValueError("invalid signed LEB128 high bits")
         value |= (byte & 0x7F) << shift
         shift += 7
         if not byte & 0x80:
-            value &= (1 << bits) - 1
-            if value & (1 << (bits - 1)):
-                value -= 1 << bits
+            if byte & 0x40 and shift < bits:
+                value |= -(1 << shift)
+            elif shift >= bits:
+                value &= (1 << bits) - 1
+                if value & (1 << (bits - 1)):
+                    value -= 1 << bits
             return value
     raise ValueError("invalid signed LEB128")
 

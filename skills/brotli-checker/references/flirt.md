@@ -81,6 +81,15 @@ control-flow graph.
   artifact slice. That remains source-state provenance rather than a patch verdict:
   functions from two decoder copies can coexist in one slice, and relocation targets
   are not verified by the pattern match.
+- A `postlink_patch_component_v1` profile additionally records exact relative
+  function offsets derived from a symbol export that is hash-bound to the reviewed
+  linked artifact and debug companion. The scanner emits a
+  `native_flirt_postlink_component` only when every required role matches at one
+  translation of that layout. Repeated translations are reported as separate
+  components; a slice-wide union cannot complete the profile. Post-link records must
+  be entirely exact: relocation wildcards, including unchecked call displacements,
+  are rejected. A vulnerable component is actionable code evidence. A fixed component
+  clears only that component, not unmatched copies or runtime selection.
 
 Inspect the block-switch/error-propagation functions and their callers together.
 Do not conclude that a function is absent from a nonmatch: inlining, LTO, changed
@@ -117,8 +126,8 @@ Hex-Rays signatures. See [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Packaged corpus and observed coverage
 
-The bundled corpus contains 3,506 full-function records across 368 provenance
-profiles: 360 ELF, four PE, and four Mach-O. The ELF subset retains its 12
+The bundled corpus contains 3,567 full-function records across 376 provenance
+profiles: 360 ELF, eight PE, and eight Mach-O. The ELF subset retains its 12
 machine/class/byte-order identities and covers the six
 reviewed C releases at `-O2`/`-O3`, PIC/non-PIC, with GCC 14 cross-target builds,
 AArch64 GCC 16, and both GCC 14 and Clang 19 LoongArch profiles. Header hashes and
@@ -128,10 +137,19 @@ transferred to other implementations.
 The native profiles come from reviewed Brotli 1.2.0/1.2.1 pairs built with MSVC,
 clang-cl, and Apple clang. Real paired normal binaries match their own complete
 role profiles and reject the opposite state; universal Apple binaries preserve
-both x86-64 and arm64 slice ownership. Windows PDB exports independently verify
-104 MSVC or 98 clang-cl procedures per binary. LTCG/LTO, ICF/dead-strip and signed
-universal binaries are retained controls, not automatically covered patch profiles.
-Profile source state remains provenance only for arbitrary targets.
+both x86-64 and arm64 slice ownership. Reviewed PDB and per-slice dSYM packets bind
+post-link function bounds to exact PE and universal Mach-O artifacts. Qualified
+Windows LTCG and Apple ThinLTO profiles cover one exact transformation family;
+source state remains provenance only for arbitrary or incomplete matches.
+
+The native-candidate workflow derives Windows LTCG profiles from the final PE, PDB,
+and independently verified `llvm-pdbutil` packet. It derives Apple ThinLTO profiles
+from each universal binary slice, its dSYM, and a hash-bound `llvm-dwarfdump` packet.
+Both routes require a complete non-overlapping patch-role population, verify
+opposite-state binaries, and construct mixed carriers proving that affected and
+fixed copies retain different component offsets. These are exact linked-layout
+signatures, not semantic equivalence for other compiler versions or transformations.
+Only replayed hosted outputs are merged with the owning catalog builder.
 
 Validation recognized functions in all 1,704 retained linked variants (600
 normal, 600 stripped, 504 sectionless), recovering 37 names with consistent

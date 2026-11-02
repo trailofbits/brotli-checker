@@ -15,6 +15,8 @@ from brotli_report_finalizer import (
     finalize_report,
     verify_identity_stability,
 )
+from brotli_runtime_evidence import MAX_RUNTIME_TRACES
+from brotli_trust_inputs import capture_trust_arguments
 
 if TYPE_CHECKING:
     import argparse
@@ -73,6 +75,17 @@ class CliEvidence:
         self.debug_symbol_inputs: tuple[CapturedDocument, ...] = tuple(
             capture_document(path) for path in symbol_paths
         )
+        trace_paths = getattr(args, "runtime_trace", [])
+        if len(trace_paths) > MAX_RUNTIME_TRACES:
+            message = "Supplied runtime trace count exceeds limit"
+            raise ValueError(message)
+        self.runtime_trace_inputs = tuple(capture_document(path) for path in trace_paths)
+        graph_paths = getattr(args, "graph_triage", [])
+        if len(graph_paths) > MAX_RUNTIME_TRACES:
+            message = "Supplied graph-triage packet count exceeds limit"
+            raise ValueError(message)
+        self.graph_triage_inputs = tuple(capture_document(path) for path in graph_paths)
+        self.trust_inputs = capture_trust_arguments(args)
         self.before = self.collect()
 
     def collect(self) -> FinalizationIdentities:
@@ -98,6 +111,21 @@ class CliEvidence:
             IdentityData("debug-symbol-export", item.label, item.raw)
             for item in self.debug_symbol_inputs
         )
+        feeds.extend(
+            IdentityData("runtime-trace", item.label, item.raw)
+            for item in self.runtime_trace_inputs
+        )
+        feeds.extend(
+            IdentityData("graph-triage", item.label, item.raw) for item in self.graph_triage_inputs
+        )
+        feeds.extend(
+            IdentityData(kind, label, raw)
+            for kind, label, raw in self.trust_inputs.identity_documents()
+        )
+        if self.trust_inputs.sigstore_verifier is not None:
+            extras.append(
+                IdentityPath("trust-verifier", "sigstore", self.trust_inputs.sigstore_verifier)
+            )
         if getattr(args, "catalog", None) is not None:
             extras.append(IdentityPath("catalog", "artifact-labels", args.catalog))
         extras.extend(IdentityPath("debug-companion", str(path), path) for path in args.debug_file)

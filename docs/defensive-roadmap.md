@@ -57,11 +57,12 @@ FLIRT target ownership now supports explicitly format-bound PE and Mach-O execut
 ranges, including independent universal slices; ELF profiles cannot silently cross
 formats. A native hosted-runner pipeline builds reviewed affected/fixed MSVC,
 clang-cl, and Apple-clang pairs, normal and LTCG/LTO controls, signed universal
-Mach-O controls, relocation-masked patch-role patterns, and opposite-state tests.
+Mach-O controls, exact post-link patch-role patterns, and opposite-state tests.
 **Qualification:** hosted Windows and macOS builds completed; their paired
-normal-library profiles, opposite-state controls, slice ownership, and PDB packets
-were independently replayed. Validated profiles are packaged. Exact post-link
-artifact assertions are kept separate from function recognition. Complete
+normal-library and post-link profiles, opposite-state and mixed-copy controls,
+slice ownership, PDB packets, and per-slice dSYM packets were independently replayed.
+Validated normal, Windows LTCG, and Apple ThinLTO profiles are packaged. Exact
+post-link artifact assertions are kept separate from function recognition. Complete
 native function populations remain provenance only until one decoder copy is bound;
 the scanner does not combine matching functions scattered across copies into a fix.
 
@@ -111,25 +112,50 @@ a complete native PDB parser. Offline attestations authenticate predicate claims
 they do not independently establish build truth, patch state, or signer freshness.
 
 
-## Remaining-limit resolution paths
+## Resolution paths implemented in the follow-up
 
-These are explicit support boundaries, not guarantees that an unmatched target is
-safe. The validation record must distinguish implemented paths from proposed ones.
+These paths improve evidence, not the meaning of a clean scan. Unmatched targets
+are not declared safe, and partial recognition is not a fixed-copy verdict.
 
-| Boundary | Concrete next evidence or implementation | Preserved invariant |
+| Boundary | Implemented path | Remaining support boundary |
 | --- | --- | --- |
-| Multiple embedded native copies | Associate each required role with one table/caller component; use reviewed exact post-link hashes for standalone artifacts | No slice-wide union becomes a fixed copy |
-| LTO/LTCG transformation | Paired post-link profiles from verified PDB/dSYM function bounds, with opposite-state and mixed-copy controls | Build provenance alone is not target patch proof |
-| ARM/Thumb graph modes | Add mode provenance from odd function addresses or `$a`/`$t` mapping symbols before bounded decoding | Never guess instruction mode from bytes |
-| Other ELF graph ISAs | Audited per-ABI decoder or trusted byte-bound objdump packet | Unsupported executable encodings remain gaps |
-| Mach universal dSYM/source lines | UUID- and artifact-hash-bound per-slice DWARF/export verification | Do not cross slices or open embedded source paths |
-| Wasm function identity | Validated function-body profiles with canonicalized indices and direct-call/data references | Native FLIRT and independent ports are not interchangeable |
-| Runtime provider/reachability | Explicit deployment traces bound to scanned artifact hashes and namespaces | Static candidates do not prove runtime selection |
-| Sigstore/JSF/attestation freshness | Separate offline trust-root, certificate-identity, transparency, canonicalization and revocation policies | A signature is not independently verified predicate truth |
-| Parser differential assurance | Maintained LLVM/LIEF oracle comparisons over retained valid/malformed fixtures | Oracle disagreement is evidence to investigate, not an automatic verdict |
+| Multiple embedded native copies | Post-link FLIRT groups require all patch roles at one reviewed relative layout, with exact bytes including direct-call displacements; mixed-copy controls reject unions | One fixed component cannot clear unmatched copies; arbitrary reordered/inlined layouts need new qualification |
+| LTO/LTCG transformation | Source-bound paired native builds, verified PDB/dSYM bounds, opposite-state and mixed-copy controls, separate exact-artifact assertions | Compiler/linker transformations are qualified individually, never inferred from build metadata |
+| ARM/Thumb graph modes | Odd function addresses and `$a`/`$t`/`$d` intervals establish mode; conflicts remain poisoned; direct branches, literals, and audited MOVW/MOVT pairs add edges | Stripped mode/boundary provenance, PIC/GOT sequences, IT uncertainty, and indirect transfers can remain unresolved |
+| Other ELF graph ISAs | `--graph-triage` imports exact-target bounded triage packets; x86 and standard PPC64 direct branch targets are byte-derived | Unknown instruction semantics and unsupported ABI modes remain explicit gaps; text cannot invent edges |
+| Mach universal dSYM/source lines | Explicit trusted dwarfdump export, bound to full artifact/companion hashes and each slice's UUID, architecture, offset and hash | Missing/split/unsupported debug descriptions stay unresolved; embedded source paths are never opened |
+| Wasm function identity | Canonical direct-call/data-bound identities and partial family candidates; paired Google C modules independently source-rebuilt to exact npm bytes | Only qualified whole-module or full non-custom-section identity establishes patch state; population unions and independent ports do not |
+| Runtime provider/reachability | `--runtime-trace` joins explicit positive observations by namespace, path, and artifact SHA-256 | Collector claims need independent review; no static loader guesses, negative trace inference, or attacker-control upgrade |
+| Sigstore/JSF/freshness | Isolated maintained offline Sigstore verifier, pinned identity/issuer/trust configuration; JSF Ed25519/JCS; explicit evaluation and expiry windows | Offline policy cannot discover new revocations or establish predicate truth; unsupported signature profiles fail closed |
+| Parser differential assurance | Isolated bounded scanner/LIEF workers plus explicit LLVM oracle, retained valid/malformed fixtures, replay CI | Agreement is fixture-scoped; disagreements and resource limits are investigation evidence, never scanner verdicts |
 
-Current additions include report-derived triage ranges, a bounded RISC-V decoder,
-explicit verified PDB-symbol packets, offline DSSE attestations, format-bound native
-FLIRT, and source-bound native/fuzz CI pipelines. The native hosted qualification and bounded coverage-guided campaigns have now
-run; the validation record distinguishes those observations from unsupported
-compiler transformations and runtime claims.
+### Qualification evidence
+
+- Windows [41482274418](https://github.com/trailofbits/brotli-checker/actions/runs/41482274418)
+  (successful Windows job) and macOS
+  [41493301081](https://github.com/trailofbits/brotli-checker/actions/runs/41493301081)
+  independently qualified paired MSVC/clang-cl LTCG and Apple ThinLTO builds.
+  Packaged evidence now contains 3,567 records / 376 profiles, including eight
+  copy-bound post-link profiles, and twelve exact native identities. All six
+  transformed artifacts passed real CLI checks and own/opposite/mixed-copy controls.
+
+- WebAssembly run [41485529110](https://github.com/trailofbits/brotli-checker/actions/runs/41485529110)
+  rebuilt reviewed Google Brotli 1.2.0/1.2.1 commits with the pinned Emscripten
+  image and exact builder archives. Both outputs byte-reproduced the reviewed
+  npm modules. Exact, opposite-state, custom-only, modified-data, and mixed-population
+  controls were replayed; the generated catalog retains the build commit/run.
+- Actual retained ARM and Thumb binaries exercise symbol/mapping mode provenance;
+  stripped controls retain unavailable-boundary gaps. A retained LLVM-built PPC64LE
+  fixture checks direct call/tail targets and malicious disassembly-text controls.
+- Scanner, LIEF 1.0.0, and LLVM 22.1.8 agree on the retained valid ELF, malformed PE,
+  and PPC64LE fixtures. Dedicated CI retains the reports, including nonpasses.
+- The maintained Sigstore 4.2.0 CLI passes a pinned official bundle conformance
+  fixture and rejects digest replacement. It is isolated because its cryptography
+  dependency range conflicts with the scanner's pinned analysis dependency.
+
+See [runtime observations](../skills/brotli-checker/references/runtime-evidence.md),
+[attestations](../skills/brotli-checker/references/attestations.md),
+[parser assurance](../skills/brotli-checker/references/parser-assurance.md), and
+[function signatures](../skills/brotli-checker/references/flirt.md) for operational
+contracts and limitations. Native transformed-profile qualification is recorded
+separately in the generated catalogs and hosted validation evidence.

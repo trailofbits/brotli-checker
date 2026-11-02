@@ -140,7 +140,7 @@ def test_partial_discriminating_wasm_fingerprint_is_reported_without_patch_verdi
             "required_profile_total": 1,
         },
     )
-    assert "remain unqualified" in result.gaps[0]
+    assert result.gaps == ()
 
 
 def test_wasm_noncustom_identity_ignores_only_well_formed_custom_sections():
@@ -182,7 +182,10 @@ def test_packaged_wasm_catalog_is_family_specific_and_paired():
     }
     assert {entry["qualification"]["package"] for entry in catalog_entries} == {"@wasm-zoo/brotli"}
     assert {entry["qualification_status"] for entry in catalog_entries} == {
-        "pending_source_rebuild"
+        "source_rebuild_verified"
+    }
+    assert {entry["qualification"]["build_run_url"] for entry in catalog_entries} == {
+        "https://github.com/trailofbits/brotli-checker/actions/runs/41485529110"
     }
 
 
@@ -196,16 +199,17 @@ def test_wasm_catalog_rejects_nonhashable_profile_values_as_value_error(tmp_path
         profiles.load_wasm_profile_catalog(path)
 
 
-@pytest.mark.parametrize("mutation", ["extra-field", "wasm-hash", "self-verified"])
+@pytest.mark.parametrize("mutation", ["extra-field", "wasm-hash", "tarball-version", "missing-run"])
 def test_wasm_catalog_qualification_schema_cannot_self_assert_trust(tmp_path, mutation):
     entry = json.loads(json.dumps(profiles.load_wasm_profile_catalog()[0]))
     if mutation == "extra-field":
         entry["qualification"]["unreviewed"] = "claim"
     elif mutation == "wasm-hash":
         entry["qualification"]["wasm_sha256"] = "00" * 32
+    elif mutation == "tarball-version":
+        entry["qualification"]["package_version"] = "999.0.0"
     else:
-        entry["qualification_status"] = "source_rebuild_verified"
-        entry["qualification"]["independent_rebuild_sha256"] = entry["artifact_sha256"]
+        entry["qualification"]["build_run_url"] = ""
     path = tmp_path / "catalog.json"
     path.write_text(json.dumps({"schema_version": 1, "profiles": [entry]}))
 
@@ -243,3 +247,38 @@ def test_wasm_catalog_profile_population_budget_is_enforced_before_hash_parsing(
 
     with pytest.raises(ValueError, match="profile population"):
         profiles.load_wasm_profile_catalog(path)
+
+
+def test_wasm_catalog_replay_allows_only_new_run_provenance(tmp_path):
+    expected = profiles.CATALOG
+    candidate = json.loads(expected.read_text())
+    for entry in candidate["profiles"]:
+        entry["qualification"]["build_run_url"] = (
+            "https://github.com/trailofbits/brotli-checker/actions/runs/99999999999"
+        )
+        entry["qualification"]["build_commit"] = "ab" * 20
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(json.dumps(candidate))
+
+    profiles.verify_wasm_profile_catalog_replay(candidate_path, expected)
+
+
+@pytest.mark.parametrize("mutation", ["artifact", "source", "role"])
+def test_wasm_catalog_replay_rejects_semantic_drift(tmp_path, mutation):
+    candidate = json.loads(profiles.CATALOG.read_text())
+    entry = candidate["profiles"][0]
+    if mutation == "artifact":
+        replacement = "01" * 32
+        entry["artifact_sha256"] = replacement
+        entry["qualification"]["wasm_sha256"] = replacement
+        entry["qualification"]["independent_rebuild_sha256"] = replacement
+    elif mutation == "source":
+        entry["qualification"]["source_commit"] = "ab" * 20
+    else:
+        entry["required_profiles"][0] = "01" * 32
+        entry["required_profiles"].sort()
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(json.dumps(candidate))
+
+    with pytest.raises(ValueError, match="changed artifact, source, or function"):
+        profiles.verify_wasm_profile_catalog_replay(candidate_path, profiles.CATALOG)

@@ -76,6 +76,7 @@ DEFAULT_OPTIONAL_TOOLS = (
     OptionalToolSpec("python-flirt", "python-flirt"),
     OptionalToolSpec("zstandard", "zstandard"),
     OptionalToolSpec("cryptography", "cryptography"),
+    OptionalToolSpec("rfc8785", "rfc8785"),
 )
 
 
@@ -273,6 +274,11 @@ def collect_cli_identities(  # noqa: PLR0913 -- CLI evidence sources are explici
             "catalog",
             "native-artifacts",
             Path(__file__).resolve().parent.parent / "references/native-artifacts.json",
+        ),
+        IdentityPath(
+            "catalog",
+            "wasm-function-profiles",
+            Path(__file__).resolve().parent.parent / "references/wasm-function-profiles.json",
         ),
         *extra_catalog_files,
     ]

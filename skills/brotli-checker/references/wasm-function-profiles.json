@@ -27,11 +27,11 @@
       "noncustom_sha256": "1b914a25c3a12536bb23c1e4a672b5988a71bc51bb650bb3673bf5431357d643",
       "patch_status": "vulnerable_code_match",
       "qualification": {
-        "build_commit": "",
-        "build_run_url": "",
+        "build_commit": "86cc808e4de278ca045a80c3ea54d48d284e58e5",
+        "build_run_url": "https://github.com/trailofbits/brotli-checker/actions/runs/41485529110",
         "builder_archive_sha256": "a62ed903fe3fed6f79d9b65f5c597bd869047ff83e38c11df38803fbece7a908",
         "builder_commit": "b4ab1c1671bf49b37dd1757bf832b9da0f91085b",
-        "independent_rebuild_sha256": "",
+        "independent_rebuild_sha256": "1b914a25c3a12536bb23c1e4a672b5988a71bc51bb650bb3673bf5431357d643",
         "manifest_sha256": "2e9217b8573da4ab27e0725fcd8d48a45cfd8805ba94d0eda2137c4958d19367",
         "package": "@wasm-zoo/brotli",
         "package_version": "0.1.0",
@@ -43,7 +43,7 @@
         "wasm_path": "package/brotli-core.wasm",
         "wasm_sha256": "1b914a25c3a12536bb23c1e4a672b5988a71bc51bb650bb3673bf5431357d643"
       },
-      "qualification_status": "pending_source_rebuild",
+      "qualification_status": "source_rebuild_verified",
       "required_profiles": [
         "0902355801ab0c5cf84d4edb7fa27914361a480342b296b8df7d874b93fd2744",
         "0d207f4a35cf0dc97d3171354bbf5fad4c109826860c64fd59e1b0f39da136dc",
@@ -116,11 +116,11 @@
       "noncustom_sha256": "2c148d8f5078b24c2fd50d3295f1ecfe6fe800e569285ddac833ce904369b430",
       "patch_status": "fixed_code_match",
       "qualification": {
-        "build_commit": "",
-        "build_run_url": "",
+        "build_commit": "86cc808e4de278ca045a80c3ea54d48d284e58e5",
+        "build_run_url": "https://github.com/trailofbits/brotli-checker/actions/runs/41485529110",
         "builder_archive_sha256": "74a5a30972af83a0190e6ddb6dbdb3307b73cbc6209888155f8d4abc9bf5879b",
         "builder_commit": "d3e9fe2251fea08b2765312efcfdc1191c91cddf",
-        "independent_rebuild_sha256": "",
+        "independent_rebuild_sha256": "2c148d8f5078b24c2fd50d3295f1ecfe6fe800e569285ddac833ce904369b430",
         "manifest_sha256": "90eecf7f2150af49c645321d2be2d13d703bd2baf8f296d5bd664b1782003bcc",
         "package": "@wasm-zoo/brotli",
         "package_version": "0.1.1",
@@ -132,7 +132,7 @@
         "wasm_path": "package/brotli-core.wasm",
         "wasm_sha256": "2c148d8f5078b24c2fd50d3295f1ecfe6fe800e569285ddac833ce904369b430"
       },
-      "qualification_status": "pending_source_rebuild",
+      "qualification_status": "source_rebuild_verified",
       "required_profiles": [
         "01e758b34332f80c992effb1e68b45518c48eadcef220bcbb90cfd2a838f3ff7",
         "03b9e19ad8cd1cdeb4f15cdc7ce94e356e614d2d2ac349f6d5f8c3e0911ba16d",

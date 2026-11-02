@@ -33,6 +33,23 @@ the report envelope, revalidates executable mappings and graph reference sites,
 and preserves `patch_status: unknown`; names and source-profile states never
 select bytes or become a verdict.
 
+Repeat `--graph-triage /captured/triage.json` to feed an exact-target triage
+packet back into the graph. The scanner rechecks the target and fragment hashes,
+one executable mapping, architecture/endian command, address scope, every
+instruction byte, complete fragment coverage, and aggregate limits. Supplied
+mnemonics and operands are not trusted as semantics. x86 relative calls/jumps and
+PowerPC64 standard I-form `b`/`bl` targets are derived from instruction bytes;
+other supplied targets are discarded with an explicit gap. The Power decoder
+uses the ELF byte order, sign-extends `LI || 0b00`, applies `AA`, and uses `LK`
+only to distinguish call from tail branch. Every other PowerPC instruction remains
+an explicit unsupported-semantics gap even when its bytes cover the fragment.
+PowerPC VLE and MIPS compressed/vendor
+modes are rejected rather than guessed. These rules follow the
+[OpenPOWER ISA](https://openpowerfoundation.org/specifications/isa/) and its
+[I-form addressing definition](https://git.openpowerfoundation.org/cores/a2i/raw/branch/master/rel/doc/A2_BGQ.pdf).
+A completed packet or end of a captured fragment never proves another function,
+caller, or decoder copy absent.
+
 Repeat `--debug-file /trusted/companion` to supply debug artifacts. ELF build IDs
 or debuglink CRC, Mach-O UUID, and PE/PDB GUID-age must agree before enrichment.
 Verified ELF DWARF lines use pinned pyelftools; embedded source paths are not
@@ -143,12 +160,15 @@ schema and trust limits. A verified signature never promotes patch status.
 
 ## Reviewed exact native artifacts
 
-The packaged `native-artifacts.json` records six independently replayed normal
-Brotli 1.2.0/1.2.1 builds: MSVC, clang-cl, and Apple-clang universal libraries.
-Each assertion binds the complete file SHA-256 and size, reviewed decoder source
-hash, headers/object provenance, selected compiler identity, build commit/run,
-and paired opposite-state controls. The owning `import_native_artifacts.py` tool
-validates these inputs before generating the catalog.
+The packaged `native-artifacts.json` records twelve independently replayed Brotli
+1.2.0/1.2.1 builds. Six are normal MSVC, clang-cl, and Apple-clang universal
+libraries; six cover MSVC/clang-cl LTCG and Apple-clang universal ThinLTO. Each
+assertion binds the complete file SHA-256 and size, reviewed decoder source hash,
+headers/object provenance, selected compiler identity, build commit/run, and paired
+opposite-state controls. Post-link profiles additionally require all eight patch
+roles to belong to one offset-bound component; paired mixed-copy controls keep
+affected and fixed components separate. The owning `import_native_artifacts.py`
+tool validates these inputs before generating the catalog.
 
 The scanner reuses the digest already computed during traversal; it does not
 rehash or load the whole file for catalog lookup. A byte-different rebuild,
@@ -156,3 +176,43 @@ re-signing, LTO transformation, or embedded copy does not inherit an exact match
 Complete native FLIRT role populations remain recognition/provenance evidence,
 not a substitute for this exact artifact identity or semantic review. A fixed
 exact artifact does not clear another copy or certify the running application.
+
+
+## Reusing bounded disassembly
+
+Pass `--graph-triage /absolute/triage.json` to either inventory CLI to reuse a report
+from `brotli_binary_triage.py`. The importer uses the original report schema and
+captures it once for the evidence envelope. Exact artifact SHA-256, fragment hashes,
+unique executable ownership, architecture, endian, original addresses, instruction
+bytes, and total budgets are checked before graph use. Different ranges must be
+collected in one triage report, not combined from ambiguous duplicate packets.
+
+Supplied mnemonic/operand text is not independently verified code semantics.
+Supported x86 relative branches and standard PPC64 I-form branches are derived
+from raw bytes; unsupported semantics, missing rows, and incomplete tool output
+stay explicit gaps. Completion of a fragment does not prove that all decoder
+copies or callers have been found. Graph edges never establish patch status.
+
+## Per-slice Mach debug exports
+
+Use `scripts/export_mach_debug_symbols.py` from a trusted checkout to export bounded
+function/source-line packets with an explicitly selected dwarfdump executable.
+Supply the resulting packet with `--debug-symbols` and the original companion with
+`--debug-file`. Universal slices are independently bound to artifact/companion
+hashes, UUID, architecture/subtype, offset and slice hashes. A packet for another
+slice cannot supply bounds. Missing debug information is unresolved, not success.
+
+## Source-qualified WebAssembly profiles
+
+The packaged `wasm-function-profiles.json` recognizes the reviewed Google C-to-Wasm
+family. Its owning importer and hosted workflow bind pinned source commits, builder
+archives, compiler image, artifact hashes, and independent byte-for-byte rebuilds.
+Only qualified complete module identity or equality of all non-custom sections
+can establish a patch state. Function-population and partial fingerprint matches
+remain recognition/candidate evidence. Adding or modifying code/data invalidates
+complete identity; combining signatures from affected/fixed copies never proves a
+fix. No module is instantiated, and independent Rust/JS ports need their own review.
+
+For deployment observations, see [runtime evidence](runtime-evidence.md). For
+additional authenticated provenance, see [offline attestations](attestations.md).
+Development-only oracle replay is documented in [parser assurance](parser-assurance.md).

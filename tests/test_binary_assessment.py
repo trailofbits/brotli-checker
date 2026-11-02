@@ -9,9 +9,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/brotli-checker/scripts"))
 import brotli_binary_metadata as metadata
 import brotli_inventory as scanner
+import brotli_wasm_profiles as wasm_profiles
 from test_binary_inventory import run_scan
 from test_binary_match import reference, write_catalog
 from test_binary_metadata import elf_with_symbols, encoded_version, x86_return
+from test_flirt_integration import run_main
+from test_wasm_profiles import catalog, module, state_only_module
 
 
 @pytest.mark.parametrize(
@@ -147,3 +150,27 @@ def test_old_version_cannot_hide_affected_code_and_fixed_code_cannot_clear_old_v
         actual = scanner.assess_binary(data, [])
         assert actual["patch_status"] == expected
         assert actual["code_matches"] == assessment.matches
+
+
+def test_partial_wasm_profiles_remain_visible_without_claiming_decoder_or_fix(
+    tmp_path, monkeypatch
+):
+    references = catalog(module(0), module(1))
+    monkeypatch.setattr(wasm_profiles, "load_wasm_profile_catalog", lambda: references)
+    target = tmp_path / "renamed.wasm"
+    target.write_bytes(state_only_module(0))
+    assessment = scanner.assess_binary(target.read_bytes(), [])
+    assert assessment["patch_status"] == "unknown"
+    assert assessment["detection_status"] == "function_profile_candidate"
+    assert assessment["kind"] == "binary_candidate"
+    code_references = write_catalog(tmp_path, [reference(salt=b"unused")])
+    status, output, error = run_main(
+        target, "--no-flirt", "--code-references", code_references, "--json"
+    )
+    assert not error
+    assert status == 3
+    report = json.loads(output)
+    finding = report["findings"][0]
+    assert finding["patch_status"] == "unknown"
+    assert finding["evidence"]["wasm_profiles"]["candidates"]
+    assert finding["evidence"]["detection_status"] == "function_profile_candidate"

@@ -14,7 +14,11 @@ analysis = [
     "capstone==5.0.9",
     "cryptography==50.0.2",
     "pyelftools==0.33",
+    "rfc8785==0.1.4",
     "zstandard==0.25.0",
+]
+assurance = [
+    "lief==1.0.0",
 ]
 
 [tool.uv]

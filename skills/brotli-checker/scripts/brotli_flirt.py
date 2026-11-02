@@ -872,7 +872,16 @@ def _match_flirt_context(  # noqa: C901, PLR0912, PLR0915
         if stop:
             break
         identifiers = sorted(set(identifiers))
-        if len(identifiers) > 1:
+        profile_evidence = {
+            identifier: _profiles_for_signature(catalog.profiles[(identity, identifier)])
+            for identifier in identifiers
+        }
+        names_at_offset = {
+            name
+            for _profiles, candidate_names in profile_evidence.values()
+            for name in candidate_names
+        }
+        if len(identifiers) > 1 and len(names_at_offset) != 1:
             ambiguity_count += 1
             if len(ambiguous_matches) < MAX_REPORTED_GAPS:
                 ambiguous_matches.append(
@@ -892,42 +901,46 @@ def _match_flirt_context(  # noqa: C901, PLR0912, PLR0915
             elif "FLIRT ambiguity reporting limit reached" not in limitations:
                 limitations.append("FLIRT ambiguity reporting limit reached")
             continue
-        if len(identifiers) != 1:
+        if not identifiers:
             continue
-        if len(matches) >= MAX_MATCHES:
+        if len(matches) + len(identifiers) > MAX_MATCHES:
             gap = "FLIRT match reporting limit reached; recognition is incomplete"
             gaps.append(gap)
             limitations.append(gap)
             limited = True
             break
-        identifier = identifiers[0]
-        record = records[identifier]
-        profile_index = catalog.profiles[(identity, identifier)]
-        profiles, candidate_names = _profiles_for_signature(profile_index)
-        profile_count = len(profile_index)
-        if profile_count > len(profiles) and not any(
-            value.startswith("FLIRT profile reporting limit reached") for value in limitations
-        ):
-            gap = "FLIRT profile reporting limit reached; provenance is incomplete"
-            gaps.append(gap)
-            limitations.append(gap)
-        matches.append(
-            {
-                "signature_id": identifier,
-                "file_offset": offset,
-                "size_bytes": record.size,
-                "format": context.format,
-                **({"slice_index": context.slice_index} if context.slice_index is not None else {}),
-                "method": "python_flirt_full_function_pattern",
-                "candidate_names": candidate_names,
-                "definitive_name": candidate_names[0]
-                if len(candidate_names) == 1 and not candidate_collection_limited
-                else None,
-                "ambiguity_complete": not candidate_collection_limited,
-                "compatible_profile_count": profile_count,
-                "compatible_profiles": profiles,
-            }
-        )
+        for identifier in identifiers:
+            record = records[identifier]
+            profile_index = catalog.profiles[(identity, identifier)]
+            profiles, candidate_names = profile_evidence[identifier]
+            profile_count = len(profile_index)
+            if profile_count > len(profiles) and not any(
+                value.startswith("FLIRT profile reporting limit reached") for value in limitations
+            ):
+                gap = "FLIRT profile reporting limit reached; provenance is incomplete"
+                gaps.append(gap)
+                limitations.append(gap)
+            matches.append(
+                {
+                    "signature_id": identifier,
+                    "file_offset": offset,
+                    "size_bytes": record.size,
+                    "format": context.format,
+                    **(
+                        {"slice_index": context.slice_index}
+                        if context.slice_index is not None
+                        else {}
+                    ),
+                    "method": "python_flirt_full_function_pattern",
+                    "candidate_names": candidate_names,
+                    "definitive_name": candidate_names[0]
+                    if len(candidate_names) == 1 and not candidate_collection_limited
+                    else None,
+                    "ambiguity_complete": not candidate_collection_limited,
+                    "compatible_profile_count": profile_count,
+                    "compatible_profiles": profiles,
+                }
+            )
     if ambiguity_count:
         gaps.append(
             f"{ambiguity_count} FLIRT candidate(s) matched multiple signatures; names unresolved"

@@ -1,0 +1,90 @@
+name: Parser differential
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/parser-differential.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/brotli_parser_oracles.py'
+      - 'scripts/parser_oracle_worker.py'
+      - 'scripts/run_parser_differential.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_data.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_layout.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_match.py'
+      - 'tests/fixtures/parser/**'
+      - 'tests/test_parser_oracles.py'
+  pull_request:
+    paths:
+      - '.github/workflows/parser-differential.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/brotli_parser_oracles.py'
+      - 'scripts/parser_oracle_worker.py'
+      - 'scripts/run_parser_differential.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_data.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_layout.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_match.py'
+      - 'tests/fixtures/parser/**'
+      - 'tests/test_parser_oracles.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: LLVM and LIEF retained fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+      - name: Install signed distribution LLVM oracle
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes lld llvm
+      - name: Install locked assurance dependencies
+        run: uv sync --locked --extra assurance
+      - name: Build retained valid ELF source
+        run: |
+          cc -O2 tests/fixtures/parser/valid-elf.c -o /tmp/brotli-parser-valid-elf
+          llvm-mc -triple=powerpc64le-linux-gnu -filetype=obj \
+            tests/fixtures/parser/ppc64le-branches.s -o /tmp/brotli-ppc64le-branches.o
+          ld.lld -m elf64lppc -e _start \
+            /tmp/brotli-ppc64le-branches.o -o /tmp/brotli-ppc64le-branches
+          mkdir -p artifacts/parser-differential
+          llvm-objdump -d /tmp/brotli-ppc64le-branches \
+            > artifacts/parser-differential/ppc64le-objdump.txt
+      - name: Run focused oracle tests
+        env:
+          BROTLI_PPC64_BRANCH_FIXTURE: /tmp/brotli-ppc64le-branches
+        run: |
+          uv run --locked --extra assurance pytest \
+            tests/test_parser_oracles.py tests/test_graph_packets.py --no-cov
+      - name: Compare retained valid and malformed samples
+        run: |
+          mkdir -p artifacts/parser-differential
+          uv run --locked --extra assurance python scripts/run_parser_differential.py \
+            --llvm-readobj "$(command -v llvm-readobj)" \
+            --output artifacts/parser-differential/report.json \
+            /tmp/brotli-parser-valid-elf /tmp/brotli-ppc64le-branches \
+            tests/fixtures/parser/malformed-pe.bin
+      - name: Retain parser comparison evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: parser-differential-${{ github.run_id }}
+          path: artifacts/parser-differential/
+          if-no-files-found: error
+          retention-days: 14
