@@ -452,9 +452,15 @@ def prune_ambiguous_names(
     records: dict[str, str], groups: list[dict]
 ) -> tuple[dict[str, str], list[dict]]:
     """Drop same-target patterns that provenance maps to multiple symbol names."""
-    names: dict[tuple[tuple[int, int, str], str], set[str]] = {}
+    names: dict[tuple[tuple[str, int, int, str, str], str], set[str]] = {}
     for group in groups:
-        identity = group["machine"], group["elf_class"], group["byteorder"]
+        identity = (
+            group.get("format", "elf"),
+            group["machine"],
+            group["elf_class"],
+            group["byteorder"],
+            group.get("abi", "sysv"),
+        )
         for symbol, identifiers in group["functions"].items():
             for identifier in identifiers:
                 names.setdefault((identity, identifier), set()).add(symbol)
@@ -462,7 +468,13 @@ def prune_ambiguous_names(
     kept_groups = []
     for original in groups:
         group = {**original, "functions": {}}
-        identity = group["machine"], group["elf_class"], group["byteorder"]
+        identity = (
+            group.get("format", "elf"),
+            group["machine"],
+            group["elf_class"],
+            group["byteorder"],
+            group.get("abi", "sysv"),
+        )
         for symbol, identifiers in original["functions"].items():
             retained = [
                 identifier for identifier in identifiers if (identity, identifier) not in ambiguous
@@ -500,6 +512,7 @@ def write_catalog(bundle_path: Path, pat_path: Path, pat_text: str, groups: list
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="ascii",
+                newline="\n",
                 dir=target.parent,
                 prefix=f".{target.name}.",
                 suffix=".tmp",
@@ -507,7 +520,11 @@ def write_catalog(bundle_path: Path, pat_path: Path, pat_text: str, groups: list
             ) as stream:
                 stream.write(data)
                 temporary_paths.append((target, Path(stream.name)))
-        validate_pat(temporary_paths[0][1].read_text(encoding="ascii"))
+        pat_bytes = temporary_paths[0][1].read_bytes()
+        if hashlib.sha256(pat_bytes).hexdigest() != bundle["pat_sha256"]:
+            msg = "Written FLIRT pattern bytes do not match the manifest digest"
+            raise ValueError(msg)
+        validate_pat(pat_bytes.decode("ascii"))
         written_bundle = json.loads(temporary_paths[1][1].read_text(encoding="ascii"))
         if written_bundle != bundle:
             msg = "Written FLIRT bundle failed validation"

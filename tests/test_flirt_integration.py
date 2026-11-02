@@ -8,8 +8,10 @@ import brotli_binary_signatures as signatures
 import brotli_flirt as flirt
 import brotli_inventory as inventory
 import pytest
+from test_binary_layout import mach_section_fixture, pe_fixture
 from test_binary_match import elf, reference, write_catalog
 from test_binary_metadata import elf_with_symbols
+from test_binary_signatures import mach_fat
 from test_flirt import FakeBackend, code, group, pattern, write_bundle
 
 
@@ -132,8 +134,101 @@ def test_non_elf_target_records_requested_flirt_format_gap(tmp_path):
 
     assessment = inventory.assess_binary(b"MZ" + bytes(128), [], catalog)
 
+    assert assessment["flirt"]["status"] == "unknown"
+    assert any("FLIRT target unsupported" in gap for gap in assessment["gaps"])
+
+
+def test_opaque_nonbinary_does_not_load_or_gap_automatic_flirt(tmp_path):
+    catalog = load_fixture(tmp_path, code(b"opaque"))
+
+    assessment = inventory.assess_binary(b"opaque library bytes", [], catalog)
+
+    assert assessment["flirt"]["status"] == "not_requested"
+    assert assessment["flirt"]["gaps"] == []
+
+
+def native_catalog(tmp_path, function, format_name):
+    abi = "windows" if format_name == "pe" else "darwin"
+    bundle = write_bundle(
+        tmp_path,
+        [pattern(function, "native")],
+        [
+            group(
+                {"ProcessCommands": ["native"]},
+                native=(format_name, abi),
+            )
+        ],
+    )
+    return flirt.load_flirt_bundle(bundle, backend=FakeBackend())
+
+
+def test_native_flirt_requires_explicit_format_and_abi_provenance(tmp_path):
+    function = code(b"native-format")
+    data = bytearray(pe_fixture())
+    data[0x420 : 0x420 + len(function)] = function
+    elf_catalog = load_fixture(tmp_path, function)
+
+    assessment = inventory.assess_binary(bytes(data), [], elf_catalog)
+
     assert assessment["flirt"]["status"] == "not_applicable"
-    assert any("FLIRT executable mapping" in gap for gap in assessment["gaps"])
+    assert assessment["flirt"]["matches"] == []
+
+
+def test_pe_flirt_scans_only_validated_executable_ranges(tmp_path):
+    function = code(b"pe-native")
+    catalog = native_catalog(tmp_path, function, "pe")
+    executable = bytearray(pe_fixture())
+    executable[0x420 : 0x420 + len(function)] = function
+    resource = bytearray(pe_fixture())
+    resource[0xC00 : 0xC00 + len(function)] = function
+
+    match = inventory.assess_binary(bytes(executable), [], catalog)
+    control = inventory.assess_binary(bytes(resource), [], catalog)
+
+    assert match["flirt"]["matches"][0]["file_offset"] == 0x420
+    assert match["flirt"]["matches"][0]["format"] == "pe"
+    assert match["patch_status"] == "unknown"
+    assert control["flirt"]["matches"] == []
+
+
+def test_main_inventory_native_flirt_does_not_require_decoder_tables(tmp_path):
+    function = code(b"pe-inventory-native")
+    catalog = native_catalog(tmp_path, function, "pe")
+    target = bytearray(pe_fixture())
+    target[0x420 : 0x420 + len(function)] = function
+    result = inventory.Inventory(
+        {"fingerprints": []},
+        None,
+        None,
+        10,
+        0,
+        code_references=[],
+        flirt_catalog=catalog,
+    )
+
+    result.inspect(bytes(target), "application.exe", 0)
+
+    assert result.findings[0]["kind"] == "decoder_function_signature"
+    assert result.findings[0]["patch_status"] == "unknown"
+    assert result.findings[0]["evidence"]["recognition"]["matches"] == []
+    assert result.findings[0]["evidence"]["flirt"]["matches"][0]["format"] == "pe"
+
+
+def test_mach_universal_flirt_preserves_slice_ownership(tmp_path):
+    function = code(b"mach-native")
+    catalog = native_catalog(tmp_path, function, "mach_o")
+    first = bytearray(mach_section_fixture())
+    second = bytearray(mach_section_fixture())
+    first[0x220 : 0x220 + len(function)] = function
+    target = mach_fat(bytes(first), bytes(second))
+
+    assessment = inventory.assess_binary(target, [], catalog)
+
+    assert len(assessment["flirt"]["matches"]) == 1
+    row = assessment["flirt"]["matches"][0]
+    assert row["format"] == "mach_o"
+    assert row["slice_index"] == 0
+    assert row["file_offset"] == 0x320
 
 
 def test_binary_inventory_keeps_flirt_identity_separate_from_patch_status(tmp_path):

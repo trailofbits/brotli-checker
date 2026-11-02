@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """Development fuzz entry point for structured provenance/package parsers.
 
 Run a retained corpus without dependencies:
@@ -14,8 +15,13 @@ The harness performs no package-manager commands, network access, or writes.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "skills/brotli-checker/scripts"))
 
 from brotli_package_provenance import (
     apk_version_compare,
@@ -76,6 +82,38 @@ FUZZ_TARGETS = (
 )
 
 
+def seed_corpus() -> dict[str, bytes]:
+    values = (
+        (
+            "cyclonedx",
+            {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []},
+        ),
+        (
+            "vendor-snapshot",
+            {
+                "schema_version": 1,
+                "snapshot_date": "2026-10-30",
+                "vendor": "debian",
+                "release": "13",
+                "assertions": [],
+            },
+        ),
+    )
+    seeds = {
+        values[0][0]: b"\0" + json.dumps(values[0][1], separators=(",", ":")).encode(),
+        values[1][0]: b"\1" + json.dumps(values[1][1], separators=(",", ":")).encode(),
+        "dpkg-status": b"\2Package: brotli\nStatus: install ok installed\nVersion: 1.2.1-1\n\n",
+        "apk-installed": b"\3P:brotli\nV:1.2.1-r0\nA:x86_64\n\n",
+        "debian-version": bytes((4,)) + b"1.2.1-1\0" + b"0:1.2.0-1",
+        "rpm-version": bytes((5,)) + b"2:1.2.1-4.el10\0" + b"1:1.2.1-4.el10",
+        "apk-version": bytes((6,)) + b"1.2.1-r1\0" + b"1.2.1-r0",
+    }
+    if any(len(value) > MAX_FUZZ_INPUT_BYTES for value in seeds.values()):
+        message = "generated package fuzz seed exceeds input limit"
+        raise ValueError(message)
+    return seeds
+
+
 def fuzz_one(data: bytes) -> None:
     if not data or len(data) > MAX_FUZZ_INPUT_BYTES:
         return
@@ -86,10 +124,28 @@ def fuzz_one(data: bytes) -> None:
         return
 
 
+def _write_seeds(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=False)
+    rows = []
+    for name, data in sorted(seed_corpus().items()):
+        (directory / name).write_bytes(data)
+        rows.append({"name": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+    (directory / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "seeds": rows}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("inputs", nargs="+", type=Path)
+    parser.add_argument("inputs", nargs="*", type=Path)
+    parser.add_argument("--write-seeds", type=Path)
     args = parser.parse_args(argv)
+    if (args.write_seeds is None) == (not args.inputs):
+        parser.error("provide corpus inputs or exactly one --write-seeds directory")
+    if args.write_seeds is not None:
+        _write_seeds(args.write_seeds)
+        return 0
     for path in args.inputs:
         with path.open("rb") as stream:
             data = stream.read(MAX_FUZZ_INPUT_BYTES + 1)

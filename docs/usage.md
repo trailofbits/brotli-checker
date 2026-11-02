@@ -306,11 +306,12 @@ replace the packaged catalog. See [reference generation](../CONTRIBUTING.md#comp
 
 Matching establishes code identity within the checked scope. Different compilers,
 flags, LTO, unrepresented split-section layouts, linker relaxation, or alternate
-backports can remain unmatched. LTO is not covered by the scope-aware references.
-Relocation targets, referenced data, and association of independently matched
-sections with one linked decoder copy are not verified. A code match does not
-establish runtime linkage, reachability, or that every copy is fixed. A
-fixed-only match remains review-required.
+backports can remain unmatched. Packaged post-link profiles cover only the qualified
+Windows LTCG and Apple ThinLTO transformations. Those profiles keep exact direct-call
+bytes and require all patch roles at one reviewed relative layout; ordinary masked
+profiles do not establish that independently matched sections belong to one decoder
+copy. A code match does not establish runtime linkage, reachability, or that every
+copy is fixed. A fixed-only match remains review-required.
 
 On unmatched ELF inputs, metadata distinguishes defined decoder APIs from imports
 and reads supported constant-return `BrotliDecoderVersion` functions without
@@ -377,6 +378,19 @@ To collect bounded disassembly for a relevant unresolved ELF, use a trusted host
 python3 skills/brotli-checker/scripts/brotli_binary_triage.py /path/to/application > triage.json
 ```
 
+When a prior inventory JSON contains graph, FLIRT, or exact-code evidence for a
+stripped target, bind selection to that report instead of copying offsets:
+
+```sh
+python3 skills/brotli-checker/scripts/brotli_binary_triage.py /path/to/application \
+  --analysis-report /path/to/inventory.json > triage.json
+```
+
+The report must have a valid evidence envelope and an artifact SHA-256 matching
+the target. Selected ranges are independently checked against executable ELF
+mappings. Reported names and patch-status fields do not select ranges or become
+a triage verdict.
+
 The helper selects block-switch/command-processing symbols, falling back to
 decoder entry points. For stripped code, explicit address or file-offset ranges
 require trusted map/link or scanner evidence; see `--help`. It hashes the input
@@ -385,6 +399,10 @@ Only bounded code fragments are copied for disassembly. The target is never
 loaded or executed. The host `objdump` must support the target architecture.
 ARM Thumb symbols select Thumb decoding automatically; for a trusted explicit
 Thumb range add `--thumb`. An architecture/tool mismatch leaves collection incomplete.
+The function graph has bounded built-in AArch64 and RISC-V decoders. RISC-V
+supports base PC-relative/absolute address pairs and direct jumps, plus compressed
+direct jumps only when the ELF `EF_RISCV_RVC` flag permits them; indirect targets
+remain gaps.
 MIPS raw disassembly currently accepts classic MIPS32r2/MIPS64r2 selected from
 ELF ISA flags, including ELF32 N32 with MIPS64r2. MIPS16, microMIPS, other ISA
 revisions, vendor-machine/ASE flags, and incompatible symbol-declared modes
@@ -412,3 +430,35 @@ See [structured analysis](../skills/brotli-checker/references/analysis.md) for
 `--sarif`, `--baseline`, and `--fail-on`. These options also apply to the binary
 inventory CLI. Reports bind scanner inputs and keep package/provider evidence
 separate from patch state. No target or loader is executed.
+
+## Additional defensive evidence
+
+These features keep recognition, patch status, and runtime observations separate.
+They do not execute the target or fetch evidence implicitly.
+
+- Reviewed native post-link profiles associate every required role with one exact
+  relative layout. One fixed component does not clear other copies.
+- Reviewed Wasm modules are matched automatically, independently of `--no-flirt`.
+  Qualified complete module/non-custom-section identity can establish patch state;
+  function populations and partial fingerprints only identify leads.
+- `--debug-symbols packet.json --debug-file companion` accepts PDB or per-slice
+  Mach dSYM exports. Use the trusted export helpers in the repository's `scripts/`
+  directory; symbols and source lines alone never prove a fix.
+- `--graph-triage triage.json` reuses bounded output from
+  `brotli_binary_triage.py`. It binds target and fragment bytes and rejects
+  invented instruction targets. Unsupported semantics remain gaps.
+- `--runtime-trace trace.json` imports explicitly supplied binding/call observations.
+  Exact namespace/path/hash joins do not authenticate the collector or establish
+  attacker control. See the [runtime evidence schema](../skills/brotli-checker/references/runtime-evidence.md).
+- `--jsf signed-bom.json --jsf-policy trust.json` verifies the supported
+  CycloneDX Ed25519/JCS profile with explicit freshness policy.
+- `--sigstore-bundle bundle.json --sigstore-trust-config trust-config.json
+  --sigstore-policy policy.json --sigstore-verifier /absolute/sigstore` uses the
+  isolated maintained offline verifier. See [attestation policies](../skills/brotli-checker/references/attestations.md)
+  for installation and trust configuration. Signatures authenticate claims, not
+  the truth of a claimed fix.
+
+Every supplied document is captured once and identity-bound into the report.
+Missing, ambiguous, stale-under-policy, malformed, or resource-limited evidence
+is not silently treated as successful analysis. Development-only LLVM/LIEF
+comparison is described in [parser assurance](../skills/brotli-checker/references/parser-assurance.md).

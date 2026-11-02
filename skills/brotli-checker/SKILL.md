@@ -42,7 +42,8 @@ Use JSON internally for the evidence; the default text output is for people:
 
 ```sh
 uv run --python 3.14 --with python-flirt==0.10.2 --with capstone==5.0.9 \
-  --with pyelftools==0.33 --with zstandard==0.25.0 python scripts/brotli_inventory.py /absolute/target --json
+  --with pyelftools==0.33 --with zstandard==0.25.0 \
+  --with cryptography==50.0.2 --with rfc8785==0.1.4 python scripts/brotli_inventory.py /absolute/target --json
 ```
 
 It reads files and bounded ZIP/JAR/WAR/wheel, TAR, gzip, bzip2, XZ, ar/DEB,
@@ -137,7 +138,10 @@ actual regular provider files from the supplied application, image, or deploymen
 root. Never run `ldd`, invoke a dynamic loader, or shell-evaluate `$ORIGIN` or
 other path tokens. A needed name, RUNPATH, SONAME, host library, or one fixed
 provider does not prove which file the deployed loader selects. Keep selection
-and reachability unknown until deployment-specific evidence closes them. See
+and reachability unknown until deployment-specific evidence closes them. Import
+reviewed deployment observations with `--runtime-trace`; follow the
+[runtime evidence contract](references/runtime-evidence.md). Hash binding validates
+artifact identity, not the truth of a supplied collector claim. See
 [dynamic ELF providers](references/reachability.md#dynamically-linked-elf-providers).
 
 For `decoder_data_signature`, use the [stable signature guide](references/binary-signatures.md).
@@ -148,11 +152,18 @@ addresses, and mapping scope; locate code cross-references to these **data** tab
 then inspect bounded executable ranges and error propagation. Do not disassemble
 table bytes as if they were code or promote a table match to an affected/fixed
 verdict. PE/Mach-O/Wasm table evidence is scoped to validated mapped data or data
-initializers; universal Mach-O slices remain separate. These formats do not yet
-have a paired patch-code reference corpus. Dictionary-only
-presence does not establish a decoder, and unmatched signatures do not prove absence.
+initializers; universal Mach-O slices remain separate. Explicitly format-bound
+PE/Mach-O FLIRT profiles may add function identity, but cannot borrow an ELF
+profile or promote a scattered patch-role population to fixed. A reviewed
+`native_flirt_postlink_component` profile is narrower: hash-bound debug function
+bounds and exact relative offsets must place every required patch role in one
+linked-code component before that component receives affected/fixed code evidence.
+A fixed component does not clear unmatched or affected components in the same
+artifact. Dictionary-only presence does not establish a decoder, and unmatched
+signatures do not prove absence.
 
-For unmatched ELF code, use the automatic [FLIRT function-recognition workflow](references/flirt.md)
+For unmatched ELF, PE, or Mach-O code, use the automatic
+[FLIRT function-recognition workflow](references/flirt.md)
 to obtain individual function names and bounded code windows from trusted
 patterns. It runs by default; `--no-flirt` is an explicit speed/coverage tradeoff.
 Use Python 3.12-3.14 and the pinned backend as documented. Inspect `flirt.matches`, `ambiguous_matches`, gaps, and
@@ -170,6 +181,16 @@ triage evidence, not a semantic fix proof. Use `--deployment-root` for a supplie
 image filesystem and `--debug-file` only for explicitly supplied companions.
 Embedded debug paths are never followed. Package/vendor assertions and provider
 relations never transfer fixed status to another artifact or embedded copy.
+Use `--debug-symbols` with verified PDB or per-slice Mach dSYM exports; embedded
+source paths are labels, never instructions to open files. Reviewed Wasm profiles
+identify the specific implementation family, not every Brotli port. Function
+populations alone cannot prove a module fixed.
+
+For explicitly supplied signed provenance, use the [attestation workflow](references/attestations.md).
+The checker supports offline DSSE, CycloneDX JSF, and an isolated maintained Sigstore
+verifier. Require explicit pinned trust and evaluation-time policies; never fetch
+trust roots or refresh certificates implicitly. Authenticated claims remain claims,
+not independently verified patch evidence.
 
 For an unresolved local ELF with decoder table, name, symbol, version, or code evidence,
 collect bounded disassembly for model review instead of stopping at a generic
@@ -184,6 +205,31 @@ makes the report incomplete:
 python3 scripts/brotli_binary_triage.py /absolute/target > triage.json
 ```
 
+For a stripped target already scanned with JSON output, prefer the report-bound
+mode instead of manually transcribing offsets:
+
+```sh
+python3 scripts/brotli_binary_triage.py /absolute/target \
+  --analysis-report /absolute/inventory.json > triage.json
+```
+
+This mode accepts only a valid scanner evidence envelope for the exact target
+SHA-256. It revalidates graph/FLIRT/exact-code windows against executable ELF
+mappings and ignores names, source provenance, and prior patch-status fields
+when selecting bytes. Partial graph/FLIRT evidence keeps triage incomplete.
+
+After reviewing that bounded output, feed it back as exact-target graph evidence
+instead of transcribing addresses. Repeat `--graph-triage` for multiple packets:
+
+```sh
+python3 scripts/brotli_inventory.py /absolute/target \
+  --graph-triage /absolute/triage.json --json
+```
+
+The scanner rechecks target and tool identities, instruction bytes, executable
+ownership, and packet limits. Graph-triage edges improve copy association and
+range selection only; they do not make an affected/fixed patch verdict.
+
 The default mode selects defined `Decode*BlockSwitch`,
 `SafeDecode*BlockSwitch`, and `ProcessCommands*` symbols, with
 `BrotliDecoderDecompressStream` as a public-symbol fallback. It records the target
@@ -192,7 +238,9 @@ Fragment hashes and source offsets bind the assembly to selected bytes; raw
 objdump output uses `.data`, not original section names. Resolve numeric call
 targets using the reported symbol addresses and original ELF scope. Exit
 0 means evidence collection completed, not that the binary is fixed. Exit 3 means
-the evidence is incomplete. For stripped code, use only a range derived from
+the evidence is incomplete. Reaching the end of the selected range or input only
+completes that bounded collection; it never proves that another decoder copy,
+caller, or relevant code is absent. For stripped code, use only a range derived from
 trusted link/map or scanner evidence, for example `--file-offset OFFSET --length
 BYTES`, or `--start-address START --stop-address STOP [--section .text]`. Do not
 guess a range from a string location. Symbol and explicit-range modes both enforce

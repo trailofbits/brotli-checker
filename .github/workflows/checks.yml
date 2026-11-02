@@ -35,7 +35,7 @@ jobs:
         run: |
           uv run --locked ruff format --check .
           uv run --locked ruff check .
-          uv run --locked --group mutation ty check skills/brotli-checker/scripts scripts tests
+          uv run --locked --all-extras --group mutation ty check conftest.py skills/brotli-checker/scripts scripts tests
       - name: Run offline tests
         run: uv run --locked --extra flirt --extra analysis pytest
       - name: Validate packaged FLIRT corpus
@@ -56,6 +56,8 @@ jobs:
         with:
           version: '0.13.5'
           python-version: '3.12'
+      - name: Install bounded subprocess supervisor
+        run: brew list coreutils >/dev/null 2>&1 || brew install coreutils
       - name: Run portable offline tests
         run: uv run --locked --extra flirt --extra analysis pytest
 
@@ -99,6 +101,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - module: brotli_attestations
+            shard: all
           - module: brotli_analysis
             shard: all
           - module: brotli_binary_data
@@ -143,6 +147,8 @@ jobs:
             shard: arithmetic-boundary
           - module: brotli_inventory
             shard: boolean-return
+          - module: brotli_native_artifacts
+            shard: all
           - module: brotli_package_provenance
             shard: comparison
           - module: brotli_package_provenance
@@ -167,6 +173,18 @@ jobs:
             shard: all
           - module: brotli_source_leads
             shard: all
+          - module: brotli_graph_packets
+            shard: all
+          - module: brotli_jsf
+            shard: all
+          - module: brotli_runtime_evidence
+            shard: all
+          - module: brotli_sigstore
+            shard: all
+          - module: brotli_trust_inputs
+            shard: all
+          - module: brotli_wasm_profiles
+            shard: all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -187,7 +205,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scanner-mutation-${{ matrix.module }}-${{ matrix.shard }}
-          path: coverage/gremlins/
+          path: |
+            coverage/gremlins/gremlins.json
+            coverage/gremlins/shard.json
           if-no-files-found: error
           retention-days: 14
 
@@ -212,6 +232,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
-        run: gh run download "$RUN_ID" --pattern 'scanner-mutation-*' --dir mutation-reports
+        run: |
+          for attempt in 1 2 3; do
+            if gh run download "$RUN_ID" --pattern 'scanner-mutation-*' --dir "mutation-reports-$attempt"; then
+              mv "mutation-reports-$attempt" mutation-reports
+              exit 0
+            fi
+            if test "$attempt" -lt 3; then
+              sleep 5
+            fi
+          done
+          exit 1
       - name: Enforce complete aggregate score
         run: python3 scripts/check_mutation_score.py mutation-reports/*/gremlins.json

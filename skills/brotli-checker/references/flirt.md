@@ -49,9 +49,10 @@ call/data targets. This is not a general importer for arbitrary IDA signature
 databases or a semantic-equivalence engine.
 
 A centered 16-byte window in the longest exact run avoids common prologues.
-Overlapping native byte searches read normalized ELF executable `PT_LOAD` unions
-in chunks.
-Candidates must fit an original executable mapping. All candidate function bytes
+Overlapping native byte searches read normalized ELF `PT_LOAD`, PE section, or
+Mach-O slice executable ranges in chunks. PE and Mach-O profiles must be explicitly
+format/ABI-bound; they never inherit coverage from an ELF profile. Candidates must
+fit an original executable mapping. All candidate function bytes
 are rechecked against the mask and then the real backend. Candidate comparisons,
 bytes examined, output, and ambiguous alternatives have explicit bounds; hitting
 one preserves partial evidence and produces a gap. There is no default file-size
@@ -76,12 +77,26 @@ control-flow graph.
   unresolved relocation target.
 - Existing affected/fixed compiled-code evidence keeps precedence. Table,
   symbol, import, and FLIRT evidence remain available together.
+- Native catalogs may record that every required patch-role pattern matched in one
+  artifact slice. That remains source-state provenance rather than a patch verdict:
+  functions from two decoder copies can coexist in one slice, and relocation targets
+  are not verified by the pattern match.
+- A `postlink_patch_component_v1` profile additionally records exact relative
+  function offsets derived from a symbol export that is hash-bound to the reviewed
+  linked artifact and debug companion. The scanner emits a
+  `native_flirt_postlink_component` only when every required role matches at one
+  translation of that layout. Repeated translations are reported as separate
+  components; a slice-wide union cannot complete the profile. Post-link records must
+  be entirely exact: relocation wildcards, including unchecked call displacements,
+  are rejected. A vulnerable component is actionable code evidence. A fixed component
+  clears only that component, not unmatched copies or runtime selection.
 
 Inspect the block-switch/error-propagation functions and their callers together.
 Do not conclude that a function is absent from a nonmatch: inlining, LTO, changed
 instruction selection, unsupported compiler profiles, packing, and different
-implementations can defeat these patterns. Current mapping support is ELF;
-requested FLIRT analysis of other native formats reports an unsupported gap.
+implementations can defeat these patterns. Mapping support covers validated ELF,
+PE, and Mach-O executable ranges; Wasm function bodies need a separate
+module-aware signature design rather than pretending they are native functions.
 
 ## Generate and reproduce references
 
@@ -111,12 +126,30 @@ Hex-Rays signatures. See [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Packaged corpus and observed coverage
 
-The bundled corpus contains 3,439 full-function records across 360 provenance
-profiles and 12 ELF machine/class/byte-order identities. It covers the six
+The bundled corpus contains 3,567 full-function records across 376 provenance
+profiles: 360 ELF, eight PE, and eight Mach-O. The ELF subset retains its 12
+machine/class/byte-order identities and covers the six
 reviewed C releases at `-O2`/`-O3`, PIC/non-PIC, with GCC 14 cross-target builds,
 AArch64 GCC 16, and both GCC 14 and Clang 19 LoongArch profiles. Header hashes and
 build notes record LoongArch portability inputs; no C source-state rule is
 transferred to other implementations.
+
+The native profiles come from reviewed Brotli 1.2.0/1.2.1 pairs built with MSVC,
+clang-cl, and Apple clang. Real paired normal binaries match their own complete
+role profiles and reject the opposite state; universal Apple binaries preserve
+both x86-64 and arm64 slice ownership. Reviewed PDB and per-slice dSYM packets bind
+post-link function bounds to exact PE and universal Mach-O artifacts. Qualified
+Windows LTCG and Apple ThinLTO profiles cover one exact transformation family;
+source state remains provenance only for arbitrary or incomplete matches.
+
+The native-candidate workflow derives Windows LTCG profiles from the final PE, PDB,
+and independently verified `llvm-pdbutil` packet. It derives Apple ThinLTO profiles
+from each universal binary slice, its dSYM, and a hash-bound `llvm-dwarfdump` packet.
+Both routes require a complete non-overlapping patch-role population, verify
+opposite-state binaries, and construct mixed carriers proving that affected and
+fixed copies retain different component offsets. These are exact linked-layout
+signatures, not semantic equivalence for other compiler versions or transformations.
+Only replayed hosted outputs are merged with the owning catalog builder.
 
 Validation recognized functions in all 1,704 retained linked variants (600
 normal, 600 stripped, 504 sectionless), recovering 37 names with consistent

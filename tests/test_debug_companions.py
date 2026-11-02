@@ -1,5 +1,8 @@
+import hashlib
+import json
 import struct
 import zlib
+from dataclasses import FrozenInstanceError, fields
 from types import SimpleNamespace
 
 import brotli_binary_match as matcher
@@ -118,6 +121,134 @@ def macho_uuid(value, *, bits=64, byteorder="little"):
     header_values = (0, 0, 2, 1, 24, 0, 0) if bits == 64 else (0, 0, 2, 1, 24, 0)
     header = struct.pack(prefix + ("iiIIIII" if bits == 64 else "iiIIII"), *header_values)
     return magic + header + command
+
+
+def universal_mach_fixture():
+    first, second = mach_fixture(0x0100000C), mach_fixture(0x01000007)
+    second_offset = 0x100 + len(first)
+    data = bytearray(second_offset + len(second))
+    data[:8] = b"\xca\xfe\xba\xbe" + struct.pack(">I", 2)
+    struct.pack_into(">IIIII", data, 8, 0x0100000C, 0, 0x100, len(first), 0)
+    struct.pack_into(">IIIII", data, 28, 0x01000007, 0, second_offset, len(second), 0)
+    data[0x100 : 0x100 + len(first)] = first
+    data[second_offset:] = second
+    return bytes(data), len(first), second_offset, len(second)
+
+
+def mach_companion_slice(  # noqa: PLR0913 -- Independent Mach fixture dimensions.
+    uuid,
+    *,
+    bits=64,
+    byteorder="little",
+    cpu=0x0100000C,
+    subtype=0,
+    uuid_commands=1,
+):
+    data = bytearray(macho_uuid(uuid, bits=bits, byteorder=byteorder))
+    data[4:8] = cpu.to_bytes(4, byteorder)
+    data[8:12] = subtype.to_bytes(4, byteorder)
+    if uuid_commands != 1:
+        header_size = 32 if bits == 64 else 28
+        commands = b"".join(
+            struct.pack(("<" if byteorder == "little" else ">") + "II16s", debug.LC_UUID, 24, uuid)
+            for _ in range(uuid_commands)
+        )
+        data = data[:header_size]
+        data[16:20] = uuid_commands.to_bytes(4, byteorder)
+        data[20:24] = len(commands).to_bytes(4, byteorder)
+        data.extend(commands)
+    return bytes(data)
+
+
+def fat_mach_companion(slices, *, bits=32, byteorder="big"):
+    magic = {
+        (32, "big"): b"\xca\xfe\xba\xbe",
+        (32, "little"): b"\xbe\xba\xfe\xca",
+        (64, "big"): b"\xca\xfe\xba\xbf",
+        (64, "little"): b"\xbf\xba\xfe\xca",
+    }[(bits, byteorder)]
+    row_size = 32 if bits == 64 else 20
+    table_end = 8 + row_size * len(slices)
+    offset = (table_end + 0xFF) & ~0xFF
+    rows = []
+    placements = []
+    for cpu, subtype, raw in slices:
+        width = 8 if bits == 64 else 4
+        row = bytearray(row_size)
+        row[0:4] = cpu.to_bytes(4, byteorder)
+        row[4:8] = subtype.to_bytes(4, byteorder)
+        row[8 : 8 + width] = offset.to_bytes(width, byteorder)
+        row[8 + width : 8 + 2 * width] = len(raw).to_bytes(width, byteorder)
+        rows.append(row)
+        placements.append((offset, raw))
+        offset = (offset + len(raw) + 0xFF) & ~0xFF
+    result = bytearray(offset)
+    result[:8] = magic + len(slices).to_bytes(4, byteorder)
+    for index, row in enumerate(rows):
+        start = 8 + index * row_size
+        result[start : start + row_size] = row
+    for start, raw in placements:
+        result[start : start + len(raw)] = raw
+    return bytes(result), tuple(start for start, _ in placements)
+
+
+def mach_debug_packet(artifact, dsym, first_size, *, slice_hash=None, source_file="decode.c"):
+    selected = artifact[0x100 : 0x100 + first_size]
+    selected_dsym = dsym[0x100 : 0x100 + first_size]
+    return {
+        "schema_version": 1,
+        "format": "llvm-dwarfdump-symbols-v1",
+        "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
+        "dsym_sha256": hashlib.sha256(dsym).hexdigest(),
+        "slice": {
+            "uuid": bytes(range(16)).hex(),
+            "machine": "aarch64",
+            "cpu_subtype": 0,
+            "artifact_offset": 0x100,
+            "artifact_size": first_size,
+            "artifact_slice_sha256": slice_hash or hashlib.sha256(selected).hexdigest(),
+            "dsym_offset": 0x100,
+            "dsym_size": first_size,
+            "dsym_slice_sha256": hashlib.sha256(selected_dsym).hexdigest(),
+        },
+        "generator": {
+            "name": "llvm-dwarfdump",
+            "version": "17.0.0",
+            "sha256": "00" * 32,
+        },
+        "functions": [
+            {
+                "name": "DecodeLiteralBlockSwitch",
+                "address": 0x100010,
+                "size": 0x10,
+                "source_file": source_file,
+                "source_line": 42,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        debug.DebugLimits(),
+        debug.DebugIdentity("elf"),
+        debug.FunctionHint(None, None, 0),
+        debug.DebugGap("gap", "reason"),
+        debug.IdentityInspection(None, (), limited=False),
+        debug.SuppliedCompanion("companion", b""),
+        debug.PdbSymbolExportAssessment("unresolved", (), (), limited=False),
+        debug.MachDebugExportAssessment("unresolved", (), (), limited=False),
+        debug.VerifiedDebugCompanion("companion", (), debug.DebugIdentity("elf"), ()),
+        debug.DebugAssessment(None, (), (), "unsupported", limited=False),
+    ],
+    ids=lambda value: type(value).__name__,
+)
+def test_debug_evidence_values_are_immutable(value):
+    field = fields(value)[0]
+
+    with pytest.raises(FrozenInstanceError):
+        setattr(value, field.name, getattr(value, field.name))
 
 
 def pdb(guid, age):
@@ -518,6 +649,369 @@ def test_macho_uuid_requires_exact_supplied_uuid():
     assert verified.matches[0].methods == ("macho_uuid",)
     assert [hint.file_offset for hint in verified.matches[0].function_hints] == [0x210, 0x230]
     assert mismatch.status == "unresolved"
+
+
+def test_universal_mach_debug_export_binds_hash_uuid_slice_and_source_line():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    packet = mach_debug_packet(artifact, artifact, first_size)
+    raw = json.dumps(packet, sort_keys=True).encode()
+
+    assert debug.mach_debug_export_targets(raw) == (
+        hashlib.sha256(artifact).hexdigest(),
+        hashlib.sha256(artifact).hexdigest(),
+    )
+    assert debug.debug_symbol_export_identity(raw) == (
+        "mach",
+        hashlib.sha256(artifact).hexdigest(),
+        hashlib.sha256(artifact).hexdigest(),
+        f"{bytes(range(16)).hex()}:aarch64:0:256",
+    )
+    assert set(debug.expected_mach_export_scopes(artifact)) == {
+        f"{bytes(range(16)).hex()}:aarch64:0:256",
+        f"{bytes(range(16)).hex()}:x86_64:0:{0x100 + first_size}",
+    }
+    result = debug.verify_mach_debug_export(artifact, artifact, raw)
+    assert result.status == "verified"
+    assert result.slice_uuid == bytes(range(16)).hex()
+    assert result.patch_status == "unknown"
+    assert result.function_hints == (
+        debug.FunctionHint("DecodeLiteralBlockSwitch", 0x100010, 0x10, 0x310, "decode.c", 42),
+    )
+
+
+def test_universal_mach_debug_export_never_crosses_slice_or_opens_source_path():
+    artifact, first_size, second_offset, second_size = universal_mach_fixture()
+    wrong_hash = hashlib.sha256(artifact[second_offset : second_offset + second_size]).hexdigest()
+    crossed = mach_debug_packet(artifact, artifact, first_size, slice_hash=wrong_hash)
+    embedded_path = mach_debug_packet(
+        artifact, artifact, first_size, source_file="/checkout/decode.c"
+    )
+
+    crossed_result = debug.verify_mach_debug_export(
+        artifact, artifact, json.dumps(crossed).encode()
+    )
+    path_result = debug.verify_mach_debug_export(
+        artifact, artifact, json.dumps(embedded_path).encode()
+    )
+    assert crossed_result.status == "unresolved"
+    assert path_result.status == "unresolved"
+    assert all(result.function_hints == () for result in (crossed_result, path_result))
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {
+            "kind": "mach_o_universal",
+            "gaps": [{"code": "incomplete"}],
+            "slices": [{"debug_identities": [{"kind": "mach_uuid", "uuid": "00" * 16}]}],
+        },
+        {"kind": "mach_o_universal", "gaps": [], "slices": []},
+    ],
+    ids=("layout-gap", "empty-slice-population"),
+)
+def test_mach_export_slices_reject_each_incomplete_layout_axis(monkeypatch, layout):
+    monkeypatch.setattr(debug, "inspect_layout", lambda _data: layout)
+
+    with pytest.raises(ValueError, match="layout is incomplete"):
+        debug._mach_slices(b"fixture")  # noqa: SLF001 -- Slice validation contract.
+
+
+def test_mach_export_slices_ignore_other_debug_identity_kinds(monkeypatch):
+    uuid = "01" * 16
+    value = {
+        "debug_identities": [
+            {"kind": "elf_build_id", "uuid": "not-a-mach-uuid"},
+            {"kind": "mach_uuid", "uuid": uuid},
+        ]
+    }
+    monkeypatch.setattr(
+        debug,
+        "inspect_layout",
+        lambda _data: {
+            "kind": "mach_o_universal",
+            "gaps": [],
+            "slices": [value],
+        },
+    )
+
+    assert debug._mach_slices(b"fixture") == [{**value, "uuid": uuid}]  # noqa: SLF001
+
+
+@pytest.mark.parametrize("value", [None, "a" * 63, "A" * 64, "g" * 64])
+def test_mach_export_hash_requires_each_canonical_sha256_property(value):
+    with pytest.raises(ValueError, match="SHA-256"):
+        debug._mach_export_sha256(value, "fixture")  # noqa: SLF001 -- Digest contract.
+
+
+def test_mach_export_slice_schema_is_closed():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    packet = mach_debug_packet(artifact, artifact, first_size)
+    packet["slice"]["unexpected"] = 0
+
+    with pytest.raises(ValueError, match="slice identity"):
+        debug._mach_export_slice(artifact, artifact, packet)  # noqa: SLF001
+
+
+def test_mach_export_slice_rejects_each_invalid_architecture_field_early():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    packet = mach_debug_packet(artifact, artifact, first_size)
+    packet["slice"]["machine"] = ""
+
+    with pytest.raises(ValueError, match="UUID or architecture"):
+        debug._mach_export_slice(artifact, artifact, packet)  # noqa: SLF001
+
+
+def test_mach_export_slice_requires_independent_artifact_and_dsym_ownership():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    dsym = bytearray(artifact)
+    uuid = bytes(range(16))
+    uuid_offset = dsym.find(uuid, 0x100, 0x100 + first_size)
+    assert uuid_offset >= 0
+    dsym[uuid_offset : uuid_offset + len(uuid)] = b"\xff" * len(uuid)
+    packet = mach_debug_packet(artifact, bytes(dsym), first_size)
+
+    with pytest.raises(ValueError, match="not uniquely owned"):
+        debug._mach_export_slice(artifact, bytes(dsym), packet)  # noqa: SLF001
+
+
+def test_mach_export_generator_requires_the_identified_tool_name():
+    packet = {
+        "generator": {
+            "name": "other-tool",
+            "version": "17.0.0",
+            "sha256": "00" * 32,
+        }
+    }
+
+    with pytest.raises(ValueError, match="identified llvm-dwarfdump"):
+        debug._mach_export_generator(packet)  # noqa: SLF001 -- Generator identity contract.
+
+
+def test_mach_export_function_population_must_be_a_json_array():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    packet = mach_debug_packet(artifact, artifact, first_size)
+    packet["functions"] = tuple(packet["functions"])
+    artifact_slice = debug._mach_slices(artifact)[0]  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="function population"):
+        debug._mach_export_hints(  # noqa: SLF001 -- Function schema contract.
+            artifact_slice, packet, debug.DEFAULT_DEBUG_LIMITS
+        )
+
+
+def test_mach_export_function_schema_is_closed():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    packet = mach_debug_packet(artifact, artifact, first_size)
+    packet["functions"][0]["unexpected"] = 0
+    artifact_slice = debug._mach_slices(artifact)[0]  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="Invalid Mach debug export function"):
+        debug._mach_export_hints(  # noqa: SLF001 -- Function schema contract.
+            artifact_slice, packet, debug.DEFAULT_DEBUG_LIMITS
+        )
+
+
+def test_mach_export_function_ownership_ignores_malformed_nonowners():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    packet = mach_debug_packet(artifact, artifact, first_size)
+    artifact_slice = debug._mach_slices(artifact)[0]  # noqa: SLF001
+    executable = artifact_slice["ranges"]["executable"]
+    artifact_slice = {
+        **artifact_slice,
+        "ranges": {**artifact_slice["ranges"], "executable": [{}, *executable]},
+    }
+
+    hints = debug._mach_export_hints(  # noqa: SLF001 -- Ownership filtering contract.
+        artifact_slice, packet, debug.DEFAULT_DEBUG_LIMITS
+    )
+    assert hints == (
+        debug.FunctionHint("DecodeLiteralBlockSwitch", 0x100010, 0x10, 0x310, "decode.c", 42),
+    )
+
+
+def test_mach_debug_export_limit_returns_a_limited_assessment():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    raw = json.dumps(mach_debug_packet(artifact, artifact, first_size)).encode()
+
+    result = debug.verify_mach_debug_export(
+        artifact,
+        artifact,
+        raw,
+        debug.DebugLimits(max_identity_bytes=len(raw) - 1),
+    )
+    assert result == debug.MachDebugExportAssessment(
+        "unresolved",
+        (),
+        (debug.DebugGap("mach_debug_export_limit", "Mach debug export exceeds byte limit"),),
+        limited=True,
+    )
+
+
+def test_mach_debug_export_invalid_and_verified_results_preserve_completeness_state():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    invalid = debug.verify_mach_debug_export(artifact, artifact, b"{}")
+    raw = json.dumps(mach_debug_packet(artifact, artifact, first_size)).encode()
+    verified = debug.verify_mach_debug_export(artifact, artifact, raw)
+
+    assert invalid.status == "unresolved"
+    assert invalid.limited is False
+    assert invalid.gaps[0].code == "invalid_mach_debug_export"
+    assert verified.status == "verified"
+    assert verified.limited is False
+
+
+@pytest.mark.parametrize(
+    ("bits", "byteorder"),
+    [(32, "little"), (32, "big"), (64, "little"), (64, "big")],
+)
+def test_mach_debug_companion_thin_identity_supports_all_header_encodings(bits, byteorder):
+    uuid = bytes(range(16))
+    raw = mach_companion_slice(uuid, bits=bits, byteorder=byteorder)
+
+    assert debug.mach_companion_slices(raw) == (
+        {
+            "uuid": uuid.hex(),
+            "machine": "aarch64",
+            "cpu_subtype": 0,
+            "slice_offset": 0,
+            "slice_size": len(raw),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("bits", "byteorder"),
+    [(32, "little"), (32, "big"), (64, "little"), (64, "big")],
+)
+def test_mach_debug_companion_fat_table_supports_all_encodings(bits, byteorder):
+    arm_uuid, x86_uuid = bytes(range(16)), bytes(reversed(range(16)))
+    arm = mach_companion_slice(arm_uuid, cpu=0x0100000C)
+    x86 = mach_companion_slice(x86_uuid, cpu=0x01000007, subtype=3)
+    raw, offsets = fat_mach_companion(
+        ((0x0100000C, 0, arm), (0x01000007, 3, x86)),
+        bits=bits,
+        byteorder=byteorder,
+    )
+
+    assert debug.mach_companion_slices(raw) == (
+        {
+            "uuid": arm_uuid.hex(),
+            "machine": "aarch64",
+            "cpu_subtype": 0,
+            "slice_offset": offsets[0],
+            "slice_size": len(arm),
+        },
+        {
+            "uuid": x86_uuid.hex(),
+            "machine": "x86_64",
+            "cpu_subtype": 3,
+            "slice_offset": offsets[1],
+            "slice_size": len(x86),
+        },
+    )
+
+
+def test_mach_debug_companion_rejects_duplicate_architecture_rows():
+    first = mach_companion_slice(bytes(range(16)))
+    second = mach_companion_slice(bytes(reversed(range(16))))
+    raw, _ = fat_mach_companion(((0x0100000C, 0, first), (0x0100000C, 0, second)))
+
+    with pytest.raises(ValueError, match="architecture"):
+        debug.mach_companion_slices(raw)
+
+
+@pytest.mark.parametrize("uuid_commands", [0, 2])
+def test_mach_debug_companion_requires_exactly_one_uuid_command(uuid_commands):
+    raw = mach_companion_slice(bytes(range(16)), uuid_commands=uuid_commands)
+
+    with pytest.raises(ValueError, match="one UUID"):
+        debug.mach_companion_slices(raw)
+
+
+def test_mach_debug_companion_rejects_truncated_load_command():
+    raw = mach_companion_slice(bytes(range(16)))[:-1]
+
+    with pytest.raises(ValueError, match="identity or commands"):
+        debug.mach_companion_slices(raw)
+
+
+@pytest.mark.parametrize("command_size", [7, 25], ids=("undersized", "past-command-table"))
+def test_mach_debug_companion_rejects_each_invalid_load_command_bound(command_size):
+    raw = bytearray(mach_companion_slice(bytes(range(16))))
+    raw[36:40] = command_size.to_bytes(4, "little")
+
+    with pytest.raises(ValueError, match=r"^Invalid Mach debug companion load command$"):
+        debug.mach_companion_slices(bytes(raw))
+
+
+@pytest.mark.parametrize("alias", ["table", "same", "overlap"])
+def test_mach_debug_companion_rejects_slice_aliases_and_overlaps(alias):
+    first = mach_companion_slice(bytes(range(16)), cpu=0x0100000C)
+    second = mach_companion_slice(bytes(reversed(range(16))), cpu=0x01000007)
+    raw, offsets = fat_mach_companion(((0x0100000C, 0, first), (0x01000007, 0, second)))
+    changed = bytearray(raw)
+    if alias == "table":
+        replacement = 8
+    elif alias == "same":
+        replacement = offsets[0]
+    else:
+        replacement = offsets[0] + 8
+    changed[28 + 8 : 28 + 12] = replacement.to_bytes(4, "big")
+
+    with pytest.raises(ValueError, match="overlapping Mach debug companion slices"):
+        debug.mach_companion_slices(bytes(changed))
+
+
+def test_mach_debug_companion_population_and_command_budgets_fail_before_iteration():
+    population = b"\xca\xfe\xba\xbe" + (debug.DEFAULT_DEBUG_LIMITS.max_companions + 1).to_bytes(
+        4, "big"
+    )
+    commands = bytearray(mach_companion_slice(bytes(range(16))))
+    commands[16:20] = (debug.DEFAULT_DEBUG_LIMITS.max_commands + 1).to_bytes(4, "little")
+
+    with pytest.raises(ValueError, match="slice population"):
+        debug.mach_companion_slices(population)
+    with pytest.raises(ValueError, match="identity or commands"):
+        debug.mach_companion_slices(bytes(commands))
+
+
+def test_debug_export_routing_rejects_bool_schema_and_malformed_json():
+    artifact, first_size, _, _ = universal_mach_fixture()
+    packet = mach_debug_packet(artifact, artifact, first_size)
+    packet["schema_version"] = True
+
+    with pytest.raises(ValueError, match="schema"):
+        debug.debug_symbol_export_identity(json.dumps(packet).encode())
+    with pytest.raises(ValueError, match="JSON"):
+        debug.debug_symbol_export_identity(b"{")
+
+
+@pytest.mark.parametrize(
+    ("uuid", "machine", "subtype", "offset"),
+    [
+        ("0" * 31, "aarch64", 0, 0),
+        ("A" * 32, "aarch64", 0, 0),
+        ("0" * 32, "", 0, 0),
+        ("0" * 32, "aarch64", True, 0),
+        ("0" * 32, "aarch64", 0, True),
+        ("0" * 32, "aarch64", 0, -1),
+    ],
+)
+def test_mach_export_scope_rejects_noncanonical_slice_identity(uuid, machine, subtype, offset):
+    with pytest.raises(ValueError, match="routing slice identity"):
+        debug.mach_export_scope(uuid, machine, subtype, offset)
+
+
+def test_expected_mach_scopes_require_uuid_identity_for_every_target_slice():
+    artifact, _, _, _ = universal_mach_fixture()
+    changed = bytearray(artifact)
+    first_command = 0x100 + 32 + 72 + 56 + 24
+    assert changed[first_command : first_command + 4] == debug.LC_UUID.to_bytes(4, "little")
+    changed[first_command : first_command + 4] = (0x99).to_bytes(4, "little")
+
+    with pytest.raises(ValueError, match="slice lacks one UUID"):
+        debug.expected_mach_export_scopes(bytes(changed))
 
 
 @pytest.mark.parametrize(

@@ -60,8 +60,15 @@ def pattern(code, identifier, wildcards=()):
     return f"{rendered[:64]} 00 0000 {len(code):04X} :0000 {identifier} {rendered[64:]}"
 
 
-def group(functions, *, identifier="profile", machine=183, state="fixed"):
-    return {
+def group(
+    functions,
+    *,
+    identifier="profile",
+    machine=183,
+    state="fixed",
+    native=None,
+):
+    result = {
         "id": identifier,
         "machine": machine,
         "elf_class": 64,
@@ -76,6 +83,10 @@ def group(functions, *, identifier="profile", machine=183, state="fixed"):
         "build_note": "reviewed pristine fixture headers",
         "functions": functions,
     }
+    if native is not None:
+        format_name, abi = native
+        result.update(format=format_name, abi=abi)
+    return result
 
 
 def write_bundle(tmp_path, lines, groups):
@@ -293,6 +304,29 @@ def test_overlapping_patterns_are_reported_as_ambiguity_not_named(tmp_path):
         "1 FLIRT candidate(s) matched multiple signatures; names unresolved"
     ]
     assert assessment["ambiguous_matches"][0]["signature_ids"] == ["broad", "exact"]
+
+
+def test_overlapping_signatures_with_one_name_preserve_each_profile(tmp_path):
+    function = code(b"same-name-compatible")
+    catalog = load(
+        tmp_path,
+        [pattern(function, "exact"), pattern(function, "masked", wildcards=(40,))],
+        [
+            group({"ProcessCommands": ["exact"]}, identifier="postlink"),
+            group({"ProcessCommands": ["masked"]}, identifier="object"),
+        ],
+    )
+
+    assessment = subject.match_flirt(elf(function), catalog)
+
+    assert assessment["status"] == "recognized"
+    assert assessment["gaps"] == []
+    assert assessment["ambiguous_matches"] == []
+    assert {match["signature_id"] for match in assessment["matches"]} == {
+        "exact",
+        "masked",
+    }
+    assert {match["definitive_name"] for match in assessment["matches"]} == {"ProcessCommands"}
 
 
 def test_one_signature_can_carry_bounded_multi_profile_provenance(tmp_path):
@@ -586,7 +620,7 @@ def test_backend_matcher_panic_becomes_an_explicit_gap(tmp_path):
         [pattern(function, "fixture")],
         [group({"Function": ["fixture"]})],
     )
-    catalog.matchers[(183, 64, "little"), "fixture"] = PanicMatcher()
+    catalog.matchers[("elf", 183, 64, "little", "sysv"), "fixture"] = PanicMatcher()
 
     assessment = subject.match_flirt(elf(function), catalog)
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from brotli_attestations import CapturedDocument, capture_attestation_inputs, capture_document
+from brotli_debug_companions import DEFAULT_DEBUG_LIMITS
 from brotli_flirt import DEFAULT_FLIRT_BUNDLE
 from brotli_report_finalizer import (
     IdentityData,
@@ -13,6 +15,8 @@ from brotli_report_finalizer import (
     finalize_report,
     verify_identity_stability,
 )
+from brotli_runtime_evidence import MAX_RUNTIME_TRACES
+from brotli_trust_inputs import capture_trust_arguments
 
 if TYPE_CHECKING:
     import argparse
@@ -61,6 +65,27 @@ class CliEvidence:
     def __init__(self, args: argparse.Namespace, registry: Path) -> None:
         self.args = args
         self.registry = registry
+        self.attestation_inputs = capture_attestation_inputs(
+            getattr(args, "attestation", []), getattr(args, "attestation_policy", None)
+        )
+        symbol_paths = getattr(args, "debug_symbols", [])
+        if len(symbol_paths) > DEFAULT_DEBUG_LIMITS.max_companions:
+            message = "Supplied debug-symbol packet count exceeds limit"
+            raise ValueError(message)
+        self.debug_symbol_inputs: tuple[CapturedDocument, ...] = tuple(
+            capture_document(path) for path in symbol_paths
+        )
+        trace_paths = getattr(args, "runtime_trace", [])
+        if len(trace_paths) > MAX_RUNTIME_TRACES:
+            message = "Supplied runtime trace count exceeds limit"
+            raise ValueError(message)
+        self.runtime_trace_inputs = tuple(capture_document(path) for path in trace_paths)
+        graph_paths = getattr(args, "graph_triage", [])
+        if len(graph_paths) > MAX_RUNTIME_TRACES:
+            message = "Supplied graph-triage packet count exceeds limit"
+            raise ValueError(message)
+        self.graph_triage_inputs = tuple(capture_document(path) for path in graph_paths)
+        self.trust_inputs = capture_trust_arguments(args)
         self.before = self.collect()
 
     def collect(self) -> FinalizationIdentities:
@@ -75,6 +100,32 @@ class CliEvidence:
             feeds.append(IdentityData("vendor-snapshot", str(path), raw))
         bundle = (args.flirt_references or DEFAULT_FLIRT_BUNDLE) if args.flirt else None
         extras = []
+        feeds.extend(
+            IdentityData("attestation", item.label, item.raw)
+            for item in self.attestation_inputs.bundles
+        )
+        if self.attestation_inputs.policy is not None:
+            item = self.attestation_inputs.policy
+            feeds.append(IdentityData("trust-policy", item.label, item.raw))
+        feeds.extend(
+            IdentityData("debug-symbol-export", item.label, item.raw)
+            for item in self.debug_symbol_inputs
+        )
+        feeds.extend(
+            IdentityData("runtime-trace", item.label, item.raw)
+            for item in self.runtime_trace_inputs
+        )
+        feeds.extend(
+            IdentityData("graph-triage", item.label, item.raw) for item in self.graph_triage_inputs
+        )
+        feeds.extend(
+            IdentityData(kind, label, raw)
+            for kind, label, raw in self.trust_inputs.identity_documents()
+        )
+        if self.trust_inputs.sigstore_verifier is not None:
+            extras.append(
+                IdentityPath("trust-verifier", "sigstore", self.trust_inputs.sigstore_verifier)
+            )
         if getattr(args, "catalog", None) is not None:
             extras.append(IdentityPath("catalog", "artifact-labels", args.catalog))
         extras.extend(IdentityPath("debug-companion", str(path), path) for path in args.debug_file)

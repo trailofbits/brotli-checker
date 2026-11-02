@@ -230,6 +230,8 @@ def test_cli_identity_helper_binds_all_effective_catalogs_and_analysis_flags(tmp
 
     assert {item.name for item in first.catalogs} == {
         "binary-references",
+        "native-artifacts",
+        "wasm-function-profiles",
         "source-fingerprints",
         "flirt-manifest",
         "flirt-patterns",

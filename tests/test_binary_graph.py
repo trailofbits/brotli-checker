@@ -33,6 +33,133 @@ class CountingBuffer:
         return self.data.find(sub, start, len(self.data) if end is None else end)
 
 
+def riscv_addi(rd, rs1, immediate):
+    return ((immediate & 0xFFF) << 20) | (rs1 << 15) | (rd << 7) | 0x13
+
+
+def riscv_auipc(rd, immediate=0):
+    return (immediate & 0xFFFFF000) | (rd << 7) | 0x17
+
+
+def riscv_lui(rd, immediate):
+    return (immediate & 0xFFFFF000) | (rd << 7) | 0x37
+
+
+def riscv_jal(rd, immediate):
+    value = immediate & 0x1FFFFF
+    return (
+        ((value >> 20) & 1) << 31
+        | ((value >> 1) & 0x3FF) << 21
+        | ((value >> 11) & 1) << 20
+        | ((value >> 12) & 0xFF) << 12
+        | rd << 7
+        | 0x6F
+    )
+
+
+def riscv_compressed_jump(immediate):
+    value = immediate & 0xFFF
+    return (
+        0xA001
+        | ((value >> 11) & 1) << 12
+        | ((value >> 4) & 1) << 11
+        | ((value >> 8) & 3) << 9
+        | ((value >> 10) & 1) << 8
+        | ((value >> 6) & 1) << 7
+        | ((value >> 7) & 1) << 6
+        | ((value >> 1) & 7) << 3
+        | ((value >> 5) & 1) << 2
+    )
+
+
+def riscv_elf(payload, *, compressed=False):
+    result = bytearray(elf(payload, matcher.EM_RISCV))
+    struct.pack_into("<I", result, 48, graph.EF_RISCV_RVC if compressed else 0)
+    return bytes(result)
+
+
+def arm_symbol_elf(payload, *, marker=None, thumb_bit=False, function_symbol=True, function_size=8):
+    layout = matcher.ELFLayout(32, "little")
+    header_parser = layout.parser("header")
+    program_parser = layout.parser("program")
+    section_parser = layout.parser("section")
+    symbol_parser = layout.parser("symbol")
+    code_offset = 0x100
+    markers = [] if marker is None else ([(marker, 0)] if isinstance(marker, str) else marker)
+    strings = bytearray(b"\0decode\0")
+    marker_names = []
+    for marker_name, marker_address in markers:
+        marker_names.append((len(strings), marker_name, marker_address))
+        strings.extend(marker_name.encode() + b"\0")
+    symbols = [bytes(symbol_parser.size)]
+    for name_offset, _, marker_address in marker_names:
+        symbols.append(symbol_parser.pack(name_offset, BASE + marker_address, 0, 0, 0, 1))
+    if function_symbol:
+        symbols.append(symbol_parser.pack(1, BASE | int(thumb_bit), function_size, 0x12, 0, 1))
+    symbol_bytes = b"".join(symbols)
+    symbol_offset = code_offset + len(payload)
+    string_offset = symbol_offset + len(symbol_bytes)
+    section_offset = (string_offset + len(strings) + 3) & ~3
+    sections = [
+        bytes(section_parser.size),
+        section_parser.pack(0, 1, 6, BASE, code_offset, len(payload), 0, 0, 4, 0),
+        section_parser.pack(0, 3, 0, 0, string_offset, len(strings), 0, 0, 1, 0),
+        section_parser.pack(
+            0,
+            matcher.SHT_SYMTAB,
+            0,
+            0,
+            symbol_offset,
+            len(symbol_bytes),
+            2,
+            1,
+            4,
+            symbol_parser.size,
+        ),
+    ]
+    header = header_parser.pack(
+        b"\x7fELF\x01\x01\x01" + bytes(9),
+        3,
+        matcher.EM_ARM,
+        1,
+        0,
+        header_parser.size,
+        section_offset,
+        0,
+        header_parser.size,
+        program_parser.size,
+        1,
+        section_parser.size,
+        len(sections),
+        0,
+    )
+    program = program_parser.pack(1, code_offset, BASE, BASE, len(payload), len(payload), 5, 0x1000)
+    result = bytearray(header + program)
+    result.extend(bytes(code_offset - len(result)))
+    result.extend(payload + symbol_bytes + bytes(strings))
+    result.extend(bytes(section_offset - len(result)))
+    result.extend(b"".join(sections))
+    return bytes(result)
+
+
+def arm_mov(kind, register, immediate, condition=0xE):
+    opcode = 0x03000000 if kind == "movw" else 0x03400000
+    return (
+        condition << 28
+        | opcode
+        | ((immediate >> 12) & 0xF) << 16
+        | register << 12
+        | (immediate & 0xFFF)
+    )
+
+
+def thumb_mov(kind, register, immediate):
+    first = (0xF240 if kind == "movw" else 0xF2C0) | ((immediate >> 12) & 0xF)
+    first |= ((immediate >> 11) & 1) << 10
+    second = ((immediate >> 8) & 0x7) << 12 | register << 8 | (immediate & 0xFF)
+    return first, second
+
+
 def aarch64_adr(pc, target, register=0):
     immediate = target - pc
     return (
@@ -149,6 +276,179 @@ def test_aarch64_graph_links_table_call_and_indirect_gap():
     assert any(edge.target == "table" for edge in result.edges)
     assert any(gap.code == "unresolved_indirect_transfer" for gap in result.gaps)
     assert json.loads(json.dumps(result.as_dict()))["patch_status"] == "unknown"
+
+
+def test_thumb_graph_requires_mapping_symbol_and_binds_literal_and_branch():
+    payload = struct.pack("<4H", 0x4803, 0xE001, 0xBF00, 0xBF00) + bytes(8) + b"TABLE123"
+    supplied = (graph.GraphSeed("table", "decoder_table", 0x110, 8),)
+    result = graph.build_elf_graph(arm_symbol_elf(payload, marker="$t"), supplied)
+
+    assert any(
+        "arm_mode:thumb_mapping_symbol" in item.boundary_methods for item in result.functions
+    )
+    assert any(
+        edge.target == "table" and edge.kind == "pc_relative_reference" for edge in result.edges
+    )
+    assert any(edge.kind == "tail_call" for edge in result.edges)
+
+
+def test_thumb_symbol_lsb_is_mode_provenance_but_even_symbol_without_marker_is_not():
+    payload = struct.pack("<4H", 0xBF00, 0xBF00, 0xBF00, 0xBF00)
+    proven = graph.build_elf_graph(arm_symbol_elf(payload, thumb_bit=True))
+    unresolved = graph.build_elf_graph(arm_symbol_elf(payload))
+
+    assert "arm_mode:thumb_symbol_lsb" in proven.functions[0].boundary_methods
+    assert any(gap.code == "arm_instruction_mode_unavailable" for gap in unresolved.gaps)
+
+
+def test_stripped_arm_without_function_bounds_is_an_explicit_gap():
+    result = graph.build_elf_graph(elf(bytes(16), matcher.EM_ARM, elf_class=32))
+
+    assert result.functions == ()
+    assert any(gap.code == "arm_function_boundaries_unavailable" for gap in result.gaps)
+
+
+def test_arm_mapping_data_interval_is_never_decoded_as_thumb_code():
+    payload = struct.pack("<4H", 0xBF00, 0xE001, 0xBF00, 0xBF00)
+    result = graph.build_elf_graph(
+        arm_symbol_elf(payload, marker=[("$t", 0), ("$d", 2), ("$t.1", 4)])
+    )
+
+    assert not any(edge.kind == "tail_call" for edge in result.edges)
+    assert not any(gap.code == "truncated_instruction" for gap in result.gaps)
+
+
+def test_arm_table_without_supported_reference_is_an_explicit_pic_gap():
+    payload = struct.pack("<4H", 0xBF00, 0xBF00, 0xBF00, 0xBF00) + bytes(8) + b"TABLE123"
+    result = graph.build_elf_graph(
+        arm_symbol_elf(payload, marker="$t"),
+        (graph.GraphSeed("table", "decoder_table", 0x110, 8),),
+    )
+
+    assert any(gap.code == "arm_table_reference_unresolved" for gap in result.gaps)
+
+
+def test_arm_adjacent_movw_movt_same_register_recovers_absolute_table_reference():
+    target = BASE + 16
+    payload = (
+        struct.pack(
+            "<4I",
+            arm_mov("movw", 6, target & 0xFFFF),
+            arm_mov("movt", 6, target >> 16),
+            0xE320F000,
+            0xE320F000,
+        )
+        + b"TABLE123"
+    )
+    result = graph.build_elf_graph(
+        arm_symbol_elf(payload, marker="$a"),
+        (graph.GraphSeed("table", "decoder_table", 0x110, 8),),
+    )
+
+    assert any(
+        edge.kind == "absolute_reference" and edge.target == "table" for edge in result.edges
+    )
+
+
+def test_thumb_adjacent_movw_movt_same_register_recovers_absolute_table_reference():
+    target = BASE + 16
+    halves = (
+        *thumb_mov("movw", 6, target & 0xFFFF),
+        *thumb_mov("movt", 6, target >> 16),
+    )
+    payload = struct.pack("<4H", *halves) + bytes(8) + b"TABLE123"
+    result = graph.build_elf_graph(
+        arm_symbol_elf(payload, marker="$t"),
+        (graph.GraphSeed("table", "decoder_table", 0x110, 8),),
+    )
+
+    assert any(
+        edge.kind == "absolute_reference" and edge.target == "table" for edge in result.edges
+    )
+
+
+def test_thumb_movw_movt_inside_it_block_remains_unqualified():
+    target = BASE + 16
+    halves = (
+        0xBF08,
+        *thumb_mov("movw", 6, target & 0xFFFF),
+        *thumb_mov("movt", 6, target >> 16),
+    )
+    payload = struct.pack("<5H", *halves) + bytes(6) + b"TABLE123"
+    result = graph.build_elf_graph(
+        arm_symbol_elf(payload, marker="$t", function_size=10),
+        (graph.GraphSeed("table", "decoder_table", 0x110, 8),),
+    )
+
+    assert not result.edges
+    assert any(gap.code == "arm_table_reference_unresolved" for gap in result.gaps)
+
+
+def test_arm_movw_movt_register_or_condition_mismatch_never_creates_reference():
+    target = BASE + 16
+    payload = (
+        struct.pack(
+            "<2I",
+            arm_mov("movw", 6, target & 0xFFFF, condition=0xE),
+            arm_mov("movt", 7, target >> 16, condition=0x1),
+        )
+        + bytes(8)
+        + b"TABLE123"
+    )
+    result = graph.build_elf_graph(
+        arm_symbol_elf(payload, marker="$a"),
+        (graph.GraphSeed("table", "decoder_table", 0x110, 8),),
+    )
+
+    assert not result.edges
+    assert any(gap.code == "arm_table_reference_unresolved" for gap in result.gaps)
+
+
+def test_thumb_symbol_bit_conflicting_with_arm_mapping_poisons_mode():
+    payload = struct.pack("<4H", 0xE001, 0xBF00, 0xBF00, 0xBF00)
+    result = graph.build_elf_graph(arm_symbol_elf(payload, marker="$a", thumb_bit=True))
+
+    assert any(gap.code == "ambiguous_arm_instruction_mode" for gap in result.gaps)
+    assert not result.edges
+
+
+def test_conflicting_mapping_symbols_at_same_address_never_select_a_mode():
+    payload = struct.pack("<4H", 0xE001, 0xBF00, 0xBF00, 0xBF00)
+    result = graph.build_elf_graph(arm_symbol_elf(payload, marker=[("$a", 0), ("$t", 0)]))
+
+    assert any(gap.code == "ambiguous_arm_instruction_mode" for gap in result.gaps)
+    assert not result.edges
+
+
+def test_mapping_symbol_proves_mode_for_supplied_function_bound():
+    payload = struct.pack("<4H", 0xE001, 0xBF00, 0xBF00, 0xBF00)
+    result = graph.build_elf_graph(
+        arm_symbol_elf(payload, marker="$t", function_symbol=False),
+        (graph.GraphSeed("supplied", "flirt_function", 0x100, 8, is_function=True),),
+    )
+
+    assert any(edge.kind == "tail_call" for edge in result.edges)
+    assert not any(gap.code == "arm_instruction_mode_unavailable" for gap in result.gaps)
+
+
+def test_trusted_objdump_packet_is_machine_bound_for_other_elf_isas():
+    data = elf(bytes.fromhex("0c000000") + bytes(12), matcher.EM_MIPS)
+    seed = graph.GraphSeed("source", "trusted", PAYLOAD_OFFSET, 4, is_function=True)
+    packet = graph.parse_objdump_instructions(
+        f"  {BASE:x}: 0c 00 00 00  jal {BASE + 8:x}", machine=matcher.EM_MIPS
+    )
+    result = graph.build_elf_graph(data, (seed,), packet)
+    mismatch = graph.build_elf_graph(
+        data,
+        (seed,),
+        graph.parse_objdump_instructions(
+            f"  {BASE:x}: 0c 00 00 00  jal {BASE + 8:x}", machine=matcher.EM_ARM
+        ),
+    )
+
+    assert any(edge.kind == "direct_call" for edge in result.edges)
+    assert any(gap.code == "objdump_machine_mismatch" for gap in mismatch.gaps)
+    assert not mismatch.edges
 
 
 def test_aarch64_literal_tail_call_and_indirect_call_are_distinguished():
@@ -986,6 +1286,77 @@ def test_recognized_function_window_near_end_is_decoded_before_large_prefix():
     assert any(gap.code == "unexamined_executable_ranges" for gap in result.gaps)
     assert all(gap.code != "priority_decode_window_limit" for gap in result.gaps)
     assert 4 not in tracked.slice_sizes
+
+
+def test_riscv_pc_relative_table_reference_and_direct_call_are_qualified():
+    words = [
+        riscv_auipc(5),
+        riscv_addi(5, 5, 32),
+        riscv_jal(1, 8),
+        riscv_addi(0, 0, 0),
+        riscv_lui(6, BASE),
+        riscv_addi(6, 6, 32),
+        riscv_addi(0, 0, 0),
+        riscv_addi(0, 0, 0),
+        riscv_addi(0, 0, 0),
+        riscv_addi(0, 0, 0),
+    ]
+    supplied = (
+        graph.GraphSeed("source", "flirt_function", PAYLOAD_OFFSET, 12, is_function=True),
+        graph.GraphSeed("callee", "flirt_function", PAYLOAD_OFFSET + 16, 12, is_function=True),
+        graph.GraphSeed("table", "decoder_table", PAYLOAD_OFFSET + 32, 8),
+    )
+    result = graph.build_elf_graph(riscv_elf(struct.pack("<10I", *words)), supplied)
+    assert any(
+        edge.kind == "pc_relative_reference" and edge.target == "table" and edge.qualified
+        for edge in result.edges
+    )
+    assert any(
+        edge.kind == "absolute_reference" and edge.target == "table" and edge.qualified
+        for edge in result.edges
+    )
+    assert any(
+        edge.kind == "direct_call"
+        and edge.source == f"function:0x{PAYLOAD_OFFSET:x}"
+        and edge.target == f"function:0x{PAYLOAD_OFFSET + 16:x}"
+        for edge in result.edges
+    )
+    assert all(gap.code != "unsupported_instruction_mode" for gap in result.gaps)
+
+
+def test_riscv_compressed_jump_requires_elf_flag_and_preserves_indirect_gap():
+    payload = struct.pack("<4H", riscv_compressed_jump(4), 0x0001, 0x0001, 0x9002)
+    supplied = (
+        graph.GraphSeed("source", "flirt_function", PAYLOAD_OFFSET, 2, is_function=True),
+        graph.GraphSeed("callee", "flirt_function", PAYLOAD_OFFSET + 4, 4, is_function=True),
+    )
+    supported = graph.build_elf_graph(riscv_elf(payload, compressed=True), supplied)
+    assert any(
+        edge.kind == "tail_call" and edge.target == f"function:0x{PAYLOAD_OFFSET + 4:x}"
+        for edge in supported.edges
+    )
+    assert any(gap.code == "unresolved_indirect_transfer" for gap in supported.gaps)
+
+    unsupported = graph.build_elf_graph(riscv_elf(payload), supplied)
+    assert all(edge.kind != "tail_call" for edge in unsupported.edges)
+    assert any(
+        gap.code == "unsupported_instruction_mode" and "EF_RISCV_RVC" in gap.reason
+        for gap in unsupported.gaps
+    )
+
+
+def test_riscv_truncated_and_sparse_windows_are_bounded():
+    tracked = CountingBuffer(riscv_elf(struct.pack("<H", 0x0003)))
+    result = graph.build_elf_graph(cast("Buffer", tracked))
+    assert result.edges == ()
+    assert any(
+        gap.code == "unsupported_instruction_mode" and "ends within" in gap.reason
+        for gap in result.gaps
+    )
+    large = CountingBuffer(riscv_elf(struct.pack("<64I", *([riscv_addi(0, 0, 0)] * 64))))
+    graph.build_elf_graph(cast("Buffer", large))
+    assert 2 not in large.slice_sizes
+    assert 4 not in large.slice_sizes
 
 
 def test_function_seed_outside_executable_mapping_is_rejected():

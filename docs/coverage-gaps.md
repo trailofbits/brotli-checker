@@ -10,13 +10,13 @@ These setups were independently investigated with benign fixtures.
 | Different compiler on the same ISA | LoongArch GCC 14 binaries ran correctly but did not match the earlier Clang 19 corpus. | Added a separately generated and runtime-validated GCC 14 profile. Other compilers, versions, flags, and sysroots remain unknown without their own references. |
 | Non-C/C++ imports and FFI | Source-only wrappers and runtime APIs could produce no findings; several ecosystem manifests were not dispatched. | Collect bounded language-scoped import/API/linkage leads and selected dependency fields. Resolve actual native providers versus independent ports; generated/computed imports and arbitrary aliases remain limitations. |
 | Partial function matches / changed profiles | Whole-decoder identity can miss while individual function bodies survive. | Optional FLIRT recognizes complete masked function windows independently; missing sibling functions are allowed. Compiler changes, inlining, LTO, unsupported mappings, and budget exhaustion remain explicit limits; no patch verdict follows from a function name. |
-| LTO | The linked decoder can differ from its own pre-link fat-object reference. | Stable decoder tables can now identify decoder data in tested LTO builds; patch state still needs reviewed post-link evidence or scoped disassembly. |
+| LTO | The linked decoder can differ from its own pre-link fat-object reference. | Stable decoder tables identify decoder data in tested LTO builds. Packaged Windows LTCG and Apple ThinLTO profiles use verified post-link bounds, exact function bytes, one component-relative layout, and mixed-copy controls. Other compiler/linker transformations remain unknown without separate qualification. |
 | Dynamically linked application | A consumer importing Brotli remains unresolved when scanned alone. Scanning the bundle finds the sibling affected DSO, without associating it to the importer or proving loader selection. | Scan the supplying libraries and verify deployment linkage. No `ldd`, host-loader guessing, or runtime-selection claim. |
 | SquashFS/Snap/AppImage/ASAR | Opaque bundles could produce no findings and no coverage gaps. | SquashFS magic and the named formats now produce explicit unsupported-payload gaps. An ELF-prefixed AppImage keeps outer ELF evidence; no payload is extracted or counted as inspected. |
 | Dockerfile/Containerfile and `.bzl` | Dependency declarations were not routed to the existing manifest analysis. | Exact and dotted container-file names plus `.bzl` now use dependency-lead collection, without claiming selection, build, shipment, or runtime use. |
-| ar/DEB, RPM, zstd packages | Payload traversal is not implemented; these must remain explicit gaps. | Provide unpacked contents using trusted tooling. Parsing a package is distinct from reconstructing an installed filesystem. |
-| OCI layered filesystems | Gzip layer traversal works, but whiteouts are not applied. | Layer containment is not final-image shipment; retain unknown shipment/runtime status. |
-| PE/Mach-O | Stable decoder table and generic candidates are supported, not compiled decoder code matching. | Require platform-specific evidence; do not transfer ELF coverage claims. |
+| ar/DEB, RPM, zstd packages | Package containers previously stopped at an unsupported gap. | Bounded in-memory traversal now covers regular ar/DEB, RPM/cpio, and zstd while preserving package ownership and expansion limits. Thin ar and unrecognized payloads remain gaps. |
+| OCI layered filesystems | Gzip layer traversal did not apply whiteouts. | Final image views now apply whiteouts and opaque directories; historical events remain separate and are never called shipped. |
+| PE/Mach-O | ELF function profiles could not be scoped safely to native loaders. | Explicit native FLIRT profiles are format/ABI-bound and scan validated PE sections or Mach-O slices. Normal profiles remain relocation-masked provenance; qualified post-link profiles retain exact bytes and bind every patch role to one component. ELF profiles and scattered matches never transfer a verdict. |
 
 ## Garbage-collected code acceptance
 
@@ -37,11 +37,13 @@ normal/stripped/section-header-free matching, paired affected/fixed controls, an
 a version-only missing-role control. The catalog also adds 24 complete
 LoongArch GCC 14 references validated by the normal 24-case matrix.
 
-The required evidence remains relocation-masked code identity, not a proof of
-relocation destinations, data identity, association of separately matched
-sections with one decoder copy, runtime selection, or every embedded copy.
-Identical-code folding may reuse an offset. Fixed-code-only evidence remains
-review-required. LTO and unrepresented compiler/profile/layout combinations
-remain unknown. Both affected and fixed source controls must work after GC,
-stripping and section-header removal, while a missing patch-bearing section or
-opposite-state code must not satisfy the reference.
+For scope-aware ELF and normal native profiles, the required evidence remains
+relocation-masked code identity, not proof of relocation destinations, data
+identity, association of separately matched sections with one decoder copy,
+runtime selection, or every embedded copy. Qualified post-link profiles instead
+keep exact bytes and one reviewed component-relative layout, but remain specific to
+their compiler/linker transformation. Identical-code folding may reuse an offset.
+Fixed-code-only evidence remains review-required. Unrepresented compiler, LTO, or
+layout combinations remain unknown. Both affected and fixed source controls must
+work after GC, stripping and section-header removal, while a missing patch-bearing
+section or opposite-state code must not satisfy the reference.

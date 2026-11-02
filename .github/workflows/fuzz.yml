@@ -1,0 +1,102 @@
+name: Parser fuzz
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/fuzz_binary_analysis.py'
+      - 'scripts/fuzz_package_provenance.py'
+      - 'scripts/fuzz_with_atheris.py'
+      - 'scripts/run_atheris_campaign.py'
+      - 'scripts/run_fuzz_corpus.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_data.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_graph.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_layout.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_match.py'
+      - 'skills/brotli-checker/scripts/brotli_debug_companions.py'
+      - 'skills/brotli-checker/scripts/brotli_package_provenance.py'
+      - 'skills/brotli-checker/scripts/brotli_payloads.py'
+      - 'skills/brotli-checker/scripts/brotli_provenance.py'
+      - 'skills/brotli-checker/references/elf-relocations.json'
+      - 'tests/test_binary_analysis_fuzz.py'
+      - 'tests/test_package_provenance_fuzz.py'
+  pull_request:
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/fuzz_binary_analysis.py'
+      - 'scripts/fuzz_package_provenance.py'
+      - 'scripts/fuzz_with_atheris.py'
+      - 'scripts/run_atheris_campaign.py'
+      - 'scripts/run_fuzz_corpus.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_data.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_graph.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_layout.py'
+      - 'skills/brotli-checker/scripts/brotli_binary_match.py'
+      - 'skills/brotli-checker/scripts/brotli_debug_companions.py'
+      - 'skills/brotli-checker/scripts/brotli_package_provenance.py'
+      - 'skills/brotli-checker/scripts/brotli_payloads.py'
+      - 'skills/brotli-checker/scripts/brotli_provenance.py'
+      - 'skills/brotli-checker/references/elf-relocations.json'
+      - 'tests/test_binary_analysis_fuzz.py'
+      - 'tests/test_package_provenance_fuzz.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  atheris:
+    name: Atheris bounded campaigns
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+      - name: Install locked analysis dependencies
+        run: uv sync --locked --extra analysis --group fuzz
+      - name: Generate structured seed corpora
+        run: |
+          mkdir -p artifacts
+          uv run --locked --extra analysis python scripts/fuzz_binary_analysis.py \
+            --write-seeds artifacts/fuzz-binary-seeds
+          uv run --locked --extra analysis python scripts/fuzz_package_provenance.py \
+            --write-seeds artifacts/fuzz-package-seeds
+      - name: Fuzz native parsers
+        run: |
+          uv run --locked --extra analysis --group fuzz python \
+            scripts/run_atheris_campaign.py binary artifacts/fuzz-binary-seeds \
+            artifacts/fuzz-binary --runs 10000 --seconds 60 \
+            --memory-bytes 2147483648 --max-input-bytes 16777216
+      - name: Fuzz package and provenance parsers
+        if: success() || failure()
+        run: |
+          uv run --locked --extra analysis --group fuzz python \
+            scripts/run_atheris_campaign.py package artifacts/fuzz-package-seeds \
+            artifacts/fuzz-package --runs 10000 --seconds 60 \
+            --memory-bytes 2147483648 --max-input-bytes 16777216
+      - name: Retain fuzz evidence and crashes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: parser-fuzz-${{ github.run_id }}
+          path: |
+            artifacts/fuzz-binary-seeds/manifest.json
+            artifacts/fuzz-package-seeds/manifest.json
+            artifacts/fuzz-binary/
+            artifacts/fuzz-package/
+          if-no-files-found: error
+          retention-days: 14

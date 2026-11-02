@@ -325,3 +325,23 @@ def test_same_pattern_can_retain_different_names_for_different_target_identities
     kept_records, kept_groups = prune_ambiguous_names(records, [first_group, second_group])
     assert kept_records == records
     assert kept_groups == [first_group, second_group]
+
+
+def test_writer_digest_binds_on_disk_bytes_without_platform_newline_translation(
+    tmp_path, monkeypatch
+):
+    temporary = BUILDER["tempfile"]
+    original = temporary.NamedTemporaryFile
+
+    def windows_text_default(*args, **kwargs):
+        kwargs.setdefault("newline", "\r\n")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(temporary, "NamedTemporaryFile", windows_text_default)
+    item = pattern()
+    bundle_path, pat_path = tmp_path / "refs.json", tmp_path / "refs.pat"
+    write_catalog(bundle_path, pat_path, render_pat([item]), [group([item])])
+    manifest = json.loads(bundle_path.read_bytes())
+    raw = pat_path.read_bytes()
+    assert b"\r\n" not in raw
+    assert hashlib.sha256(raw).hexdigest() == manifest["pat_sha256"]

@@ -225,6 +225,19 @@ def wasm_fixture():
     )
 
 
+def wasm_identity_fixture(import_names, target_index, body_suffix=b"\x0b"):
+    types = wasm_section(1, uleb(1) + b"\x60\0\0")
+    imports = wasm_section(
+        2,
+        uleb(len(import_names))
+        + b"".join(wasm_name("env") + wasm_name(name) + b"\0\0" for name in import_names),
+    )
+    functions = wasm_section(3, b"\x01\0")
+    body = b"\0\x10" + uleb(target_index) + body_suffix
+    code = wasm_section(10, b"\x01" + uleb(len(body)) + body)
+    return b"\0asm\x01\0\0\0" + types + imports + functions + code
+
+
 def test_pe_scopes_mapped_code_data_resources_and_static_metadata():
     result = layout.inspect_layout(pe_fixture())
     assert result["kind"] == "pe"
@@ -575,6 +588,90 @@ def test_wasm_scopes_real_data_and_code_and_recovers_direct_calls():
     assert result["gaps"] == []
 
 
+def test_wasm_function_identity_canonicalizes_direct_function_indices():
+    first = layout.inspect_layout(wasm_identity_fixture(["target"], 0))
+    shifted = layout.inspect_layout(wasm_identity_fixture(["unrelated", "target"], 1))
+    first_identity = first["functions"][0]["function_identity"]
+    shifted_identity = shifted["functions"][0]["function_identity"]
+
+    assert first_identity["exact_body_sha256"] != shifted_identity["exact_body_sha256"]
+    assert first_identity["canonical_body_sha256"] == shifted_identity["canonical_body_sha256"]
+    assert first_identity["profile_sha256"] == shifted_identity["profile_sha256"]
+    assert first_identity["patch_status"] == "unknown"
+    assert first_identity["implementation_family"] == "unclassified"
+
+
+def test_wasm_function_identity_binds_simple_static_data_reference():
+    types = wasm_section(1, b"\x01\x60\0\0")
+    functions = wasm_section(3, b"\x01\0")
+    instructions = b"\0\x41\0\x28\0\0\x1a\x0b"
+    code = wasm_section(10, b"\x01" + uleb(len(instructions)) + instructions)
+    data = wasm_section(11, b"\x01\0\x41\0\x0b\x04DATA")
+    module = b"\0asm\x01\0\0\0" + types + functions + code + data
+
+    result = layout.inspect_layout(module)
+    identity = result["functions"][0]["function_identity"]
+    assert identity["data_references_complete"] is True
+    assert identity["data_references"] == [
+        {
+            "data_index": 0,
+            "offset": 0,
+            "segment_sha256": "c97c29c7a71b392b437ee03fd17f09bb10b75e879466fc0eb757b2c4a78ac938",
+        }
+    ]
+
+
+def test_wasm_signed_leb_edges_are_sign_extended_at_declared_width():
+    negative_one = layout._Cursor(b"\xff\xff\xff\xff\x7f", 0, 5)  # noqa: SLF001
+    minimum = layout._Cursor(b"\x80\x80\x80\x80\x78", 0, 5)  # noqa: SLF001
+
+    assert layout._sleb(negative_one, 32) == -1  # noqa: SLF001
+    assert layout._sleb(minimum, 32) == -(1 << 31)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"\x80\x80\x80\x80\x08",
+        b"\x80\x80\x80\x80\x70",
+        b"\xff\xff\xff\xff\x0f",
+    ],
+)
+def test_wasm_signed_leb_rejects_non_sign_extended_high_bits(raw):
+    cursor = layout._Cursor(raw, 0, len(raw))  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="signed LEB128"):
+        layout._sleb(cursor, 32)  # noqa: SLF001
+
+
+def wasm_call_identity_fixture(target_bodies, call_index):
+    types = wasm_section(1, b"\x01\x60\0\0")
+    count = len(target_bodies) + 1
+    functions = wasm_section(3, uleb(count) + b"\0" * count)
+    caller = b"\0\x10" + uleb(call_index) + b"\x0b"
+    bodies = [*(b"\0" + body + b"\x0b" for body in target_bodies), caller]
+    code = wasm_section(10, uleb(count) + b"".join(uleb(len(body)) + body for body in bodies))
+    return b"\0asm\x01\0\0\0" + types + functions + code
+
+
+def test_wasm_direct_call_identity_binds_structural_target_but_treats_clones_equally():
+    clone_a = layout.inspect_layout(wasm_call_identity_fixture((b"\x01", b"\x01"), 0))["functions"][
+        -1
+    ]["function_identity"]
+    clone_b = layout.inspect_layout(wasm_call_identity_fixture((b"\x01", b"\x01"), 1))["functions"][
+        -1
+    ]["function_identity"]
+    different = layout.inspect_layout(wasm_call_identity_fixture((b"\x01", b"\x00"), 1))[
+        "functions"
+    ][-1]["function_identity"]
+
+    assert clone_a["exact_body_sha256"] != clone_b["exact_body_sha256"]
+    assert clone_a["canonical_body_sha256"] == clone_b["canonical_body_sha256"]
+    assert clone_a["direct_call_references"] == clone_b["direct_call_references"]
+    assert clone_a["profile_sha256"] == clone_b["profile_sha256"]
+    assert clone_a["profile_sha256"] != different["profile_sha256"]
+
+
 def test_wasm_custom_lookalike_is_not_a_data_initializer():
     lookalike = b"\0asm\x01\0\0\0" + wasm_section(0, wasm_name("fake") + b"DATA")
     result = layout.inspect_layout(lookalike)
@@ -919,3 +1016,14 @@ def test_sparse_fat64_slice_above_four_gib_keeps_outer_offsets(tmp_path, monkeyp
         result = layout.inspect_layout(data)
     assert result["slices"][0]["ranges"]["mapped"][0]["file_offset"] == slice_offset + 0x200
     assert requested < 128 * 1024
+
+
+def test_nonempty_pe_relocation_summary_is_canonical_json_evidence():
+    from brotli_evidence_report import canonical_json  # noqa: PLC0415 -- Integration boundary.
+
+    data = bytearray(pe_fixture())
+    struct.pack_into("<I", data, 0x98 + 112 + 5 * 8 + 4, 12)
+    struct.pack_into("<IIHH", data, 0x900, 0x1000, 12, 0xA010, 0)
+    result = layout.inspect_layout(bytes(data))
+    assert result["ranges"]["relocations"][0]["types"] == {"10": 1}
+    assert canonical_json(result)
