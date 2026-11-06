@@ -718,15 +718,15 @@ wheels = [
 
 [[package]]
 name = "pytest-gremlins"
-version = "1.12.2"
+version = "1.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "coverage" },
     { name = "pytest" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/66/54/01fee16e8de7a0534e79bfc20510f44e26581fbcd40bd099ff461ce1d374/pytest_gremlins-1.12.2.tar.gz", hash = "sha256:28ac7f9748ab95452c157c1d06b5a3958b3b7c34e642f75d53bea144b96899e6", size = 4295970, upload-time = "2026-10-19T04:17:10.381Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/18/fa2c9355560a0e04f2771333cd409f6c83b6a48819122d5b34416575e1fc/pytest_gremlins-1.13.1.tar.gz", hash = "sha256:0d1f3a0863818f6de7d5230326dc03dec91019e69613bb415564fc645938cc2a", size = 4346974, upload-time = "2026-10-29T02:01:57.827Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/65/915f8c0613f18aa91c0626629ed89979cf70d3f1462fc751d5fbef502919/pytest_gremlins-1.12.2-py3-none-any.whl", hash = "sha256:f0f75eeaa1713143de01ea516fff683bda10e24bebfb5d609d9910e02e3b2f48", size = 185299, upload-time = "2026-10-19T04:17:08.271Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/a1/10e4701e0f6f8672b03b77bad6bf48938b752cc82aca3b9bd44ac9f0c4e2/pytest_gremlins-1.13.1-py3-none-any.whl", hash = "sha256:9fd4781b9d5e4c49a2288430830dc35968eb7c71dd9b6ba77261f886547222d7", size = 194900, upload-time = "2026-10-29T02:01:56.059Z" },
 ]
 
 [[package]]
