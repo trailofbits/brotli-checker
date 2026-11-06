@@ -43,7 +43,7 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.17.2" },
-    { name = "trailmark", specifier = "==0.7.0" },
+    { name = "trailmark", specifier = "==0.7.1" },
     { name = "ty", specifier = ">=0.0.91" },
 ]
 mutation = [{ name = "pytest-gremlins", specifier = ">=1.12.2" }]
@@ -894,7 +894,7 @@ wheels = [
 
 [[package]]
 name = "trailmark"
-version = "0.7.0"
+version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "rustworkx" },
@@ -902,9 +902,9 @@ dependencies = [
     { name = "tree-sitter-language-pack" },
     { name = "tree-sitter-sql" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/1c/650ab4888ccfa6f7382fef43c2813c108026d16a8c0ec210ddab961270f0/trailmark-0.7.0.tar.gz", hash = "sha256:94002f517b89b38d6f5bc5faaba21763d8e5380170aa950e0e77e6010b56b3fb", size = 1904365, upload-time = "2026-10-23T17:18:51.916Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6d/a0/a7faa64f1cc688731ad78c3aaf900dc988bd0a690e83dca1326f4df28ead/trailmark-0.7.1.tar.gz", hash = "sha256:9458238a3f15981b0dc267e2abffec50ba44fcbd205af3922b470b368ed107b4", size = 1975501, upload-time = "2026-10-26T23:31:23.782Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/fc/a3b69e3be108ee8448c4ae7a43317f52683317ae8e67d708e409cdeac029/trailmark-0.7.0-py3-none-any.whl", hash = "sha256:c6a99239b6d96770a47355e2122594b484701773ef81a752946623f0643e1119", size = 1764852, upload-time = "2026-10-23T17:18:49.267Z" },
+    { url = "https://files.pythonhosted.org/packages/68/9f/8b86199c2d7dc83ddc73a2db4f437f175286a87df23e83bff2d2041a16d0/trailmark-0.7.1-py3-none-any.whl", hash = "sha256:616d67b6507b8a3a875de414ffb30c6158e14ac2c3e09cdf6fbebf9383c13206", size = 1808659, upload-time = "2026-10-26T23:31:21.713Z" },
 ]
 
 [[package]]

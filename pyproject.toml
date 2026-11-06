@@ -80,7 +80,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.17.2",
-    "trailmark==0.7.0",
+    "trailmark==0.7.1",
     "ty>=0.0.91",
 ]
 security = ["pip-audit>=2.10.1", "zizmor>=1.31.1"]
